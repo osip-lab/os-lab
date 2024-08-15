@@ -1,6 +1,23 @@
 # os-lab
 This repository contains the scripts of the lab of Osip Schwartz. it does not include the specific simulations of Kali regarding p
 
+## How to work with data files:
+Here I assume all data files are in our group's Dropbox
+* go to local_config.py file and set there the local path to the group's Dropbox on your computer, where data should sit, like so:
+  ```python
+  DATA_PATH = r"C:\Users\michaeka\Dropbox (Weizmann Institute)\Lab's Dropbox"
+  ```
+* Whenever wanting to read or write data, you can access it like so:
+```python
+import os
+from local_config import DATA_PATH
+import pandas as pd
+
+specific_file_path = os.path.join(DATA_PATH, r"EMNV\Ring down\270624\ring_down_curve_parameters.xlsx")
+
+pd.read_excel(specific_file_path)
+```
+
 # How to install on new computers:
 If you don't have a github user already - open one.
 
@@ -25,17 +42,16 @@ Here is an example of installing a specific version of matplotlib (typing 'pip i
 
 ![image](https://github.com/user-attachments/assets/1812c0ef-f737-472b-8eec-54a3bddaa6e7)
 
-# How to add people to the project:
+## How to add people to the project:
 ![image](https://github.com/user-attachments/assets/b39eb518-70e0-4e77-af6e-ca12223bfd2c)
 
-# How to ignore big data files in the project (ignore = don't track and don't upload them with git):
+## How to ignore big data files in the project (ignore = don't track and don't upload them with git):
 add them to the .gitignore text file:
 ![image](https://github.com/user-attachments/assets/22f727dc-4804-4ad9-ba1e-fcb172bfaaf5)
 
 I think that's it for now.
 
-**You are welcome to add here any instructions of usage to any part of the code for other people to use as well.
-**
+**You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
 
 
 
