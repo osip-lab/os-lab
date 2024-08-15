@@ -38,8 +38,8 @@ class QMergedRadioButton(QWidget):
             for button, position in zip(self.button_list, position_list):
                 main_layout.addWidget(button, *position)
         else:
-            print(f'Указано неверное направление для QMergedRadioButton с опциями {option_list}!\n'
-                  f'Использую вертикальное направление!')
+            print(f'Wrong directions for QMergedRadioButton with options {option_list}!\n'
+                  f'Using vertical direction!')
             main_layout = QVBoxLayout()
             for button in self.button_list:
                 main_layout.addWidget(button)
