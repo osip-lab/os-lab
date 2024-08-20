@@ -1,8 +1,8 @@
 import sys
 import pyvisa
 
-from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 
 from qt_gui.qt_ext import MyStandardWindow, QMyStandardButton, QCenteredLabel, QMyHBoxLayout, QMyVBoxLayout, \
     QMySpinBox, ThreadedWorker, ThreadedWidget
@@ -147,13 +147,13 @@ class RigolGenRampWidget(ThreadedWidget):
 
 class RigolGenMainWidget(QWidget):
     def __init__(self):
-        super(RigolGenMainWidget, self).__init__(flags=Qt.Window)
+        super(RigolGenMainWidget, self).__init__()
         self.font_size = 14
 
         self.controller = RigolGenRampWidget(font_size=self.font_size)
 
         layout = QMyVBoxLayout()
-        layout.addWidget(self.controller, alignment=Qt.AlignCenter)
+        layout.addWidget(self.controller, alignment=Qt.AlignmentFlag.AlignCenter)
         self.setLayout(layout)
 
 
@@ -172,4 +172,4 @@ if __name__ == '__main__':
     # QLocale.setDefault(QLocale(QLocale.C))
     app = QApplication(sys.argv)
     ex = RigolGenRampWindow()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -1,4 +1,13 @@
+# basic data processing
 numpy==2.0.1
-PyQt5==5.15.7
-PyVISA~=1.14.1
+scipy~=1.14.0
 pandas==2.2.2
+# calculation acceleration
+numba~=0.60.0
+# gui
+PyQt6~=6.7.1
+# plotting
+matplotlib~=3.9.2
+# connection to devices
+PyVISA~=1.14.1
+pypylon~=4.0.0

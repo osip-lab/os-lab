@@ -1,11 +1,7 @@
-import os
-import time
-import numpy as np
-from PyQt5.QtWidgets import QWidget, QMainWindow, QAction, qApp, QLabel, QDesktopWidget, QPushButton, QDoubleSpinBox,\
-    QRadioButton, QGridLayout, QVBoxLayout, QHBoxLayout, QComboBox, QSizePolicy, QLineEdit, QGroupBox, QCheckBox
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer
-from PyQt5.QtGui import QFont
-from PyQt5.QtMultimedia import QSound
+from PyQt6.QtWidgets import QWidget, QMainWindow, QApplication, QLabel, QPushButton, QDoubleSpinBox, \
+    QRadioButton, QGridLayout, QVBoxLayout, QHBoxLayout, QComboBox, QLineEdit, QGroupBox
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
+from PyQt6.QtGui import QFont, QAction, QGuiApplication
 
 
 class QMergedRadioButton(QWidget):
@@ -65,8 +61,7 @@ class QCenteredLabel(QLabel):
     def __init__(self, text):
         super().__init__()
         self.setText(text)
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.setAlignment(Qt.AlignCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
 class QMySpinBox(QDoubleSpinBox):
@@ -86,7 +81,6 @@ class QMyStandardButton(QPushButton):
         super().__init__(*args)
         self.setFont(QFont('Arial', font_size))
         self.setMaximumWidth(self.fontMetrics().boundingRect(self.text()).width() + 10)
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
 
 
 class QMyComboBox(QComboBox):
@@ -94,7 +88,6 @@ class QMyComboBox(QComboBox):
         super(QMyComboBox, self).__init__()
         self.addItems(items_list)
         self.adjustSize()
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
 
 
 class QMyVBoxLayout(QVBoxLayout):
@@ -119,24 +112,14 @@ class MyStandardWindow(QMainWindow):
         # Create exit shortcut
         self.exit_action = QAction('Exit', self)
         self.exit_action.setShortcut('Esc')
-        self.exit_action.triggered.connect(qApp.quit)
+        self.exit_action.triggered.connect(QApplication.instance().quit)
         self.addAction(self.exit_action)
 
     def appear_with_layout(self, desired_name, desired_layout):
         # Set main widget
-        central_window = QWidget()
-        central_window.setLayout(desired_layout)
-        self.setCentralWidget(central_window)
-
-        # Set name and show window
-        self.setWindowTitle(desired_name)
-        self.show()
-
-        # Move window to center
-        qr = self.frameGeometry()
-        cp = QDesktopWidget().availableGeometry().center()
-        qr.moveCenter(cp)
-        self.move(qr.topLeft())
+        central_widget = QWidget()
+        central_widget.setLayout(desired_layout)
+        self.appear_with_central_widget(desired_name, central_widget)
 
     def appear_with_central_widget(self, desired_name, desired_widget):
         # Set main widget
@@ -148,7 +131,7 @@ class MyStandardWindow(QMainWindow):
 
         # Move window to center
         qr = self.frameGeometry()
-        cp = QDesktopWidget().availableGeometry().center()
+        cp = QGuiApplication.primaryScreen().availableGeometry().center()
         qr.moveCenter(cp)
         self.move(qr.topLeft())
 
@@ -173,7 +156,6 @@ class ThreadedWidget(QGroupBox):
         font = self.font()
         font.setPointSize(font_size)
         self.setFont(font)
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
 
     @staticmethod
     def start_branch(worker: ThreadedWorker, branch: QThread, signal: pyqtSignal, *args):
@@ -184,74 +166,7 @@ class ThreadedWidget(QGroupBox):
         signal.emit(*args)
 
 
-class TimerWidget(QGroupBox):
-    def __init__(self, font_size=14, duration=60.0, warning=None):
-        super(TimerWidget, self).__init__()
-        self.font_size = font_size
-        font = self.font()
-        font.setPointSize(self.font_size)
-        self.setFont(font)
-
-        self.setTitle('Timer')
-        self.btn_start = QMyStandardButton('start', font_size=self.font_size)
-        self.btn_start.clicked.connect(self.start)
-        self.btn_stop = QMyStandardButton('stop', font_size=self.font_size)
-        self.btn_stop.clicked.connect(self.stop)
-        self.btn_reset = QMyStandardButton('reset', font_size=self.font_size)
-        self.btn_reset.clicked.connect(self.reset)
-        self.switch = QCheckBox('report')
-
-        self.duration = duration
-        self.warning = warning
-        self.counter = self.duration
-
-        self.time_pace = int(10.0)  # us
-        self.timer = QTimer()
-        self.timer.setInterval(self.time_pace)
-        self.timer.timeout.connect(self.change)
-        self.tic = time.time()
-
-        self.sound_end = QSound(os.path.join(os.getcwd(), 'sounds', 'end.wav'))
-        self.sound_warning = QSound(os.path.join(os.getcwd(), 'sounds', 'warning.wav'))
-        self.lbl = QCenteredLabel(f'{self.counter:.2f}')
-        self.lbl.setFont((QFont('Arial', self.font_size)))
-
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        main_layout = QMyHBoxLayout(self.btn_start, self.btn_stop, self.btn_reset, self.lbl, self.switch)
-        main_layout.addStretch(0)
-        self.setLayout(main_layout)
-
-    def start(self):
-        self.tic = time.time()
-        self.timer.start()
-
-    def stop(self):
-        self.timer.stop()
-        self.counter = self.duration
-        self.lbl.setText(f'{self.counter:.2f}')
-
-    def reset(self):
-        self.stop()
-        self.start()
-
-    def change(self):
-        if self.counter == 0:
-            self.sound_end.play()
-            self.counter = self.duration
-        else:
-            if self.warning is not None:
-                if self.counter == self.warning:
-                    self.sound_warning.play()
-            if (self.counter - self.counter // 1.0) < (self.time_pace / 1000 / 2):
-                if self.switch.isChecked():
-                    print(f'{self.duration - self.counter:.2f}', f'{time.time() - self.tic:.2f}',
-                          f'{(time.time() - self.tic) - (self.duration - self.counter):.2f}')
-            self.counter = np.round(self.counter - self.time_pace / 1000, decimals=2)
-        self.lbl.setText(f'{self.counter:.2f}')
-
-
 class QMyLineEdit(QLineEdit):
     def __init__(self, font_size=14):
         super(QMyLineEdit, self).__init__()
         self.setFont((QFont('Arial', font_size)))
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
