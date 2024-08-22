@@ -11,3 +11,5 @@ matplotlib~=3.9.2
 # connection to devices
 PyVISA~=1.14.1
 pypylon~=4.0.0
+# utilities
+pyperclip~=1.9.0  # for copying into the clipboard
