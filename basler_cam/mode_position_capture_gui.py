@@ -1,12 +1,15 @@
+import os
 import sys
 import time
+import logging
+import pyperclip
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass
 from numba import njit, float64
 from pypylon import pylon
 
-from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox
+from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox, QPushButton
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -16,9 +19,11 @@ from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from qt_gui.qt_ext import (MyStandardWindow, QMyVBoxLayout, QMyHBoxLayout, ThreadedWidget, ThreadedWorker,
                            QMyStandardButton)
 
+from local_config import path_data_local
+
 
 class BaslerCamControlWorker(ThreadedWorker):
-    connected = pyqtSignal(name='Connected')
+    connected = pyqtSignal(dict, name='Connected')
     captured = pyqtSignal(dict, name='Captured')
 
     def __init__(self, thread):
@@ -30,9 +35,9 @@ class BaslerCamControlWorker(ThreadedWorker):
     def connect(self):
         self.cam = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
         self.cam.Open()
-        print(f'Model: {self.cam.DeviceModelName()}')
-        print(f'ID: {self.cam.DeviceVersion()}')
-        print(f'S/N: {self.cam.DeviceSerialNumber()}')
+        info = {'model': self.cam.DeviceModelName(),
+                'id': self.cam.DeviceVersion(),
+                'sn': self.cam.DeviceSerialNumber()}
 
         # set exposure time
         self.cam.ExposureMode.SetValue('Timed')
@@ -46,7 +51,7 @@ class BaslerCamControlWorker(ThreadedWorker):
         # set pixel depth
         self.cam.PixelFormat.SetValue('Mono12')
 
-        self.finish(self.connected)
+        self.finish(self.connected, info)
 
     @pyqtSlot(name='Capture')
     def capture(self):
@@ -85,6 +90,7 @@ class BaslerCamControlWidget(ThreadedWidget):
         self.worker = BaslerCamControlWorker(self.thread())
         self.worker_thread = None
         self.sig_connect.connect(self.worker.connect)
+        self.worker.connected.connect(self.connected)
         self.sig_capture.connect(self.worker.capture)
         self.worker.captured.connect(self.captured)
 
@@ -95,6 +101,11 @@ class BaslerCamControlWidget(ThreadedWidget):
     def connect(self):
         self.worker_thread = QThread()
         self.start_branch(self.worker, self.worker_thread, self.sig_connect)
+
+    @pyqtSlot(dict, name='Connected')
+    def connected(self, info):
+        log_msg = f"connected to camera - model {info['model']}, id {info['id']}, s/n {info['sn']}"
+        logging.info(log_msg)
 
     @pyqtSlot(name='Capture')
     def capture(self):
@@ -219,7 +230,6 @@ def fit_gaussian(arr, rebinning=1):
     mc = arr <= np.percentile(arr - background, 45)
     radius = max((np.sum(mc) / np.pi) ** 0.5, sx / 128)
     initial_guess = (amplitude, x0, y0, radius, radius, 0.0, background)
-    # print(initial_guess)
     tic = time.time()
     try:
         p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True,
@@ -229,17 +239,10 @@ def fit_gaussian(arr, rebinning=1):
     except RuntimeError:
         p = (initial_guess, np.zeros_like(initial_guess), 'fitting unsuccessful')
     dt = time.time() - tic
-    # print(f'Fitting time: {time.time() - tic:.2f} s')
-    # print(tuple(p[0]))
-    # print(tuple(np.sqrt(np.diag(p[1]))))
-    # print(p[2])
 
     pars = p[0]
     pars = (pars[0], pars[1] * rebinning, pars[2] * rebinning, pars[3] * rebinning, pars[4] * rebinning,
             pars[5], pars[6])
-
-    print(f'time: {dt:05.2f} s, ampl: {int(pars[0]):04d}, x_0: {int(pars[1]):04d}, y_0: {int(pars[2]):04d}, '
-          f's_x: {int(pars[3]):04d}, s_y: {int(pars[4]):04d}, angle: {pars[5]:+.2f}, offset: {int(pars[6]):04d}')
 
     xx = np.linspace(0, sx0 - 1, sx0)
     yy = np.linspace(0, sy0 - 1, sy0)
@@ -247,9 +250,8 @@ def fit_gaussian(arr, rebinning=1):
 
     gauss = np.reshape(gaussian2d(np.array((xx, yy)), *pars), (sy0, sx0))
     # gauss = zoom(gauss, rebinning, order=0)
-    pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5],
-            'x_0': pars[1], 'y_0': pars[2],
-            's_x': pars[3], 's_y': pars[4]}
+    pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
+            'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4]}
 
     return gauss, pars
 
@@ -276,18 +278,25 @@ class GaussianFitterWidget(ThreadedWidget):
         super(GaussianFitterWidget, self).__init__(font_size=font_size)
         self.setTitle('Gaussian Fitter')
 
+        self.parameters = dict()
+
         self.fit_switch = QCheckBox('fit')
         self.fit_switch.setToolTip('fit Gaussian to image')
         self.fit_switch.setChecked(False)
+
+        self.btn_copy = QMyStandardButton('copy', font_size=self.font_size)
+        self.btn_copy.setToolTip('copy last parameters to clipboard')
+        self.btn_copy.clicked.connect(self.copy)
 
         self.worker = GaussianFitterWorker(self.thread())
         self.worker_thread = None
         self.sig_fit.connect(self.worker.fit)
         self.worker.fitted.connect(self.fitted)
 
-        layout = QMyHBoxLayout(self.fit_switch)
+        layout = QMyHBoxLayout(self.fit_switch, self.btn_copy)
         self.setLayout(layout)
 
+    @pyqtSlot(dict, name='Fit')
     def fit(self, data):
         if self.fit_switch.isChecked():
             self.worker_thread = QThread()
@@ -295,9 +304,23 @@ class GaussianFitterWidget(ThreadedWidget):
         else:
             self.sig_fitted.emit(data)
 
+    def log_msg(self):
+        pars = self.parameters
+        log_msg = (f"gaussian parameters - x_0 = {pars['x_0']:06.1f} pxl, y_0 = {pars['y_0']:06.1f} pxl, "
+                   f"s_x = {pars['s_x']:06.1f} pxl, s_y = {pars['s_y']:06.1f} pxl, angle = {pars['angle']:+01.2f} rad, "
+                   f"ampl = {pars['amplitude']:06.1f}, offset = {pars['offset']:06.1f}, time = {pars['time']:05.2f} s")
+        return log_msg
+
     @pyqtSlot(dict, name='Fitted')
     def fitted(self, data):
+        self.parameters = data['parameters']
+        logging.info(self.log_msg())
         self.sig_fitted.emit(data)
+
+    @pyqtSlot(name='Copy')
+    def copy(self):
+        log_msg = f"{time.strftime('%Y.%m.%d %H:%M:%S')}: {self.log_msg()}"
+        pyperclip.copy(log_msg)
 
 
 class MainWidget(QWidget):
@@ -315,7 +338,6 @@ class MainWidget(QWidget):
         self.plotter.sig_plotted.connect(self.controller.plotter_command)
 
         layout = QMyVBoxLayout(self.controller, self.fitter, self.plotter, alignment=Qt.AlignmentFlag.AlignCenter)
-        # layout = QMyVBoxLayout(self.controller, self.fitter, alignment=Qt.AlignmentFlag.AlignCenter)
         self.setLayout(layout)
 
 
@@ -332,6 +354,11 @@ class MainWindow(MyStandardWindow):
 
 
 if __name__ == '__main__':
+
+    start_time = time.strftime('%Y-%m-%d %H-%M-%S')
+    logging.basicConfig(filename=os.path.join(path_data_local, 'mode_position', f'{start_time} log.txt'),
+                        level=logging.INFO, format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%Y.%m.%d %H:%M:%S')
+
     app = QApplication(sys.argv)
     ex = MainWindow()
     sys.exit(app.exec())
