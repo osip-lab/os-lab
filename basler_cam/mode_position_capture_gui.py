@@ -9,7 +9,7 @@ from scipy.ndimage import center_of_mass
 from numba import njit, float64
 from pypylon import pylon
 
-from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox, QPushButton
+from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
