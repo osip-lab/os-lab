@@ -9,7 +9,7 @@ from scipy.ndimage import center_of_mass
 from numba import njit, float64
 from pypylon import pylon
 
-from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox
+from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox, QAbstractSpinBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -311,6 +311,14 @@ class GaussianFitterWidget(ThreadedWidget):
         self.fit_switch.setToolTip('fit Gaussian to image')
         self.fit_switch.setChecked(False)
 
+        self.labels = ('x_0', 'y_0', 's_x', 's_y')
+        self.spinboxes = dict()
+        for lbl in self.labels:
+            spinbox = QMySpinBox(decimals=1, v_min=0.0, v_max=9999.0, prefix=f'{lbl}: ', suffix=' pxl')
+            spinbox.setReadOnly(True)
+            spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            self.spinboxes[lbl] = spinbox
+
         self.btn_copy = QMyStandardButton('copy', font_size=self.font_size)
         self.btn_copy.setToolTip('copy last parameters to clipboard')
         self.btn_copy.clicked.connect(self.copy)
@@ -320,7 +328,7 @@ class GaussianFitterWidget(ThreadedWidget):
         self.sig_fit.connect(self.worker.fit)
         self.worker.fitted.connect(self.fitted)
 
-        layout = QMyHBoxLayout(self.fit_switch, self.btn_copy)
+        layout = QMyHBoxLayout(self.fit_switch, *[self.spinboxes[lbl] for lbl in self.labels], self.btn_copy)
         self.setLayout(layout)
 
     @pyqtSlot(dict, name='Fit')
@@ -338,9 +346,14 @@ class GaussianFitterWidget(ThreadedWidget):
                    f"ampl = {pars['amplitude']:06.1f}, offset = {pars['offset']:06.1f}, time = {pars['time']:05.2f} s")
         return log_msg
 
+    def show_parameters(self):
+        for lbl in self.labels:
+            self.spinboxes[lbl].setValue(self.parameters[lbl])
+
     @pyqtSlot(dict, name='Fitted')
     def fitted(self, data):
         self.parameters = data['parameters']
+        self.show_parameters()
         logging.info(self.log_msg())
         self.sig_fitted.emit(data)
 
