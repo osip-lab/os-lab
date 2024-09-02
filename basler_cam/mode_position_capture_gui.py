@@ -17,13 +17,14 @@ from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 
 from qt_gui.qt_ext import (MyStandardWindow, QMyVBoxLayout, QMyHBoxLayout, ThreadedWidget, ThreadedWorker,
-                           QMyStandardButton)
+                           QMyStandardButton, QMySpinBox)
 
 from local_config import path_data_local
 
 
 class BaslerCamControlWorker(ThreadedWorker):
     connected = pyqtSignal(dict, name='Connected')
+    loaded = pyqtSignal(name='Loaded')
     captured = pyqtSignal(dict, name='Captured')
 
     def __init__(self, thread):
@@ -31,8 +32,8 @@ class BaslerCamControlWorker(ThreadedWorker):
         self.cam = None
         self.settings = dict()
 
-    @pyqtSlot(name='Connect')
-    def connect(self):
+    @pyqtSlot(dict, name='Connect')
+    def connect(self, settings):
         self.cam = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
         self.cam.Open()
         info = {'model': self.cam.DeviceModelName(),
@@ -43,7 +44,7 @@ class BaslerCamControlWorker(ThreadedWorker):
         self.cam.ExposureMode.SetValue('Timed')
         self.cam.ExposureAuto.SetValue('Off')
         # ExposureTimeMode parameter is not available
-        self.cam.ExposureTime.SetValue(100)
+        self.cam.ExposureTime.SetValue(settings['exposure'])
         # set gain
         self.cam.GainSelector.SetValue('All')
         self.cam.GainAuto.SetValue('Off')
@@ -53,6 +54,11 @@ class BaslerCamControlWorker(ThreadedWorker):
 
         self.finish(self.connected, info)
 
+    @pyqtSlot(dict, name='load')
+    def load(self, settings):
+        self.cam.ExposureTime.SetValue(settings['exposure'])
+        self.finish(self.loaded)
+
     @pyqtSlot(name='Capture')
     def capture(self):
         result = self.cam.GrabOne(100)
@@ -61,7 +67,8 @@ class BaslerCamControlWorker(ThreadedWorker):
 
 
 class BaslerCamControlWidget(ThreadedWidget):
-    sig_connect = pyqtSignal(name='Connect')
+    sig_connect = pyqtSignal(dict, name='Connect')
+    sig_load = pyqtSignal(dict, name='Load')
     sig_capture = pyqtSignal(name='Capture')
     sig_captured = pyqtSignal(dict, name='Captured')
 
@@ -69,9 +76,19 @@ class BaslerCamControlWidget(ThreadedWidget):
         super(BaslerCamControlWidget, self).__init__(font_size=font_size)
         self.setTitle('Camera Control')
 
+        self.settings = {'exposure': 100}
+
         self.btn_connect = QMyStandardButton('connect', font_size=self.font_size)
         self.btn_connect.setToolTip('connect to a device')
         self.btn_connect.clicked.connect(self.connect)
+
+        self.spinbox_exposure = QMySpinBox(decimals=0, v_ini=self.settings['exposure'],
+                                           v_min=28, v_max=10000000, suffix=' μs', step=10)
+        self.spinbox_exposure.setToolTip('camera exposure time')
+
+        self.btn_load = QMyStandardButton('load', font_size=self.font_size)
+        self.btn_load.setToolTip('load camera settings')
+        self.btn_load.clicked.connect(self.load)
 
         self.btn_capture = QMyStandardButton('capture', font_size=self.font_size)
         self.btn_capture.setToolTip('capture a picture')
@@ -91,21 +108,31 @@ class BaslerCamControlWidget(ThreadedWidget):
         self.worker_thread = None
         self.sig_connect.connect(self.worker.connect)
         self.worker.connected.connect(self.connected)
+        self.sig_load.connect(self.worker.load)
         self.sig_capture.connect(self.worker.capture)
         self.worker.captured.connect(self.captured)
 
-        layout = QMyHBoxLayout(self.btn_connect, self.btn_capture, self.auto_switch)
+        layout = QMyHBoxLayout(self.btn_connect, self.spinbox_exposure, self.btn_load,self.btn_capture, self.auto_switch)
         self.setLayout(layout)
+
+    def get_settings(self):
+        self.settings['exposure'] = int(self.spinbox_exposure.value())
+        return self.settings
 
     @pyqtSlot(name='Connect')
     def connect(self):
         self.worker_thread = QThread()
-        self.start_branch(self.worker, self.worker_thread, self.sig_connect)
+        self.start_branch(self.worker, self.worker_thread, self.sig_connect, self.get_settings())
 
     @pyqtSlot(dict, name='Connected')
     def connected(self, info):
         log_msg = f"connected to camera - model {info['model']}, id {info['id']}, s/n {info['sn']}"
         logging.info(log_msg)
+
+    @pyqtSlot(name='Load')
+    def load(self):
+        self.worker_thread = QThread()
+        self.start_branch(self.worker, self.worker_thread, self.sig_load, self.get_settings())
 
     @pyqtSlot(name='Capture')
     def capture(self):
