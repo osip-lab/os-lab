@@ -9,7 +9,7 @@ from scipy.ndimage import center_of_mass
 from numba import njit, float64
 from pypylon import pylon
 
-from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox, QAbstractSpinBox
+from PyQt6.QtWidgets import QApplication, QWidget, QCheckBox, QAbstractSpinBox, QComboBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -23,18 +23,29 @@ from local_config import path_data_local
 
 
 class BaslerCamControlWorker(ThreadedWorker):
+    scanned = pyqtSignal(dict, name='Scanned')
     connected = pyqtSignal(dict, name='Connected')
     loaded = pyqtSignal(name='Loaded')
     captured = pyqtSignal(dict, name='Captured')
 
     def __init__(self, thread):
         super(BaslerCamControlWorker, self).__init__(thread)
+        self.fac = None
         self.cam = None
         self.settings = dict()
 
+    @pyqtSlot(name='Scan')
+    def scan(self):
+        self.fac = pylon.TlFactory.GetInstance()
+        devices = self.fac.EnumerateDevices()
+        info = {'serial_numbers': [d.GetSerialNumber() for d in devices]}
+        self.finish(self.scanned, info)
+
     @pyqtSlot(dict, name='Connect')
     def connect(self, settings):
-        self.cam = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
+        devices = self.fac.EnumerateDevices()
+        devices = list(filter(lambda d: d.GetSerialNumber() == settings['sn'], devices))
+        self.cam = pylon.InstantCamera(self.fac.CreateDevice(devices[0]))
         self.cam.Open()
         info = {'model': self.cam.DeviceModelName(),
                 'id': self.cam.DeviceVersion(),
@@ -67,6 +78,7 @@ class BaslerCamControlWorker(ThreadedWorker):
 
 
 class BaslerCamControlWidget(ThreadedWidget):
+    sig_scan = pyqtSignal(name='Scan')
     sig_connect = pyqtSignal(dict, name='Connect')
     sig_load = pyqtSignal(dict, name='Load')
     sig_capture = pyqtSignal(name='Capture')
@@ -77,6 +89,14 @@ class BaslerCamControlWidget(ThreadedWidget):
         self.setTitle('Camera Control')
 
         self.settings = {'exposure': 100}
+
+        self.btn_scan = QMyStandardButton('scan', font_size=self.font_size)
+        self.btn_scan.setToolTip('scan for possible camera S/N')
+        self.btn_scan.clicked.connect(self.scan)
+
+        self.combobox_sn = QComboBox()
+        self.combobox_sn.setToolTip('serial numbers of cameras connected to PC')
+        self.combobox_sn.setMinimumContentsLength(8)
 
         self.btn_connect = QMyStandardButton('connect', font_size=self.font_size)
         self.btn_connect.setToolTip('connect to a device')
@@ -95,6 +115,7 @@ class BaslerCamControlWidget(ThreadedWidget):
         self.btn_capture.clicked.connect(self.capture)
 
         self.auto_switch = QCheckBox('auto')
+        self.auto_switch.setToolTip('auto capture after 1 s')
         self.auto_switch.setChecked(False)
         self.auto_timer = QTimer()
         self.auto_timer.setInterval(1000)
@@ -106,16 +127,32 @@ class BaslerCamControlWidget(ThreadedWidget):
 
         self.worker = BaslerCamControlWorker(self.thread())
         self.worker_thread = None
+        self.sig_scan.connect(self.worker.scan)
+        self.worker.scanned.connect(self.scanned)
         self.sig_connect.connect(self.worker.connect)
         self.worker.connected.connect(self.connected)
         self.sig_load.connect(self.worker.load)
         self.sig_capture.connect(self.worker.capture)
         self.worker.captured.connect(self.captured)
 
-        layout = QMyHBoxLayout(self.btn_connect, self.spinbox_exposure, self.btn_load,self.btn_capture, self.auto_switch)
+        layout = QMyHBoxLayout(self.btn_scan, self.combobox_sn, self.btn_connect, self.spinbox_exposure, self.btn_load,
+                               self.btn_capture, self.auto_switch)
         self.setLayout(layout)
 
+    @pyqtSlot(name='Scan')
+    def scan(self):
+        self.worker_thread = QThread()
+        self.start_branch(self.worker, self.worker_thread, self.sig_scan)
+
+    @pyqtSlot(dict, name='Scanned')
+    def scanned(self, info):
+        items = [self.combobox_sn.itemText(i) for i in range(self.combobox_sn.count())]
+        for sn in info['serial_numbers']:
+            if sn not in items:
+                self.combobox_sn.addItem(sn)
+
     def get_settings(self):
+        self.settings['sn'] = self.combobox_sn.currentText()
         self.settings['exposure'] = int(self.spinbox_exposure.value())
         return self.settings
 
