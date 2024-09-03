@@ -297,7 +297,7 @@ def fit_gaussian(arr, rebinning=1):
     tic = time.time()
     try:
         p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True,
-                      bounds=((0.0, 0.0, 0.0, 0.0, 0.0, -np.pi / 2, 0.0), (4095, sx, sy, np.inf, np.inf, np.pi / 2, 4095)),
+                      bounds=((0.0, 0.0, 0.0, 0.0, 0.0, -np.pi / 4, 0.0), (4095, sx, sy, np.inf, np.inf, np.pi / 4, 4095)),
                       ftol=1e-3, xtol=1e-3)
         # p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True)
     except RuntimeError:
