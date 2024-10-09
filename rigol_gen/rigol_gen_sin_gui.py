@@ -1,7 +1,7 @@
 import sys
 
 from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSlot
 
 from qt_gui.qt_ext import MyStandardWindow, QCenteredLabel, QMyHBoxLayout, QMyVBoxLayout, QMySpinBox
 from rigol_gen.rigol_gen_gui import RigolGenWidget
@@ -24,6 +24,14 @@ class RigolGenSinWidget(RigolGenWidget):
         self.settings = super().get_settings()
         self.settings['ch1'] = {'type': 'sin', 'freq': self.sin_freq.value(), 'ampl': self.sin_ampl.value(), 'status': self.statuses['ch1']}
         return self.settings
+
+    @pyqtSlot(float, name='SetSinFreq')
+    def set_sin_freq(self, f: float):
+        self.sin_freq.setValue(f)
+
+    @pyqtSlot(float, name='SetSinAmpl')
+    def set_sin_ampl(self, v: float):
+        self.sin_ampl.setValue(v)
 
 
 class RigolGenMainWidget(QWidget):
