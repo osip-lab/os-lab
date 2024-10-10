@@ -18,7 +18,9 @@ class RigolGenSinWidget(RigolGenWidget):
         self.sin_freq = QMySpinBox(v_min=1.0, v_max=99999.0, v_ini=100.0, decimals=1, step=50.0, suffix=' Hz')
         self.sin_ampl = QMySpinBox(v_min=0.1, v_max=1.0, v_ini=0.5, decimals=1, step=1.0, suffix=' V')
 
-        self.layout().addLayout(QMyHBoxLayout(QCenteredLabel('Ch1 Sin'), self.sin_freq, self.sin_ampl))
+        lt = QMyHBoxLayout(QCenteredLabel('Ch1 Sin'), self.sin_freq, self.sin_ampl)
+        lt.addStretch(0)
+        self.layout().addLayout(lt)
 
     def get_settings(self):
         self.settings = super().get_settings()

@@ -127,8 +127,12 @@ class RigolGenWidget(ThreadedWidget):
         self.worker.loaded.connect(lambda: self.btn_stop.setEnabled(True))
 
         layout = QMyVBoxLayout()
-        layout.addLayout(QMyHBoxLayout(self.btn_scan, self.combobox_sn))
-        layout.addLayout(QMyHBoxLayout(self.btn_connect, self.btn_load, self.btn_start, self.btn_stop))
+        lt = QMyHBoxLayout(self.btn_scan, self.combobox_sn)
+        lt.addStretch(0)
+        layout.addLayout(lt)
+        lt = QMyHBoxLayout(self.btn_connect, self.btn_load, self.btn_start, self.btn_stop)
+        lt.addStretch(0)
+        layout.addLayout(lt)
         self.setLayout(layout)
 
     @pyqtSlot(name='Scan')
