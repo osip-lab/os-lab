@@ -8,8 +8,12 @@ numba~=0.60.0
 PyQt6~=6.7.1
 # plotting
 matplotlib~=3.9.2
+pyqtgraph~=0.13.7
+dvg-pyqtgraph-threadsafe~=3.4.0
 # connection to devices
-PyVISA~=1.14.1
-pypylon~=4.0.0
+PyVISA~=1.14.1  # for NI Visa devices
+pypylon~=4.0.0  # for Basler cameras
+picosdk~=1.1  # for PicoScope
 # utilities
 pyperclip~=1.9.0  # for copying into the clipboard
+jsbeautifier~=1.15.1  # for prettier jsons
