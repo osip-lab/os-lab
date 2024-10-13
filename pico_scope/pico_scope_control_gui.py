@@ -971,7 +971,8 @@ class SaverWidget(ThreadedWidget):
         self.btn_load_settings.clicked.connect(self.load_manual_settings)
 
         self.btn_save_defaults = QMyStandardButton('save defaults', font_size=self.font_size)
-        self.btn_save_defaults.clicked.connect(lambda: self.claim_settings.emit(os.path.join(os.getcwd(), 'defaults.json')))
+        self.btn_save_defaults.clicked.connect(lambda: self.claim_settings.emit(
+            os.path.join(path_data_local, 'pico_bank', 'settings', 'defaults.json')))
         self.btn_load_defaults = QMyStandardButton('load defaults', font_size=self.font_size)
         self.btn_load_defaults.clicked.connect(self.load_defaults)
 
@@ -1090,13 +1091,15 @@ class SaverWidget(ThreadedWidget):
 
     @pyqtSlot()
     def save_manual_settings(self):
-        path = QFileDialog.getSaveFileName(self, 'Choose save path', directory=self.path, filter='*.json')[0]
+        path = QFileDialog.getSaveFileName(self, 'Choose save path', directory=os.path.join(self.path, 'settings'),
+                                           filter='*.json')[0]
         if path != '':
             self.claim_settings.emit(path)
 
     @pyqtSlot()
     def load_manual_settings(self):
-        path = QFileDialog.getOpenFileName(self, 'Choose file', directory=self.path, filter='*.json')[0]
+        path = QFileDialog.getOpenFileName(self, 'Choose file', directory=os.path.join(self.path, 'settings'),
+                                           filter='*.json')[0]
         if path != '':
             with open(path, 'r') as file:
                 settings = json.load(file)
