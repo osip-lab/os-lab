@@ -82,7 +82,6 @@ class PicoControlWorker(ThreadedWorker):
         self.status['enumerate'] = ps.ps4000aEnumerateUnits(ctypes.byref(number_of_units), string_pointer, ctypes.byref(string_size))
         assert_pico_ok(self.status['enumerate'])
         sns = string_pointer.value.decode('utf-8').split(',')
-        print(sns)
         self.finish(self.pico_scanned, {'serial_numbers': sns})
 
     @pyqtSlot(str)
@@ -1017,7 +1016,7 @@ class SaverWidget(ThreadedWidget):
         layout.addLayout(small_layout)
         small_layout = QMyHBoxLayout(self.btn_save_defaults, self.btn_load_defaults, self.line_path)
         layout.addLayout(small_layout)
-        small_layout = QMyHBoxLayout(self.spin_box_exp_num, self.btn_save_data)
+        small_layout = QMyHBoxLayout(self.spin_box_exp_num, self.btn_save_data, self.switch_auto_save)
         small_layout.addStretch(0)
         layout.addLayout(small_layout)
         small_layout = QMyHBoxLayout(self.location_line, self.target_line, self.misc_line)
