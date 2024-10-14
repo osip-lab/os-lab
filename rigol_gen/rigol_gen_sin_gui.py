@@ -11,20 +11,23 @@ class RigolGenSinWidget(RigolGenWidget):
     def __init__(self, font_size=14):
         super(RigolGenSinWidget, self).__init__(font_size=font_size)
 
-        self.setTitle('Rigol Gen Sin')
-
-        self.active = {'ch1': True, 'ch2': False}
+        self.setTitle('Rigol Gen Sin and DC')
 
         self.sin_freq = QMySpinBox(v_min=1.0, v_max=99999.0, v_ini=100.0, decimals=1, step=50.0, suffix=' Hz')
         self.sin_ampl = QMySpinBox(v_min=0.1, v_max=1.0, v_ini=0.5, decimals=1, step=1.0, suffix=' V')
+        self.dc_ampl = QMySpinBox(v_min=-10.0, v_max=10.0, v_ini=0.0, decimals=2, step=0.1, suffix=' V')
 
         lt = QMyHBoxLayout(QCenteredLabel('Ch1 Sin'), self.sin_freq, self.sin_ampl)
+        lt.addStretch(0)
+        self.layout().addLayout(lt)
+        lt = QMyHBoxLayout(QCenteredLabel('Ch2 DC'), self.dc_ampl)
         lt.addStretch(0)
         self.layout().addLayout(lt)
 
     def get_settings(self):
         self.settings = super().get_settings()
         self.settings['ch1'] = {'type': 'sin', 'freq': self.sin_freq.value(), 'ampl': self.sin_ampl.value(), 'status': self.statuses['ch1']}
+        self.settings['ch2'] = {'type': 'dc', 'ampl': self.dc_ampl.value(), 'status': self.statuses['ch2']}
         return self.settings
 
     @pyqtSlot(float, name='SetSinFreq')
