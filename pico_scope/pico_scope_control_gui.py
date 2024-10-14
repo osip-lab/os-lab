@@ -223,6 +223,8 @@ class ChannelControlWidget(ThreadedWidget):
                            '200mV': ('±200 mV', 4), '500mV': ('±500 mV', 5), '1V': ('±1 V', 6), '2V': ('±2 V', 7),
                            '5V': ('±5 V', 8), '10V': ('±10 V', 9), '20V': ('±20 V', 10), '50V': ('±50 V', 11)}
         self.range_dict_reversed = {y[0]: x for x, y in self.range_dict.items()}
+        self.range_dict_float = {0.01: '10mV', 0.02: '20mV', 0.05: '50mV', 0.1: '100mV', 0.2: '200mV', 0.5: '500mV',
+                                 1.0: '1V', 2.0: '2V', 5.0: '5V', 10.0: '10V', 20.0: '20V', 50.0: '50V'}
         self.range = QMyComboBox([x[1][0] for x in self.range_dict.items()])
         self.range.setToolTip('signal range')
         self.range.currentTextChanged.connect(lambda: self.value_changed.emit())
@@ -539,6 +541,7 @@ class PicoControlWidget(ThreadedWidget):
     pico_load = pyqtSignal()
     pico_start = pyqtSignal()
     pico_disconnect = pyqtSignal()
+    pico_loaded = pyqtSignal()
 
     plot_signals = pyqtSignal(dict)
     save_data = pyqtSignal(dict)
@@ -641,6 +644,7 @@ class PicoControlWidget(ThreadedWidget):
         self.pico_worker.pico_loaded.connect(lambda: self.btn_disconnect.setEnabled(True))
         self.pico_worker.pico_loaded.connect(lambda: self.btn_load.setEnabled(True))
         self.pico_worker.pico_loaded.connect(lambda: self.btn_start.setEnabled(True))
+        self.pico_worker.pico_loaded.connect(lambda: self.pico_loaded.emit())
         self.pico_worker.pico_measured.connect(self.ps_measured)
         self.pico_worker.pico_disconnected.connect(lambda: self.btn_scan.setEnabled(True))
         self.pico_worker.pico_disconnected.connect(lambda: self.combobox_sn.setEnabled(True))
@@ -782,6 +786,7 @@ class PicoControlWidget(ThreadedWidget):
         self.pico_thread = QThread()
         self.start_branch(self.pico_worker, self.pico_thread, self.pico_load)
 
+    @pyqtSlot()
     def ps_start(self):
         self.block_control()
         self.pico_thread = QThread()
@@ -836,6 +841,23 @@ class PicoControlWidget(ThreadedWidget):
     def auto_start_delay_changed(self, x):
         self.timer_auto_start.setInterval(int(x * 1e3))
         self.bar_auto_start.setMaximum(int(x * 1e3))
+
+    @pyqtSlot(float)
+    def set_timebase(self, dt):
+        self.time_control.set_interval(dt * 1e9)
+
+    @pyqtSlot(float)
+    def set_duration(self, t):
+        self.time_control.set_duration(t * 1e6)
+
+    @pyqtSlot(float)
+    def set_pre_duration(self, t):
+        self.time_control.set_pre_duration(t * 1e6)
+
+    @pyqtSlot(str, float)
+    def set_range(self, ch, r):
+        w = self.channel_widgets[self.channel_names.index(ch)]
+        w.set_range(w.range_dict_float[r])
 
 
 class PyQtPlotterWorker(ThreadedWorker):
