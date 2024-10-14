@@ -78,11 +78,14 @@ class RigolGenWorker(ThreadedWorker):
 
 
 class RigolGenWidget(ThreadedWidget):
+    # commands for internal worker
     sig_scan = pyqtSignal(name='Scan')
     sig_connect = pyqtSignal(dict, name='Connect')
     sig_start = pyqtSignal(dict, name='Start')
     sig_stop = pyqtSignal(dict, name='Stop')
     sig_load = pyqtSignal(dict, name='Load')
+    # signals for external controlling widget
+    sig_loaded = pyqtSignal(name='Loaded')
 
     def __init__(self, font_size=14):
         super(RigolGenWidget, self).__init__(font_size=font_size)
@@ -125,6 +128,7 @@ class RigolGenWidget(ThreadedWidget):
         self.worker.connected.connect(lambda: self.btn_load.setEnabled(True))
         self.worker.loaded.connect(lambda: self.btn_start.setEnabled(True))
         self.worker.loaded.connect(lambda: self.btn_stop.setEnabled(True))
+        self.worker.loaded.connect(lambda: self.sig_loaded.emit())
 
         layout = QMyVBoxLayout()
         lt = QMyHBoxLayout(self.btn_scan, self.combobox_sn)
