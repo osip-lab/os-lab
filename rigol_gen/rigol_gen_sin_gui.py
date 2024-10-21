@@ -13,8 +13,8 @@ class RigolGenSinWidget(RigolGenWidget):
 
         self.setTitle('Rigol Gen Sin and DC')
 
-        self.sin_freq = QMySpinBox(v_min=1.0, v_max=99999.0, v_ini=100.0, decimals=1, step=50.0, suffix=' Hz')
-        self.sin_ampl = QMySpinBox(v_min=0.1, v_max=1.0, v_ini=0.5, decimals=1, step=1.0, suffix=' V')
+        self.sin_freq = QMySpinBox(v_min=1.0, v_max=99999.0, v_ini=100.0, decimals=1, step=100.0, suffix=' Hz')
+        self.sin_ampl = QMySpinBox(v_min=0.1, v_max=1.0, v_ini=0.5, decimals=1, step=0.1, suffix=' V')
         self.dc_ampl = QMySpinBox(v_min=-10.0, v_max=10.0, v_ini=0.0, decimals=2, step=0.1, suffix=' V')
 
         lt = QMyHBoxLayout(QCenteredLabel('Ch1 Sin'), self.sin_freq, self.sin_ampl)
