@@ -981,10 +981,15 @@ class SaverWidget(ThreadedWidget):
     load_settings = pyqtSignal(dict)
     data_saved = pyqtSignal()
 
-    def __init__(self, font_size=14):
+    def __init__(self, font_size=14, default_folder=None):
         super(SaverWidget, self).__init__(font_size=font_size)
 
         self.setTitle('Saver')
+
+        if default_folder is None:
+            self.default_path = os.path.join(path_data_local, 'pico_bank', 'settings', 'defaults.json')
+        else:
+            self.default_path = os.path.join(path_data_local, default_folder, 'settings', 'defaults.json')
 
         self.btn_save_settings = QMyStandardButton('save settings', font_size=self.font_size)
         self.btn_save_settings.clicked.connect(self.save_manual_settings)
@@ -992,8 +997,7 @@ class SaverWidget(ThreadedWidget):
         self.btn_load_settings.clicked.connect(self.load_manual_settings)
 
         self.btn_save_defaults = QMyStandardButton('save defaults', font_size=self.font_size)
-        self.btn_save_defaults.clicked.connect(lambda: self.claim_settings.emit(
-            os.path.join(path_data_local, 'pico_bank', 'settings', 'defaults.json')))
+        self.btn_save_defaults.clicked.connect(lambda: self.claim_settings.emit(self.default_path))
         self.btn_load_defaults = QMyStandardButton('load defaults', font_size=self.font_size)
         self.btn_load_defaults.clicked.connect(self.load_defaults)
 
@@ -1104,7 +1108,7 @@ class SaverWidget(ThreadedWidget):
 
     @pyqtSlot()
     def load_defaults(self):
-        with open(os.path.join(path_data_local, 'pico_bank', 'settings', 'defaults.json'), 'r') as file:
+        with open(self.default_path, 'r') as file:
             settings = json.load(file)
         self.set_settings(settings)
         # if not os.path.isdir(self.path):  # create dir if it doesn't exist
