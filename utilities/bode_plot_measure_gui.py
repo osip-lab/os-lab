@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pandas as pd
 # gui import
-from PyQt6.QtWidgets import QApplication, QWidget, QTableWidget, QTableWidgetItem, QHBoxLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QTableWidget, QTableWidgetItem
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 # my extension of gui
 from qt_gui.qt_ext import MyStandardWindow, ThreadedWidget, QMyHBoxLayout, QMyVBoxLayout, QMyStandardButton
@@ -171,20 +171,14 @@ class BodeMeasurerWidget(ThreadedWidget):
 
             print(f'sample length {len(t)} points')
 
-            a1 = np.sum(np.sin(2 * np.pi * freq * t) * signal)
-            b1 = np.sum(np.cos(2 * np.pi * freq * t) * signal)
-            a2 = np.sum(np.sin(2 * np.pi * freq * t) * response)
-            b2 = np.sum(np.cos(2 * np.pi * freq * t) * response)
+            ampl1, phase1 = calculate_spectral_point(t, signal, freq)
+            ampl2, phase2 = calculate_spectral_point(t, response, freq)
 
-            ampl1 = (a1 ** 2 + b1 ** 2) ** 0.5 / len(t) * 2
-            ampl2 = (a2 ** 2 + b2 ** 2) ** 0.5 / len(t) * 2
             self.table.item(self.current, self.columns.index('in_ampl')).setText(f'{ampl1:.3f}')
             self.df.loc[self.current, 'in_ampl'] = float(ampl1)
             self.table.item(self.current, self.columns.index('out_ampl')).setText(f'{ampl2:.3f}')
             self.df.loc[self.current, 'out_ampl'] = float(ampl2)
 
-            phase1 = np.rad2deg(np.arctan(b1 / a1))
-            phase2 = np.rad2deg(np.arctan(b2 / a2))
             gain = 20 * np.log10(ampl2 / ampl1)
             phase = phase2 - phase1
             self.table.item(self.current, self.columns.index('gain')).setText(f'{gain:.1f}')
@@ -206,6 +200,14 @@ class BodeMeasurerWidget(ThreadedWidget):
     def save(self):
         self.fix_table()
         self.fdf.to_excel(os.path.join(path_data_local, 'bode_plotter', time.strftime('%Y-%m-%d %H-%M-%S') + '.xlsx'), index=False)
+
+
+def calculate_spectral_point(t, x, f):
+    a = np.sum(np.sin(2 * np.pi * f * t) * x)
+    b = np.sum(np.cos(2 * np.pi * f * t) * x)
+    ampl = (a ** 2 + b ** 2) ** 0.5 / len(t) * 2
+    phase = np.rad2deg(np.arctan(b / a))
+    return ampl, phase
 
 
 class MainWidget(QWidget):
