@@ -288,11 +288,11 @@ def fit_gaussian(arr, rebinning=1):
     xx, yy = np.meshgrid(xx, yy)
 
     background = np.percentile(arr, 15)
-    mh = arr > np.percentile(arr - background, 98)
+    mh = arr > np.percentile(arr - background, (1 - 100 / sx0 / sy0) * 100)
     amplitude = np.mean(arr[mh]) - background
     y0, x0 = center_of_mass(np.array(mh, dtype=np.float64))
-    mc = arr <= np.percentile(arr - background, 45)
-    radius = max((np.sum(mc) / np.pi) ** 0.5, sx / 128)
+    mc = arr > amplitude / np.e**0.5
+    radius = max((np.sum(mc) / np.pi) ** 0.5, 1)
     initial_guess = (amplitude, x0, y0, radius, radius, 0.0, background)
     tic = time.time()
     try:
