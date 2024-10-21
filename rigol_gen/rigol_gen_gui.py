@@ -1,3 +1,8 @@
+"""
+TODO
+    1) starting and stopping channels don't change their status in settings
+"""
+
 import sys
 import pyvisa
 
@@ -13,8 +18,7 @@ class RigolGenWorker(ThreadedWorker):
     connected = pyqtSignal(name='Connected')
     started = pyqtSignal(name='Started')
     stopped = pyqtSignal(name='Stopped')
-    loaded = pyqtSignal(name='Loaded')
-    bias_loaded = pyqtSignal(name='BiasLoaded')
+    loaded = pyqtSignal(dict, name='Loaded')
 
     def __init__(self, thread):
         super(RigolGenWorker, self).__init__(thread)
@@ -66,7 +70,7 @@ class RigolGenWorker(ThreadedWorker):
             if old != new:
                 self.gen.write(new)
                 self.settings[c] = settings[c]
-        self.finish(self.loaded)
+        self.finish(self.loaded, settings)
 
     def apply_command(self, c, s):
         if s['type'] == 'none':
@@ -85,7 +89,7 @@ class RigolGenWidget(ThreadedWidget):
     sig_stop = pyqtSignal(dict, name='Stop')
     sig_load = pyqtSignal(dict, name='Load')
     # signals for external controlling widget
-    sig_loaded = pyqtSignal(name='Loaded')
+    sig_loaded = pyqtSignal(dict, name='Loaded')
 
     def __init__(self, font_size=14):
         super(RigolGenWidget, self).__init__(font_size=font_size)
@@ -128,7 +132,7 @@ class RigolGenWidget(ThreadedWidget):
         self.worker.connected.connect(lambda: self.btn_load.setEnabled(True))
         self.worker.loaded.connect(lambda: self.btn_start.setEnabled(True))
         self.worker.loaded.connect(lambda: self.btn_stop.setEnabled(True))
-        self.worker.loaded.connect(lambda: self.sig_loaded.emit())
+        self.worker.loaded.connect(self.sig_loaded)
 
         layout = QMyVBoxLayout()
         lt = QMyHBoxLayout(self.btn_scan, self.combobox_sn)
