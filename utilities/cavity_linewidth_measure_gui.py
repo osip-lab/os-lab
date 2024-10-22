@@ -42,6 +42,14 @@ class LinewidthMeasurerWidget(ThreadedWidget):
         self.spinbox_tpl.setReadOnly(True)
         self.spinbox_tpl.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
 
+        self.labels = ('AC_in', 'AC_out', 'DC_in', 'DC_out')
+        self.spinboxes = dict()
+        for lbl in self.labels:
+            spinbox = QMySpinBox(decimals=2, v_min=0.0, v_max=9999.0, prefix=f'{lbl}: ', suffix=' mV')
+            spinbox.setReadOnly(True)
+            spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            self.spinboxes[lbl] = spinbox
+
         self.moment = QTimer()
         self.moment.setInterval(10)
         self.moment.setSingleShot(True)
@@ -56,7 +64,11 @@ class LinewidthMeasurerWidget(ThreadedWidget):
         self.timer_auto.setSingleShot(True)
         self.timer_auto.timeout.connect(self.start_measuring)
 
-        layout = QMyVBoxLayout(self.spinbox_fsr, self.btn_measure, self.switch_auto,self.spinbox_tpl)
+        layout = QMyHBoxLayout()
+        lt = QMyVBoxLayout(self.spinbox_fsr, self.btn_measure, self.switch_auto,self.spinbox_tpl)
+        layout.addLayout(lt)
+        lt = QMyVBoxLayout(*(self.spinboxes[lbl] for lbl in self.labels))
+        layout.addLayout(lt)
         self.setLayout(layout)
 
     def wait_and_emit(self, signal):
@@ -91,9 +103,14 @@ class LinewidthMeasurerWidget(ThreadedWidget):
             big_a = ampl_out / ampl_in * v_dc_in / v_dc_out
             if big_a < 1:
                 tpl = 2 * np.pi * freq / fsr / (1 / big_a**2 - 1)**0.5
+                values = (ac_in * 1e3, ac_out * 1e3, dc_in * 1e3, dc_out * 1e3)
                 log_msg = f'measured linewidth successfully - T + L = {tpl * 1e6:.2f} ppm'
+                for lbl, v in zip(self.labels, (ac_in, ac_out, dc_in, dc_out)):
+                    log_msg += f', {lbl} = {v:04.2f} mV'
                 logging.info(log_msg)
                 self.spinbox_tpl.setValue(tpl * 1e6)
+                for lbl, v in zip(self.labels, values):
+                    self.spinboxes[lbl].setValue(v)
             else:
                 log_msg = f'linewidth measurement failed'
                 logging.info(log_msg)
