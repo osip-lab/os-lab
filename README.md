@@ -54,6 +54,7 @@ I think that's it for now.
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
 
 
+## How to connect to Teledyne cameras with python (curr)
 
 
 
