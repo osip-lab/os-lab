@@ -89,11 +89,14 @@ class LinewidthMeasurerWidget(ThreadedWidget):
             v_dc_out = np.mean(dc_out)
 
             big_a = ampl_out / ampl_in * v_dc_in / v_dc_out
-            tpl = 2 * np.pi * freq / fsr / (1 / big_a**2 - 1)**0.5
-
-            log_msg = f'measured linewidth - T + L = {tpl * 1e6:.2f} ppm'
-            logging.info(log_msg)
-            self.spinbox_tpl.setValue(tpl * 1e6)
+            if big_a < 1:
+                tpl = 2 * np.pi * freq / fsr / (1 / big_a**2 - 1)**0.5
+                log_msg = f'measured linewidth successfully - T + L = {tpl * 1e6:.2f} ppm'
+                logging.info(log_msg)
+                self.spinbox_tpl.setValue(tpl * 1e6)
+            else:
+                log_msg = f'linewidth measurement failed'
+                logging.info(log_msg)
 
         self.measuring = False
         if self.switch_auto.isChecked():

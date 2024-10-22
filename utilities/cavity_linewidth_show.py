@@ -44,34 +44,35 @@ if __name__ == "__main__":
             line = f.readline()
             if line:
                 print(line.strip())
-                # add new points to data
-                t1 = time.mktime(time.strptime(line[:19], '%Y.%m.%d %H:%M:%S'))  # seconds
-                t2 = float(line[20:23]) / 1e3  # milliseconds part
-                t = t1 + t2
-                data['time'] = np.append(data['time'], t)
-                for lbl in labels:
-                    v = re.search(r'T \+ L' + r' = \d{1,6}\.\d{1,6}', line).group()
-                    v = float(re.search(r'\d{1,6}\.\d{1,6}', v).group())
-                    data[lbl] = np.append(data[lbl], v)
-                m = data['time'] - np.max(data['time']) > -t_range
-                t0 = np.min(data['time'][m])
-                # set new data to lines
-                for lbl in labels:
-                    lines[lbl].set_data(data['time'][m] - t0, data[lbl][m])
-                # calculate and set new limits
-                t1 = np.min(data['time'][m])
-                t2 = np.max(data['time'][m])
-                dt = t2 - t1
-                if dt < 1.0:
-                    ax.set_xlim(t1 - 0.5 - t0, t2 + 0.5 - t0)
-                else:
-                    ax.set_xlim(t1 - 0.1 * dt - t0, t2 + 0.1 * dt - t0)
-                v1 = np.min([np.min(data[lbl][m]) for lbl in labels])
-                v2 = np.max([np.max(data[lbl][m]) for lbl in labels])
-                dv = v2 - v1
-                if dv < 1.0:
-                    ax.set_ylim(v1 - 0.5, v2 + 0.5)
-                else:
-                    ax.set_ylim(v1 - 0.1 * dv, v2 + 0.1 * dv)
+                if 'measured linewidth successfully' in line:
+                    # add new points to data
+                    t1 = time.mktime(time.strptime(line[:19], '%Y.%m.%d %H:%M:%S'))  # seconds
+                    t2 = float(line[20:23]) / 1e3  # milliseconds part
+                    t = t1 + t2
+                    data['time'] = np.append(data['time'], t)
+                    for lbl in labels:
+                        v = re.search(r'T \+ L' + r' = \d{1,6}\.\d{1,6}', line).group()
+                        v = float(re.search(r'\d{1,6}\.\d{1,6}', v).group())
+                        data[lbl] = np.append(data[lbl], v)
+                    m = data['time'] - np.max(data['time']) > -t_range
+                    t0 = np.min(data['time'][m])
+                    # set new data to lines
+                    for lbl in labels:
+                        lines[lbl].set_data(data['time'][m] - t0, data[lbl][m])
+                    # calculate and set new limits
+                    t1 = np.min(data['time'][m])
+                    t2 = np.max(data['time'][m])
+                    dt = t2 - t1
+                    if dt < 1.0:
+                        ax.set_xlim(t1 - 0.5 - t0, t2 + 0.5 - t0)
+                    else:
+                        ax.set_xlim(t1 - 0.1 * dt - t0, t2 + 0.1 * dt - t0)
+                    v1 = np.min([np.min(data[lbl][m]) for lbl in labels])
+                    v2 = np.max([np.max(data[lbl][m]) for lbl in labels])
+                    dv = v2 - v1
+                    if dv < 1.0:
+                        ax.set_ylim(v1 - 0.5, v2 + 0.5)
+                    else:
+                        ax.set_ylim(v1 - 0.1 * dv, v2 + 0.1 * dv)
             else:
                 plt.pause(0.1)
