@@ -75,4 +75,6 @@ if __name__ == "__main__":
                     else:
                         ax.set_ylim(v1 - 0.1 * dv, v2 + 0.1 * dv)
             else:
+                if not plt.fignum_exists(fig.number):
+                    break
                 plt.pause(0.1)
