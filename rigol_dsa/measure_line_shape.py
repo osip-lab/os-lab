@@ -77,16 +77,19 @@ class FitterWidget(ThreadedWidget):
         # data = data.transpose()
         # data = {'freq': data[0], 'ampl': data[1]}
 
-        data = fit_line_shape(data['freq'], data['ampl'])
+        try:
+            data = fit_line_shape(data['freq'], data['ampl'])
 
-        self.spinboxes['FSR'].setValue(data['fsr'])
-        self.spinboxes['TpL'].setValue(data['tpl'] * 1e6)
-        self.spinboxes['ampl'].setValue(data['ampl'] * 1e3)
-        self.spinboxes['f_off'].setValue(data['freq_offset'])
+            self.spinboxes['FSR'].setValue(data['fsr'])
+            self.spinboxes['TpL'].setValue(data['tpl'] * 1e6)
+            self.spinboxes['ampl'].setValue(data['ampl'] * 1e3)
+            self.spinboxes['f_off'].setValue(data['freq_offset'])
 
-        log_msg = (f"measured line shape - FSR = {data['fsr']:013.3f} Hz, T + L = {data['tpl'] * 1e6:07.3f} ppm, "
-                   f"ampl = {data['ampl'] * 1e3:010.6f}, frequency offset = {data['freq_offset']:07.3f} Hz")
-        logging.info(log_msg)
+            log_msg = (f"measured line shape - FSR = {data['fsr']:013.3f} Hz, T + L = {data['tpl'] * 1e6:07.3f} ppm, "
+                       f"ampl = {data['ampl'] * 1e3:010.6f}, frequency offset = {data['freq_offset']:07.3f} Hz")
+            logging.info(log_msg)
+        except RuntimeError:
+            logging.info('line shape measurement failed')
 
         if self.switch.isChecked():
             self.wait_and_emit(self.sig_start)
