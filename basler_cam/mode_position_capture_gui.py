@@ -59,7 +59,7 @@ class BaslerCamControlWorker(ThreadedWorker):
         # set gain
         self.cam.GainSelector.SetValue('All')
         self.cam.GainAuto.SetValue('Off')
-        self.cam.Gain.SetValue(0.0)
+        self.cam.Gain.SetValue(settings['gain'])
         # set pixel depth
         self.cam.PixelFormat.SetValue('Mono12')
 
@@ -68,6 +68,7 @@ class BaslerCamControlWorker(ThreadedWorker):
     @pyqtSlot(dict, name='load')
     def load(self, settings):
         self.cam.ExposureTime.SetValue(settings['exposure'])
+        self.cam.Gain.SetValue(settings['gain'])
         self.finish(self.loaded)
 
     @pyqtSlot(name='Capture')
@@ -88,7 +89,7 @@ class BaslerCamControlWidget(ThreadedWidget):
         super(BaslerCamControlWidget, self).__init__(font_size=font_size)
         self.setTitle('Camera Control')
 
-        self.settings = {'exposure': 100}
+        self.settings = {'exposure': 100, 'gain': 0.0}
 
         self.btn_scan = QMyStandardButton('scan', font_size=self.font_size)
         self.btn_scan.setToolTip('scan for possible camera S/N')
@@ -105,6 +106,10 @@ class BaslerCamControlWidget(ThreadedWidget):
         self.spinbox_exposure = QMySpinBox(decimals=0, v_ini=self.settings['exposure'],
                                            v_min=28, v_max=10000000, suffix=' μs', step=10)
         self.spinbox_exposure.setToolTip('camera exposure time')
+
+        self.spinbox_gain = QMySpinBox(decimals=1, v_ini=self.settings['gain'],
+                                       v_min=0.0, v_max=23.0, suffix=' dB', step=1)
+        self.spinbox_gain.setToolTip('camera gain')
 
         self.btn_load = QMyStandardButton('load', font_size=self.font_size)
         self.btn_load.setToolTip('load camera settings')
@@ -135,8 +140,8 @@ class BaslerCamControlWidget(ThreadedWidget):
         self.sig_capture.connect(self.worker.capture)
         self.worker.captured.connect(self.captured)
 
-        layout = QMyHBoxLayout(self.btn_scan, self.combobox_sn, self.btn_connect, self.spinbox_exposure, self.btn_load,
-                               self.btn_capture, self.auto_switch)
+        layout = QMyHBoxLayout(self.btn_scan, self.combobox_sn, self.btn_connect, self.spinbox_exposure,
+                               self.spinbox_gain, self.btn_load, self.btn_capture, self.auto_switch)
         self.setLayout(layout)
 
     @pyqtSlot(name='Scan')
@@ -154,6 +159,7 @@ class BaslerCamControlWidget(ThreadedWidget):
     def get_settings(self):
         self.settings['sn'] = self.combobox_sn.currentText()
         self.settings['exposure'] = int(self.spinbox_exposure.value())
+        self.settings['gain'] = int(self.spinbox_gain.value())
         return self.settings
 
     @pyqtSlot(name='Connect')
