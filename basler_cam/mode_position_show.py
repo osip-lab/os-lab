@@ -25,7 +25,7 @@ if __name__ == "__main__":
     log = log_list[-1]
 
     sizes = ('x_0', 'y_0')
-    widths = ('s_x', 's_y')
+    widths = ('w_x', 'w_y')
     labels = sizes + widths
     data = {lbl: np.array([], dtype='float64') for lbl in labels}
     data['time'] = np.array([], dtype='float64')
@@ -40,7 +40,7 @@ if __name__ == "__main__":
         lines[lbl] = sax.plot([], [], ls='--', marker='x')[0]
     ax.set_xlabel('time, s')
     ax.set_ylabel('position, pxl')  # 1 pxl = 5.5 um
-    sax.set_ylabel('sigma, pxl')
+    sax.set_ylabel('spot size, pxl')
     ax.grid()
     sax.grid(ls='--')
     fig.tight_layout()

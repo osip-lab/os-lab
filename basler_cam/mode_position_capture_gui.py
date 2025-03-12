@@ -315,7 +315,8 @@ def fit_gaussian(arr, rebinning=1):
     gauss = np.reshape(gaussian2d(np.array((xx, yy)), *pars), (sy0, sx0))
     # gauss = zoom(gauss, rebinning, order=0)
     pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
-            'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4]}
+            'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
+            'w_x': pars[3] * 2**0.5, 'w_y': pars[4] * 2**0.5}
 
     return gauss, pars
 
@@ -348,7 +349,7 @@ class GaussianFitterWidget(ThreadedWidget):
         self.fit_switch.setToolTip('fit Gaussian to image')
         self.fit_switch.setChecked(False)
 
-        self.labels = ('x_0', 'y_0', 's_x', 's_y')
+        self.labels = ('x_0', 'y_0', 'w_x', 'w_y')
         self.spinboxes = dict()
         for lbl in self.labels:
             spinbox = QMySpinBox(decimals=1, v_min=0.0, v_max=9999.0, prefix=f'{lbl}: ', suffix=' pxl')
@@ -379,7 +380,7 @@ class GaussianFitterWidget(ThreadedWidget):
     def log_msg(self):
         pars = self.parameters
         log_msg = (f"gaussian parameters - x_0 = {pars['x_0']:06.1f} pxl, y_0 = {pars['y_0']:06.1f} pxl, "
-                   f"s_x = {pars['s_x']:06.1f} pxl, s_y = {pars['s_y']:06.1f} pxl, angle = {pars['angle']:+01.2f} rad, "
+                   f"w_x = {pars['w_x']:06.1f} pxl, w_y = {pars['w_y']:06.1f} pxl, angle = {pars['angle']:+01.2f} rad, "
                    f"ampl = {pars['amplitude']:06.1f}, offset = {pars['offset']:06.1f}, time = {pars['time']:05.2f} s")
         return log_msg
 
