@@ -72,7 +72,7 @@ class BaslerCamControlWorker(ThreadedWorker):
 
     @pyqtSlot(name='Capture')
     def capture(self):
-        result = self.cam.GrabOne(100)
+        result = self.cam.GrabOne(10000)  # timeout of 10 s
         img = result.Array
         self.finish(self.captured, {'image': img})
 
