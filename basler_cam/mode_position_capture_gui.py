@@ -5,7 +5,7 @@ import logging
 import pyperclip
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.ndimage import center_of_mass
+from scipy.ndimage import center_of_mass, median_filter
 from numba import njit, float64
 from pypylon import pylon
 
@@ -380,7 +380,7 @@ class GaussianFitterWidget(ThreadedWidget):
     @pyqtSlot(dict, name='Fit')
     def fit(self, data):
         if self.fit_switch.isChecked():
-            if np.max(data['image']) > self.spinbox_threshold.value():
+            if np.max(median_filter(data['image'], size=3)) > self.spinbox_threshold.value():
                 self.worker_thread = QThread()
                 self.start_branch(self.worker, self.worker_thread, self.sig_fit, data)
             else:
