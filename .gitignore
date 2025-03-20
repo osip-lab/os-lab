@@ -6,3 +6,7 @@ venv
 playground.py
 .env
 local_config.py
+__pycache__/
+basler_cam/__pycache__/
+qt_gui/__pycache__/
+utilities/.ipynb_checkpoints/
