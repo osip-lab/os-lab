@@ -355,6 +355,8 @@ class GaussianFitterWidget(ThreadedWidget):
         self.fit_switch.setToolTip('fit Gaussian to image')
         self.fit_switch.setChecked(False)
 
+        self.spinbox_threshold = QMySpinBox(decimals=0, v_ini=1000, v_min=0, v_max=9999, suffix='', step=100)
+
         self.labels = ('x_0', 'y_0', 'w_x', 'w_y')
         self.spinboxes = dict()
         for lbl in self.labels:
@@ -372,14 +374,17 @@ class GaussianFitterWidget(ThreadedWidget):
         self.sig_fit.connect(self.worker.fit)
         self.worker.fitted.connect(self.fitted)
 
-        layout = QMyHBoxLayout(self.fit_switch, *[self.spinboxes[lbl] for lbl in self.labels], self.btn_copy)
+        layout = QMyHBoxLayout(self.fit_switch, self.spinbox_threshold, *[self.spinboxes[lbl] for lbl in self.labels], self.btn_copy)
         self.setLayout(layout)
 
     @pyqtSlot(dict, name='Fit')
     def fit(self, data):
         if self.fit_switch.isChecked():
-            self.worker_thread = QThread()
-            self.start_branch(self.worker, self.worker_thread, self.sig_fit, data)
+            if np.max(data['image']) > self.spinbox_threshold.value():
+                self.worker_thread = QThread()
+                self.start_branch(self.worker, self.worker_thread, self.sig_fit, data)
+            else:
+                self.sig_fitted.emit(data)
         else:
             self.sig_fitted.emit(data)
 
