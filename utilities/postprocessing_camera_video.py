@@ -7,8 +7,11 @@ import matplotlib
 from matplotlib.widgets import SpanSelector
 from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass, median_filter
+from basler_cam.mode_position_capture_gui import rebin, fit_gaussian, gaussian2d
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
+PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
+
 
 
 def load_video_as_numpy(video_path):
@@ -139,80 +142,13 @@ plt.show()
 
 # %%
 
-n = 4
-h, w = summed_frame.shape
-h_trimmed, w_trimmed = h - h % n, w - w % n
-summed_frame_trimmed = summed_frame[:h_trimmed, :w_trimmed]
-summed_frame_narrowed = summed_frame_trimmed.reshape(h_trimmed // n, n, w_trimmed // n, n).sum(axis=(1, 3))
-print(f"Summed frame narrowed shape: {summed_frame_narrowed.shape}")
+# %% Plot resulted fit on top of the image with ellipses:
 
-plt.figure()
-plt.title("Summed Frame Narrowed")
-plt.imshow(summed_frame_narrowed, cmap='gray')
-plt.colorbar()
-plt.show()
-
-# %%
-
-
-
-def gaussian2d(xy, ampl, xo, yo, sigma_x, sigma_y, theta, offset):
-    x = xy[0]
-    y = xy[1]
-    a = np.cos(theta) ** 2 / (2 * sigma_x ** 2) + np.sin(theta) ** 2 / (2 * sigma_y ** 2)
-    b = -np.sin(2 * theta) / (4 * sigma_x ** 2) + np.sin(2 * theta) / (4 * sigma_y ** 2)
-    c = np.sin(theta) ** 2 / (2 * sigma_x ** 2) + np.cos(theta) ** 2 / (2 * sigma_y ** 2)
-    g = offset + ampl * np.exp(-(a * (x - xo) ** 2 + 2 * b * (x - xo) * (y - yo) + c * (y - yo) ** 2))
-    return np.ravel(g)
-
-
-def fit_gaussian(arr, rebinning=1):
-    sy0, sx0 = np.shape(arr)
-    sy, sx = np.shape(arr)
-
-    xx = np.linspace(0, sx - 1, sx)
-    yy = np.linspace(0, sy - 1, sy)
-    xx, yy = np.meshgrid(xx, yy)
-
-    background = np.percentile(arr, 15)
-    mh = arr > np.percentile(arr - background, (1 - 100 / sx0 / sy0) * 100)
-    amplitude = np.mean(arr[mh]) - background
-    y0, x0 = center_of_mass(np.array(mh, dtype=np.float64))
-    mc = arr > amplitude / np.e ** 0.5
-    radius = max((np.sum(mc) / np.pi) ** 0.5, 1)
-    initial_guess = (amplitude, x0, y0, radius, radius, 0.0, background)
-    tic = time.time()
-    try:
-        p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True,
-                      bounds=(
-                          (0.0, 0.0, 0.0, 0.0, 0.0, -np.pi / 4, 0.0), (4095, sx, sy, np.inf, np.inf, np.pi / 4, 4095)),
-                      ftol=1e-3, xtol=1e-3)
-        # p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True)
-    except RuntimeError:
-        p = (initial_guess, np.zeros_like(initial_guess), 'fitting unsuccessful')
-    dt = time.time() - tic
-
-    pars = p[0]
-    pars = (pars[0], pars[1] * rebinning, pars[2] * rebinning, pars[3] * rebinning, pars[4] * rebinning,
-            pars[5], pars[6])
-
-    xx = np.linspace(0, sx0 - 1, sx0)
-    yy = np.linspace(0, sy0 - 1, sy0)
-    xx, yy = np.meshgrid(xx, yy)
-
-    gauss = np.reshape(gaussian2d(np.array((xx, yy)), *pars), (sy0, sx0))
-    # gauss = zoom(gauss, rebinning, order=0)
-    pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
-            'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
-            'w_x': pars[3] * 2 ** 0.5, 'w_y': pars[4] * 2 ** 0.5}
-
-    return gauss, pars
-
-# Plot resulted fit on top of the image with ellipses:
-# %%
 fig, ax = plt.subplots()
-ax.imshow(summed_frame_narrowed, cmap='gray')
-gauss, pars = fit_gaussian(summed_frame_narrowed, rebinning=n)
+ax.imshow(summed_frame, cmap='gray')
+gauss, pars = fit_gaussian(summed_frame, rebinning=n)
 ax.contour(gauss, levels=5, colors='r')
+plt.title(f"w_x = {pars['w_x' ] * 5.5e-6:.2e}, w_x = {pars['w_y' ] * 5.5e-6:.2e}")
 plt.show()
+
 
