@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
-from local_config import path_data_local
+from local_config import DATA_PATH
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,7 +10,7 @@ from matplotlib.widgets import SpanSelector
 import itertools
 
 
-specific_file_path = os.path.join(path_data_local, r"Laser Phase Plate\Experiments\Results\20250325\202503252-0002\202503252-0002_1.csv")
+specific_file_path = os.path.join(DATA_PATH, r"Laser Phase Plate\Experiments\Results\20250403\20250403-0002.csv")
 
 df = pd.read_csv(specific_file_path, skiprows=[1, 2])
 
