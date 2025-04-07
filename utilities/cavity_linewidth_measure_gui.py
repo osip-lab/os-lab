@@ -15,7 +15,7 @@ from pico_scope.pico_scope_control_gui import PicoControlWidget, SaverWidget, Py
 # function for a spectre point calculation
 from bode_plot_measure_gui import calculate_spectral_point
 # local path to data bank
-from local_config import path_data_local
+from local_config import PATH_DATA_LOCAL
 
 
 class LinewidthMeasurerWidget(ThreadedWidget):
@@ -178,7 +178,7 @@ class MainWindow(MyStandardWindow):
 if __name__ == '__main__':
 
     start_time = time.strftime('%Y-%m-%d %H-%M-%S')
-    logging.basicConfig(filename=os.path.join(path_data_local, 'linewidth_measurer', f'{start_time} log.txt'),
+    logging.basicConfig(filename=os.path.join(PATH_DATA_LOCAL, 'linewidth_measurer', f'{start_time} log.txt'),
                         level=logging.INFO, format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%Y.%m.%d %H:%M:%S')
 
     app = QApplication(sys.argv)

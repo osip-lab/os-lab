@@ -4,7 +4,7 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 
-from local_config import path_data_local
+from local_config import PATH_DATA_LOCAL
 
 
 def press(event):
@@ -20,7 +20,7 @@ if __name__ == "__main__":
     folder = 'line_shape_measurer'
     fsr0 = 150e6
 
-    log_list = os.listdir(os.path.join(path_data_local, folder))
+    log_list = os.listdir(os.path.join(PATH_DATA_LOCAL, folder))
     log_list = list(filter(lambda x: x.endswith('log.txt'), log_list))
     log_list = sorted(log_list, key=lambda x: time.mktime(time.strptime(x[0:19], '%Y-%m-%d %H-%M-%S')))
     log = log_list[-1]
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     fig.tight_layout()
     plt.show(block=False)
 
-    with open(os.path.join(path_data_local, folder, log), 'r') as f:
+    with open(os.path.join(PATH_DATA_LOCAL, folder, log), 'r') as f:
         while trig:
             line = f.readline()
             if line:

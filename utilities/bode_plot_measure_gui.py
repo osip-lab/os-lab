@@ -13,7 +13,7 @@ from qt_gui.qt_ext import MyStandardWindow, ThreadedWidget, QMyHBoxLayout, QMyVB
 from rigol_gen.rigol_gen_sin_gui import RigolGenSinWidget
 from pico_scope.pico_scope_control_gui import PicoControlWidget, SaverWidget
 # local path to data bank
-from local_config import path_data_local
+from local_config import PATH_DATA_LOCAL
 
 import matplotlib.pyplot as plt
 
@@ -191,7 +191,7 @@ class BodeMeasurerWidget(ThreadedWidget):
             ax.plot(t, signal)
             ax.plot(t, response)
             ax.grid()
-            fig.savefig(os.path.join(path_data_local, 'bode_plotter', time.strftime('%Y-%m-%d %H-%M-%S') + f' f={int(freq)}.png'))
+            fig.savefig(os.path.join(PATH_DATA_LOCAL, 'bode_plotter', time.strftime('%Y-%m-%d %H-%M-%S') + f' f={int(freq)}.png'))
             plt.close(fig)
 
             self.start_cycle()
@@ -199,7 +199,7 @@ class BodeMeasurerWidget(ThreadedWidget):
     @pyqtSlot()
     def save(self):
         self.fix_table()
-        self.fdf.to_excel(os.path.join(path_data_local, 'bode_plotter', time.strftime('%Y-%m-%d %H-%M-%S') + '.xlsx'), index=False)
+        self.fdf.to_excel(os.path.join(PATH_DATA_LOCAL, 'bode_plotter', time.strftime('%Y-%m-%d %H-%M-%S') + '.xlsx'), index=False)
 
 
 def calculate_spectral_point(t, x, f):
