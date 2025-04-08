@@ -11,7 +11,7 @@ from PyQt6.QtCore import pyqtSignal, pyqtSlot, QTimer
 from qt_gui.qt_ext import MyStandardWindow, QMyVBoxLayout, QMySpinBox, ThreadedWidget
 from rigol_dsa import RigolDSAWidget
 
-from local_config import path_data_local
+from local_config import PATH_DATA_LOCAL
 
 
 def calc_mode(freq, fsr, tpl):
@@ -73,7 +73,7 @@ class FitterWidget(ThreadedWidget):
     def process(self, data):
 
         # this part is just for tests
-        # data = np.loadtxt(os.path.join(path_data_local, 'line_shape_measurer', 'test.txt'))
+        # data = np.loadtxt(os.path.join(PATH_DATA_LOCAL, 'line_shape_measurer', 'test.txt'))
         # data = data.transpose()
         # data = {'freq': data[0], 'ampl': data[1]}
 
@@ -126,7 +126,7 @@ class MainWindow(MyStandardWindow):
 if __name__ == '__main__':
 
     start_time = time.strftime('%Y-%m-%d %H-%M-%S')
-    logging.basicConfig(filename=os.path.join(path_data_local, 'line_shape_measurer', f'{start_time} log.txt'),
+    logging.basicConfig(filename=os.path.join(PATH_DATA_LOCAL, 'line_shape_measurer', f'{start_time} log.txt'),
                         level=logging.INFO, format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%Y.%m.%d %H:%M:%S')
 
     app = QApplication(sys.argv)

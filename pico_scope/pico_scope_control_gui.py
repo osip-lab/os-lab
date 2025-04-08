@@ -32,7 +32,7 @@ from qt_gui.qt_ext import MyStandardWindow, QMyStandardButton, QCenteredLabel, Q
     QMySpinBox, QMergedRadioButton, QMyComboBox, QMyLineEdit, ThreadedWorker, ThreadedWidget
 from pico_scope import adc2mv
 
-from local_config import path_data_local
+from local_config import PATH_DATA_LOCAL
 
 
 class SignalConstructor(ThreadedWorker):
@@ -987,9 +987,9 @@ class SaverWidget(ThreadedWidget):
         self.setTitle('Saver')
 
         if default_folder is None:
-            self.default_path = os.path.join(path_data_local, 'pico_bank', 'settings', 'defaults.json')
+            self.default_path = os.path.join(PATH_DATA_LOCAL, 'pico_bank', 'settings', 'defaults.json')
         else:
-            self.default_path = os.path.join(path_data_local, default_folder, 'settings', 'defaults.json')
+            self.default_path = os.path.join(PATH_DATA_LOCAL, default_folder, 'settings', 'defaults.json')
 
         self.btn_save_settings = QMyStandardButton('save settings', font_size=self.font_size)
         self.btn_save_settings.clicked.connect(self.save_manual_settings)

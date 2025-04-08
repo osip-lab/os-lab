@@ -19,7 +19,7 @@ from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from qt_gui.qt_ext import (MyStandardWindow, QMyVBoxLayout, QMyHBoxLayout, ThreadedWidget, ThreadedWorker,
                            QMyStandardButton, QMySpinBox)
 
-from local_config import path_data_local
+from local_config import PATH_DATA_LOCAL
 
 
 class BaslerCamControlWorker(ThreadedWorker):
@@ -445,7 +445,7 @@ class MainWindow(MyStandardWindow):
 if __name__ == '__main__':
 
     start_time = time.strftime('%Y-%m-%d %H-%M-%S')
-    logging.basicConfig(filename=os.path.join(path_data_local, 'mode_position', f'{start_time} log.txt'),
+    logging.basicConfig(filename=os.path.join(PATH_DATA_LOCAL, 'mode_position', f'{start_time} log.txt'),
                         level=logging.INFO, format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%Y.%m.%d %H:%M:%S')
 
     app = QApplication(sys.argv)

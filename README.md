@@ -2,18 +2,20 @@
 This repository contains the scripts of the lab of Osip Schwartz. it does not include the specific simulations of Kali regarding p
 
 ## How to work with data files:
-Here I assume all data files are in our group's Dropbox
+Here I assume all data files are either in our group's Dropbox, or locally in the computer.
 * go to local_config.py file and set there the local path to the group's Dropbox on your computer, where data should sit, like so:
-  ```python
-  DATA_PATH = r"C:\Users\michaeka\Dropbox (Weizmann Institute)\Lab's Dropbox"
-  ```
+```python
+PATH_DROPBOX = r"C:\Users\michaeka\Dropbox (Weizmann Institute)\Lab's Dropbox"
+PATH_DATA_LOCAL = r"C:\Users\michaeka\data_bank"  
+```
 * Whenever wanting to read or write data, you can access it like so:
+
 ```python
 import os
-from local_config import DATA_PATH
+from local_config import PATH_DROPBOX
 import pandas as pd
 
-specific_file_path = os.path.join(DATA_PATH, r"EMNV\Ring down\270624\ring_down_curve_parameters.xlsx")
+specific_file_path = os.path.join(PATH_DROPBOX, r"EMNV\Ring down\270624\ring_down_curve_parameters.xlsx")
 
 pd.read_excel(specific_file_path)
 ```
