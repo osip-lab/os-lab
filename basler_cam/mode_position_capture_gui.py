@@ -322,7 +322,12 @@ def fit_gaussian(arr, rebinning=1):
     # gauss = zoom(gauss, rebinning, order=0)
     pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
             'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
-            'w_x': pars[3] * 2**0.5, 'w_y': pars[4] * 2**0.5}
+            'w_x': pars[3] * 2, 'w_y': pars[4] * 2}  # w for intensity is twice of sigma
+    """
+    Definition here y = exp(-r**2/(2*sigma**2))
+    Definition for Gaussian beam I = exp(-2*r**2/w**2), what measures camera
+    So w = 2 * sigma
+    """
 
     return gauss, pars
 
