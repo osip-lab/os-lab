@@ -40,12 +40,15 @@ def convert_all_avi_files_in_folder(folder_path,
             if file.endswith(".avi"):
                 input_path = os.path.join(root, file)
                 output_path = os.path.splitext(input_path)[0] + ".mp4"
-                success = convert_to_h265(input_path, output_path, compression_rate)
+                if os.path.exists(output_path):
+                    print("output path already exists, skipping conversion")
+                else:
+                    success = convert_to_h265(input_path, output_path, compression_rate)
 
-                # Delete the original file after conversion
-                if os.path.exists(input_path) and delete_original_files and success:
-                    os.remove(input_path)
-                    print(f"Deleted original file: {input_path}")
+                    # Delete the original file after conversion
+                    if os.path.exists(input_path) and delete_original_files and success:
+                        os.remove(input_path)
+                        print(f"Deleted original file: {input_path}")
 
 
 def input_with_default(prompt, default):

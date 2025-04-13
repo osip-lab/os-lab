@@ -11,14 +11,14 @@ from matplotlib.widgets import SpanSelector
 import itertools
 
 
-specific_file_path = os.path.join(PATH_DROPBOX, r"Laser Phase Plate\Experiments\Results\20250408\very high NA edge 2\crossing to high NA-0002.csv")
+specific_file_path = r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250413\revolution 0.csv"
 
 df = pd.read_csv(specific_file_path, skiprows=[1, 2])
-
+df = df.loc[:, ['Time', 'Channel B']]
 data_numpy = df.to_numpy()
 
 x = data_numpy[:, 0]  # Time column
-y = data_numpy[:, 2]  # Channel B column
+y = data_numpy[:, 1]  # Channel B column
 # CONSTANT_TITLE = "press: 1=single, 2=position, 3=double, d=delete last fit, enter=next group, z=zoom"
 # def generate_title(i, mode):
 
@@ -190,7 +190,6 @@ plt.show()
 
 
 # %%
-lorentzian_positions = [[5.681540163462846, 5.683919837612499], [5.969727974443534, 5.972704498684292], [6.246353505018523, 6.250620307126139], [6.521897365525487, 6.526278129300985], [6.813884986565919, 6.819068638018781]]
 print("before cleaning:", lorentzian_positions)
 lorentzian_positions = [pos for pos in lorentzian_positions if pos]
 print("after cleaning:", lorentzian_positions)

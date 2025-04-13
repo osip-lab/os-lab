@@ -11,6 +11,7 @@ from basler_cam.mode_position_capture_gui import rebin, fit_gaussian, gaussian2d
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
+from matplotlib.patches import Circle
 
 
 
@@ -80,8 +81,61 @@ def trim_video_by_time_range(video_array, time_range, fps):
     return trimmed_video
 
 
+
+def gaussian2d(xy, ampl, xo, yo, sigma_x, sigma_y, theta, offset):
+    x = xy[0]
+    y = xy[1]
+    a = np.cos(theta) ** 2 / (2 * sigma_x ** 2) + np.sin(theta) ** 2 / (2 * sigma_y ** 2)
+    b = -np.sin(2 * theta) / (4 * sigma_x ** 2) + np.sin(2 * theta) / (4 * sigma_y ** 2)
+    c = np.sin(theta) ** 2 / (2 * sigma_x ** 2) + np.cos(theta) ** 2 / (2 * sigma_y ** 2)
+    g = offset + ampl * np.exp(-(a * (x - xo) ** 2 + 2 * b * (x - xo) * (y - yo) + c * (y - yo) ** 2))
+    return np.ravel(g)
+
+
+def fit_gaussian(arr, rebinning=1):
+    sy0, sx0 = np.shape(arr)
+    sy, sx = np.shape(arr)
+
+    xx = np.linspace(0, sx - 1, sx)
+    yy = np.linspace(0, sy - 1, sy)
+    xx, yy = np.meshgrid(xx, yy)
+
+    background = np.percentile(arr, 15)
+    mh = arr > np.percentile(arr - background, (1 - 100 / sx0 / sy0) * 100)
+    amplitude = np.mean(arr[mh]) - background
+    y0, x0 = center_of_mass(np.array(mh, dtype=np.float64))
+    mc = arr > amplitude / np.e ** 0.5
+    radius = max((np.sum(mc) / np.pi) ** 0.5, 1)
+    initial_guess = (amplitude, x0, y0, radius, radius, 0.0, background)
+    tic = time.time()
+    try:
+        p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True,
+                      bounds=(
+                          (0.0, 0.0, 0.0, 0.0, 0.0, -np.pi / 4, 0.0), (4095, sx, sy, np.inf, np.inf, np.pi / 4, 4095)),
+                      ftol=1e-3, xtol=1e-3)
+        # p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True)
+    except RuntimeError:
+        p = (initial_guess, np.zeros_like(initial_guess), 'fitting unsuccessful')
+    dt = time.time() - tic
+
+    pars = p[0]
+    pars = (pars[0], pars[1] * rebinning, pars[2] * rebinning, pars[3] * rebinning, pars[4] * rebinning,
+            pars[5], pars[6])
+
+    xx = np.linspace(0, sx0 - 1, sx0)
+    yy = np.linspace(0, sy0 - 1, sy0)
+    xx, yy = np.meshgrid(xx, yy)
+
+    gauss = np.reshape(gaussian2d(np.array((xx, yy)), *pars), (sy0, sx0))
+    # gauss = zoom(gauss, rebinning, order=0)
+    pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
+            'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
+            'w_x': pars[3] * 2 ** 0.5, 'w_y': pars[4] * 2 ** 0.5}
+
+    return gauss, pars
+
 # %%
-video_path = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250401\Basler_acA2040-90umNIR__24759755__20250401_153511472.avi"
+video_path = r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250413\after first alignment - 50000.avi"  # Change to your video file
 
 video_array, fps = load_video_as_numpy(video_path)
 
@@ -141,65 +195,81 @@ plt.get_current_fig_manager().window.showMaximized()
 plt.show()
 
 # %%
+# Store clicked points
+clicked_points = []
+fig, ax = plt.subplots()
+img = ax.imshow(summed_frame, cmap='gray')
+circle_patch = None  # Will hold the circle once created
 
+PIXEL_SIZE_MM = 0.0055  # 5.5 microns in mm
 
-def gaussian2d(xy, ampl, xo, yo, sigma_x, sigma_y, theta, offset):
-    x = xy[0]
-    y = xy[1]
-    a = np.cos(theta) ** 2 / (2 * sigma_x ** 2) + np.sin(theta) ** 2 / (2 * sigma_y ** 2)
-    b = -np.sin(2 * theta) / (4 * sigma_x ** 2) + np.sin(2 * theta) / (4 * sigma_y ** 2)
-    c = np.sin(theta) ** 2 / (2 * sigma_x ** 2) + np.cos(theta) ** 2 / (2 * sigma_y ** 2)
-    g = offset + ampl * np.exp(-(a * (x - xo) ** 2 + 2 * b * (x - xo) * (y - yo) + c * (y - yo) ** 2))
-    return np.ravel(g)
+def calc_circle(x1, y1, x2, y2, x3, y3):
+    temp = x2**2 + y2**2
+    bc = (x1**2 + y1**2 - temp) / 2
+    cd = (temp - x3**2 - y3**2) / 2
+    det = (x1 - x2)*(y2 - y3) - (x2 - x3)*(y1 - y2)
+    if abs(det) < 1e-10:
+        raise ValueError("Points are colinear")
+    cx = (bc*(y2 - y3) - cd*(y1 - y2)) / det
+    cy = ((x1 - x2)*cd - (x2 - x3)*bc) / det
+    r = np.sqrt((cx - x1)**2 + (cy - y1)**2)
+    return cx, cy, r
 
+def on_click(event):
+    global clicked_points, circle_patch
 
-def fit_gaussian(arr, rebinning=1):
-    sy0, sx0 = np.shape(arr)
-    sy, sx = np.shape(arr)
+    # Ignore clicks outside the image
+    if event.inaxes != ax:
+        return
 
-    xx = np.linspace(0, sx - 1, sx)
-    yy = np.linspace(0, sy - 1, sy)
-    xx, yy = np.meshgrid(xx, yy)
+    # Ignore clicks when zoom/pan tool is active
+    if plt.get_current_fig_manager().toolbar.mode != '':
+        return
 
-    background = np.percentile(arr, 15)
-    mh = arr > np.percentile(arr - background, (1 - 100 / sx0 / sy0) * 100)
-    amplitude = np.mean(arr[mh]) - background
-    y0, x0 = center_of_mass(np.array(mh, dtype=np.float64))
-    mc = arr > amplitude / np.e ** 0.5
-    radius = max((np.sum(mc) / np.pi) ** 0.5, 1)
-    initial_guess = (amplitude, x0, y0, radius, radius, 0.0, background)
-    tic = time.time()
-    try:
-        p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True,
-                      bounds=(
-                          (0.0, 0.0, 0.0, 0.0, 0.0, -np.pi / 4, 0.0), (4095, sx, sy, np.inf, np.inf, np.pi / 4, 4095)),
-                      ftol=1e-3, xtol=1e-3)
-        # p = curve_fit(gaussian2d, np.array((xx, yy)), arr.ravel(), p0=initial_guess, full_output=True)
-    except RuntimeError:
-        p = (initial_guess, np.zeros_like(initial_guess), 'fitting unsuccessful')
-    dt = time.time() - tic
+    # Start a new round after 3 points
+    if len(clicked_points) >= 3:
+        clicked_points = []
+        ax.cla()
+        ax.imshow(summed_frame, cmap='gray')
+        circle_patch = None
 
-    pars = p[0]
-    pars = (pars[0], pars[1] * rebinning, pars[2] * rebinning, pars[3] * rebinning, pars[4] * rebinning,
-            pars[5], pars[6])
+    # Record click
+    x, y = event.xdata, event.ydata
+    clicked_points.append((x, y))
+    ax.plot(x, y, 'ro')  # mark the point
 
-    xx = np.linspace(0, sx0 - 1, sx0)
-    yy = np.linspace(0, sy0 - 1, sy0)
-    xx, yy = np.meshgrid(xx, yy)
+    if len(clicked_points) == 3:
+        x1, y1 = clicked_points[0]
+        x2, y2 = clicked_points[1]
+        x3, y3 = clicked_points[2]
 
-    gauss = np.reshape(gaussian2d(np.array((xx, yy)), *pars), (sy0, sx0))
-    # gauss = zoom(gauss, rebinning, order=0)
-    pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
-            'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
-            'w_x': pars[3] * 2 ** 0.5, 'w_y': pars[4] * 2 ** 0.5}
+        try:
+            cx, cy, radius = calc_circle(x1, y1, x2, y2, x3, y3)
+            radius_mm = radius * PIXEL_SIZE_MM
+            print(f"Radius: {radius:.2f} pixels, {radius_mm:.3f} mm")
 
-    return gauss, pars
+            # Remove previous circle if it exists
+            if circle_patch:
+                circle_patch.remove()
+
+            # Draw new circle
+            circle_patch = Circle((cx, cy), radius, color='cyan', fill=False, linewidth=2)
+            ax.add_patch(circle_patch)
+
+            ax.set_title(f"Radius: {radius:.2f} px | {radius_mm:.3f} mm")
+            plt.draw()
+
+        except ValueError as e:
+            print("Error:", e)
+
+fig.canvas.mpl_connect('button_press_event', on_click)
+plt.title("Click 3 points (zoom tool ignored)")
+plt.show()
+
 # %% Plot resulted fit on top of the image with ellipses:
-
 fig, ax = plt.subplots()
 ax.imshow(summed_frame, cmap='gray')
 gauss, pars = fit_gaussian(summed_frame, rebinning=1)
-# %%
 ax.contour(gauss, levels=5, colors='r')
 plt.title(f"w_x = {pars['w_x' ] * 5.5e-6:.2e}, w_x = {pars['w_y' ] * 5.5e-6:.2e}")
 plt.show()

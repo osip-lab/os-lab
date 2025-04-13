@@ -51,12 +51,11 @@ Here is an example of installing a specific version of matplotlib (typing 'pip i
 add them to the .gitignore text file:
 ![image](https://github.com/user-attachments/assets/22f727dc-4804-4ad9-ba1e-fcb172bfaaf5)
 
-I think that's it for now.
+## How to compress heavy videos:
+1. Make sure you have ffmpeg on the computer by typing 'ffmpeg' in the terminal. If you don't have it, download it according to those instruction: https://phoenixnap.com/kb/ffmpeg-windows
+2. run utilities/compress_videos.cmd and follow the instructions (it converts all files in the folder you give it). 
 
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
-
-
-## How to connect to Teledyne cameras with python (curr)
 
 
 
