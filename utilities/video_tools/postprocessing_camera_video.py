@@ -8,6 +8,7 @@ from matplotlib.widgets import SpanSelector
 from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass, median_filter
 from basler_cam.mode_position_capture_gui import rebin, fit_gaussian, gaussian2d
+from utilities.video_tools.utils import wait_for_video_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
@@ -130,12 +131,12 @@ def fit_gaussian(arr, rebinning=1):
     # gauss = zoom(gauss, rebinning, order=0)
     pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
             'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
-            'w_x': pars[3] * 2 ** 0.5, 'w_y': pars[4] * 2 ** 0.5}
+            'w_x': pars[3] * 2 , 'w_y': pars[4] * 2 }
 
     return gauss, pars
 
 # %%
-video_path = r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250413\after first alignment - 50000.avi"  # Change to your video file
+video_path = wait_for_video_path_from_clipboard(filetype='video')
 
 video_array, fps = load_video_as_numpy(video_path)
 
@@ -194,84 +195,13 @@ fig.tight_layout()
 plt.get_current_fig_manager().window.showMaximized()
 plt.show()
 
-# %%
-# Store clicked points
-clicked_points = []
-fig, ax = plt.subplots()
-img = ax.imshow(summed_frame, cmap='gray')
-circle_patch = None  # Will hold the circle once created
-
-PIXEL_SIZE_MM = 0.0055  # 5.5 microns in mm
-
-def calc_circle(x1, y1, x2, y2, x3, y3):
-    temp = x2**2 + y2**2
-    bc = (x1**2 + y1**2 - temp) / 2
-    cd = (temp - x3**2 - y3**2) / 2
-    det = (x1 - x2)*(y2 - y3) - (x2 - x3)*(y1 - y2)
-    if abs(det) < 1e-10:
-        raise ValueError("Points are colinear")
-    cx = (bc*(y2 - y3) - cd*(y1 - y2)) / det
-    cy = ((x1 - x2)*cd - (x2 - x3)*bc) / det
-    r = np.sqrt((cx - x1)**2 + (cy - y1)**2)
-    return cx, cy, r
-
-def on_click(event):
-    global clicked_points, circle_patch
-
-    # Ignore clicks outside the image
-    if event.inaxes != ax:
-        return
-
-    # Ignore clicks when zoom/pan tool is active
-    if plt.get_current_fig_manager().toolbar.mode != '':
-        return
-
-    # Start a new round after 3 points
-    if len(clicked_points) >= 3:
-        clicked_points = []
-        ax.cla()
-        ax.imshow(summed_frame, cmap='gray')
-        circle_patch = None
-
-    # Record click
-    x, y = event.xdata, event.ydata
-    clicked_points.append((x, y))
-    ax.plot(x, y, 'ro')  # mark the point
-
-    if len(clicked_points) == 3:
-        x1, y1 = clicked_points[0]
-        x2, y2 = clicked_points[1]
-        x3, y3 = clicked_points[2]
-
-        try:
-            cx, cy, radius = calc_circle(x1, y1, x2, y2, x3, y3)
-            radius_mm = radius * PIXEL_SIZE_MM
-            print(f"Radius: {radius:.2f} pixels, {radius_mm:.3f} mm")
-
-            # Remove previous circle if it exists
-            if circle_patch:
-                circle_patch.remove()
-
-            # Draw new circle
-            circle_patch = Circle((cx, cy), radius, color='cyan', fill=False, linewidth=2)
-            ax.add_patch(circle_patch)
-
-            ax.set_title(f"Radius: {radius:.2f} px | {radius_mm:.3f} mm")
-            plt.draw()
-
-        except ValueError as e:
-            print("Error:", e)
-
-fig.canvas.mpl_connect('button_press_event', on_click)
-plt.title("Click 3 points (zoom tool ignored)")
-plt.show()
-
 # %% Plot resulted fit on top of the image with ellipses:
-fig, ax = plt.subplots()
-ax.imshow(summed_frame, cmap='gray')
+# fig, ax = plt.subplots()
+# ax.imshow(summed_frame, cmap='gray')
 gauss, pars = fit_gaussian(summed_frame, rebinning=1)
-ax.contour(gauss, levels=5, colors='r')
-plt.title(f"w_x = {pars['w_x' ] * 5.5e-6:.2e}, w_x = {pars['w_y' ] * 5.5e-6:.2e}")
-plt.show()
+print(pars)
+# ax.contour(gauss, levels=5, colors='r')
+# plt.title(f"w_x = {pars['w_x' ] * 5.5e-6:.2e}, w_x = {pars['w_y' ] * 5.5e-6:.2e}")
+# plt.show()
 
 
