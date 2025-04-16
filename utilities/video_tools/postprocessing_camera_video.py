@@ -15,70 +15,6 @@ from matplotlib.patches import Circle
 
 
 
-def load_video_as_numpy(video_path):
-    """Loads the video from `video_path` into a numpy array of shape (T, N, M)."""
-    cap = cv2.VideoCapture(video_path)
-    frames = []
-
-    fps = cap.get(cv2.CAP_PROP_FPS)  # Frames per second
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # Total frames
-    print(f"FPS: {fps}, Total frames: {total_frames}")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        # Convert to grayscale if needed
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
-        frames.append(gray_frame)
-
-    cap.release()
-    frames = np.array(frames)
-    print(f"Video loaded with shape {frames.shape} (T, N, M)")
-    return frames, fps
-
-
-def plot_intensity_vs_time(intensity, fps):
-    """Plots the sum of pixel intensities per frame over time."""
-    times = np.arange(len(intensity)) / fps  # Convert frame indices to time
-    plt.plot(times, intensity)
-    plt.xlabel("Time (seconds)")
-    plt.ylabel("Intensity (sum of pixel values)")
-    plt.title("Pixel Intensity Over Time")
-    plt.show()
-    return times
-
-
-def get_time_range_from_user(times, intensity):
-    """Allows the user to select a time range using SpanSelector."""
-    fig, ax = plt.subplots()
-    ax.plot(times, intensity)
-    ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("Intensity (sum of pixel values)")
-    ax.set_title("Select Time Range")
-
-    selected_range = [None, None]
-
-    def onselect(xmin, xmax):
-        selected_range[0], selected_range[1] = xmin, xmax
-        print(f"Selected time range: {xmin:.2f} - {xmax:.2f} seconds")
-        plt.close(fig)  # Close the plot after selection
-
-    span = SpanSelector(ax, onselect, "horizontal", useblit=True, interactive=True,
-                        props={'alpha': 0.3, 'color': 'red'})
-
-    plt.show(block=True)
-    return tuple(selected_range)
-
-
-def trim_video_by_time_range(video_array, time_range, fps):
-    """Trims the video to the selected time range."""
-    start_time, end_time = time_range
-    start_frame = int(start_time * fps)
-    end_frame = int(end_time * fps)
-    trimmed_video = video_array[start_frame:end_frame]
-    print(f"Trimmed video shape: {trimmed_video.shape}")
-    return trimmed_video
 
 
 
@@ -130,12 +66,76 @@ def fit_gaussian(arr, rebinning=1):
     # gauss = zoom(gauss, rebinning, order=0)
     pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
             'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
-            'w_x': pars[3] * 2 ** 0.5, 'w_y': pars[4] * 2 ** 0.5}
+            'w_x': pars[3] * 2, 'w_y': pars[4] * 2}
 
     return gauss, pars
 
+
+def load_video_as_numpy(video_path):
+    """Loads the video from `video_path` into a numpy array of shape (T, N, M)."""
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+
+    fps = cap.get(cv2.CAP_PROP_FPS)  # Frames per second
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # Total frames
+    print(f"FPS: {fps}, Total frames: {total_frames}")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # Convert to grayscale if needed
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+        frames.append(gray_frame)
+
+    cap.release()
+    frames = np.array(frames)
+    print(f"Video loaded with shape {frames.shape} (T, N, M)")
+    return frames, fps
+
+
+def plot_intensity_vs_time(intensity, fps):
+    """Plots the sum of pixel intensities per frame over time."""
+    times = np.arange(len(intensity)) / fps  # Convert frame indices to time
+    plt.plot(times, intensity)
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Intensity (sum of pixel values)")
+    plt.title("Pixel Intensity Over Time")
+    plt.show()
+    return times
+
+def get_time_range_from_user(times, intensity):
+    """Allows the user to select a time range using SpanSelector."""
+    fig, ax = plt.subplots()
+    ax.plot(times, intensity)
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Intensity (sum of pixel values)")
+    ax.set_title("Select Time Range")
+
+    selected_range = [None, None]
+
+    def onselect(xmin, xmax):
+        selected_range[0], selected_range[1] = xmin, xmax
+        print(f"Selected time range: {xmin:.2f} - {xmax:.2f} seconds")
+        plt.close(fig)  # Close the plot after selection
+
+    span = SpanSelector(ax, onselect, "horizontal", useblit=True, interactive=True,
+                        props={'alpha': 0.3, 'color': 'red'})
+
+    plt.show(block=True)
+    return tuple(selected_range)
+
+def trim_video_by_time_range(video_array, time_range, fps):
+    """Trims the video to the selected time range."""
+    start_time, end_time = time_range
+    start_frame = int(start_time * fps)
+    end_frame = int(end_time * fps)
+    trimmed_video = video_array[start_frame:end_frame]
+    print(f"Trimmed video shape: {trimmed_video.shape}")
+    return trimmed_video
+
 # %%
-video_path = r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250413\after first alignment - 50000.avi"  # Change to your video file
+video_path = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250408\low NA 3%\3%NA\Basler_acA2040-90umNIR__24759755__20250408_143836033.mp4" # Change to your video file
 
 video_array, fps = load_video_as_numpy(video_path)
 
@@ -194,82 +194,11 @@ fig.tight_layout()
 plt.get_current_fig_manager().window.showMaximized()
 plt.show()
 
-# %%
-# Store clicked points
-clicked_points = []
-fig, ax = plt.subplots()
-img = ax.imshow(summed_frame, cmap='gray')
-circle_patch = None  # Will hold the circle once created
-
-PIXEL_SIZE_MM = 0.0055  # 5.5 microns in mm
-
-def calc_circle(x1, y1, x2, y2, x3, y3):
-    temp = x2**2 + y2**2
-    bc = (x1**2 + y1**2 - temp) / 2
-    cd = (temp - x3**2 - y3**2) / 2
-    det = (x1 - x2)*(y2 - y3) - (x2 - x3)*(y1 - y2)
-    if abs(det) < 1e-10:
-        raise ValueError("Points are colinear")
-    cx = (bc*(y2 - y3) - cd*(y1 - y2)) / det
-    cy = ((x1 - x2)*cd - (x2 - x3)*bc) / det
-    r = np.sqrt((cx - x1)**2 + (cy - y1)**2)
-    return cx, cy, r
-
-def on_click(event):
-    global clicked_points, circle_patch
-
-    # Ignore clicks outside the image
-    if event.inaxes != ax:
-        return
-
-    # Ignore clicks when zoom/pan tool is active
-    if plt.get_current_fig_manager().toolbar.mode != '':
-        return
-
-    # Start a new round after 3 points
-    if len(clicked_points) >= 3:
-        clicked_points = []
-        ax.cla()
-        ax.imshow(summed_frame, cmap='gray')
-        circle_patch = None
-
-    # Record click
-    x, y = event.xdata, event.ydata
-    clicked_points.append((x, y))
-    ax.plot(x, y, 'ro')  # mark the point
-
-    if len(clicked_points) == 3:
-        x1, y1 = clicked_points[0]
-        x2, y2 = clicked_points[1]
-        x3, y3 = clicked_points[2]
-
-        try:
-            cx, cy, radius = calc_circle(x1, y1, x2, y2, x3, y3)
-            radius_mm = radius * PIXEL_SIZE_MM
-            print(f"Radius: {radius:.2f} pixels, {radius_mm:.3f} mm")
-
-            # Remove previous circle if it exists
-            if circle_patch:
-                circle_patch.remove()
-
-            # Draw new circle
-            circle_patch = Circle((cx, cy), radius, color='cyan', fill=False, linewidth=2)
-            ax.add_patch(circle_patch)
-
-            ax.set_title(f"Radius: {radius:.2f} px | {radius_mm:.3f} mm")
-            plt.draw()
-
-        except ValueError as e:
-            print("Error:", e)
-
-fig.canvas.mpl_connect('button_press_event', on_click)
-plt.title("Click 3 points (zoom tool ignored)")
-plt.show()
 
 # %% Plot resulted fit on top of the image with ellipses:
 fig, ax = plt.subplots()
 ax.imshow(summed_frame, cmap='gray')
-gauss, pars = fit_gaussian(summed_frame, rebinning=1)
+gauss, pars = fit_gaussian(summed_frame, rebinning=2)
 ax.contour(gauss, levels=5, colors='r')
 plt.title(f"w_x = {pars['w_x' ] * 5.5e-6:.2e}, w_x = {pars['w_y' ] * 5.5e-6:.2e}")
 plt.show()
