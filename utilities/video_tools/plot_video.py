@@ -5,10 +5,14 @@ from matplotlib.widgets import Slider
 import os
 from matplotlib.patches import Circle
 import matplotlib
+from utilities.video_tools.utils import wait_for_video_path_from_clipboard
+
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 
 # ---- Set video path ----
-video_path = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250408\low NA 3%\Basler_acA2040-90umNIR__24759755__20250408_140648864.mp4"
+video_path = wait_for_video_path_from_clipboard(filetype='video')
+
+# ---- Set video path ----
 
 if not os.path.exists(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
@@ -31,6 +35,10 @@ while True:
 
 cap.release()
 
+frames = np.array(frames)
+frames = frames - np.quantile(frames, 0.3, axis=0, keepdims=True)
+
+# %%
 PIXEL_SIZE_MM = 0.0055  # 5.5 microns in mm
 rebin_factor = 1
 selected_frames = []
@@ -58,7 +66,7 @@ ax_frame = plt.axes([0.25, 0.2, 0.65, 0.03])
 frame_slider = Slider(ax_frame, 'Frame', 0, len(frames) - 1, valinit=0, valstep=1)
 
 ax_vmax = plt.axes([0.25, 0.15, 0.65, 0.03])
-vmax_slider = Slider(ax_vmax, 'vmax', 1, 9*255, valinit=vmax_default)
+vmax_slider = Slider(ax_vmax, 'vmax', 1, 255, valinit=vmax_default)
 
 # For Circle Fitting
 clicked_points = []

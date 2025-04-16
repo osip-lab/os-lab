@@ -8,6 +8,7 @@ from matplotlib.widgets import SpanSelector
 from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass, median_filter
 from basler_cam.mode_position_capture_gui import rebin, fit_gaussian, gaussian2d
+from utilities.video_tools.utils import wait_for_video_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
@@ -15,6 +16,70 @@ from matplotlib.patches import Circle
 
 
 
+def load_video_as_numpy(video_path):
+    """Loads the video from `video_path` into a numpy array of shape (T, N, M)."""
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+
+    fps = cap.get(cv2.CAP_PROP_FPS)  # Frames per second
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # Total frames
+    print(f"FPS: {fps}, Total frames: {total_frames}")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # Convert to grayscale if needed
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+        frames.append(gray_frame)
+
+    cap.release()
+    frames = np.array(frames)
+    print(f"Video loaded with shape {frames.shape} (T, N, M)")
+    return frames, fps
+
+
+def plot_intensity_vs_time(intensity, fps):
+    """Plots the sum of pixel intensities per frame over time."""
+    times = np.arange(len(intensity)) / fps  # Convert frame indices to time
+    plt.plot(times, intensity)
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Intensity (sum of pixel values)")
+    plt.title("Pixel Intensity Over Time")
+    plt.show()
+    return times
+
+
+def get_time_range_from_user(times, intensity):
+    """Allows the user to select a time range using SpanSelector."""
+    fig, ax = plt.subplots()
+    ax.plot(times, intensity)
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Intensity (sum of pixel values)")
+    ax.set_title("Select Time Range")
+
+    selected_range = [None, None]
+
+    def onselect(xmin, xmax):
+        selected_range[0], selected_range[1] = xmin, xmax
+        print(f"Selected time range: {xmin:.2f} - {xmax:.2f} seconds")
+        plt.close(fig)  # Close the plot after selection
+
+    span = SpanSelector(ax, onselect, "horizontal", useblit=True, interactive=True,
+                        props={'alpha': 0.3, 'color': 'red'})
+
+    plt.show(block=True)
+    return tuple(selected_range)
+
+
+def trim_video_by_time_range(video_array, time_range, fps):
+    """Trims the video to the selected time range."""
+    start_time, end_time = time_range
+    start_frame = int(start_time * fps)
+    end_frame = int(end_time * fps)
+    trimmed_video = video_array[start_frame:end_frame]
+    print(f"Trimmed video shape: {trimmed_video.shape}")
+    return trimmed_video
 
 
 
@@ -66,76 +131,12 @@ def fit_gaussian(arr, rebinning=1):
     # gauss = zoom(gauss, rebinning, order=0)
     pars = {'amplitude': pars[0], 'offset': pars[6], 'angle': pars[5], 'time': dt,
             'x_0': pars[1], 'y_0': pars[2], 's_x': pars[3], 's_y': pars[4],
-            'w_x': pars[3] * 2, 'w_y': pars[4] * 2}
+            'w_x': pars[3] * 2 , 'w_y': pars[4] * 2 }
 
     return gauss, pars
 
-
-def load_video_as_numpy(video_path):
-    """Loads the video from `video_path` into a numpy array of shape (T, N, M)."""
-    cap = cv2.VideoCapture(video_path)
-    frames = []
-
-    fps = cap.get(cv2.CAP_PROP_FPS)  # Frames per second
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # Total frames
-    print(f"FPS: {fps}, Total frames: {total_frames}")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        # Convert to grayscale if needed
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
-        frames.append(gray_frame)
-
-    cap.release()
-    frames = np.array(frames)
-    print(f"Video loaded with shape {frames.shape} (T, N, M)")
-    return frames, fps
-
-
-def plot_intensity_vs_time(intensity, fps):
-    """Plots the sum of pixel intensities per frame over time."""
-    times = np.arange(len(intensity)) / fps  # Convert frame indices to time
-    plt.plot(times, intensity)
-    plt.xlabel("Time (seconds)")
-    plt.ylabel("Intensity (sum of pixel values)")
-    plt.title("Pixel Intensity Over Time")
-    plt.show()
-    return times
-
-def get_time_range_from_user(times, intensity):
-    """Allows the user to select a time range using SpanSelector."""
-    fig, ax = plt.subplots()
-    ax.plot(times, intensity)
-    ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("Intensity (sum of pixel values)")
-    ax.set_title("Select Time Range")
-
-    selected_range = [None, None]
-
-    def onselect(xmin, xmax):
-        selected_range[0], selected_range[1] = xmin, xmax
-        print(f"Selected time range: {xmin:.2f} - {xmax:.2f} seconds")
-        plt.close(fig)  # Close the plot after selection
-
-    span = SpanSelector(ax, onselect, "horizontal", useblit=True, interactive=True,
-                        props={'alpha': 0.3, 'color': 'red'})
-
-    plt.show(block=True)
-    return tuple(selected_range)
-
-def trim_video_by_time_range(video_array, time_range, fps):
-    """Trims the video to the selected time range."""
-    start_time, end_time = time_range
-    start_frame = int(start_time * fps)
-    end_frame = int(end_time * fps)
-    trimmed_video = video_array[start_frame:end_frame]
-    print(f"Trimmed video shape: {trimmed_video.shape}")
-    return trimmed_video
-
 # %%
-video_path = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250408\low NA 3%\3%NA\Basler_acA2040-90umNIR__24759755__20250408_143836033.mp4" # Change to your video file
+video_path = wait_for_video_path_from_clipboard(filetype='video')
 
 video_array, fps = load_video_as_numpy(video_path)
 
@@ -193,7 +194,6 @@ for i, ax in enumerate(axes.flat):
 fig.tight_layout()
 plt.get_current_fig_manager().window.showMaximized()
 plt.show()
-
 
 # %% Plot resulted fit on top of the image with ellipses:
 fig, ax = plt.subplots()

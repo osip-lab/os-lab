@@ -1,6 +1,8 @@
 import pandas as pd
 import matplotlib
 
+from utilities.video_tools.utils import wait_for_video_path_from_clipboard
+
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 from local_config import PATH_DROPBOX
 import os
@@ -11,7 +13,7 @@ from matplotlib.widgets import SpanSelector
 import itertools
 
 
-specific_file_path = r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results\20250413\revolution 0.csv"
+specific_file_path = wait_for_video_path_from_clipboard(filetype='csv')
 
 df = pd.read_csv(specific_file_path, skiprows=[1, 2])
 df = df.loc[:, ['Time', 'Channel B']]
@@ -189,6 +191,8 @@ plt.show()
 # Remove all elements that are empty lists from lorentzian_positions:
 
 
+# %%
+lorentzian_positions = [[a[0][0], a[1][0]] for a in lorentzian_positions]
 # %%
 print("before cleaning:", lorentzian_positions)
 lorentzian_positions = [pos for pos in lorentzian_positions if pos]
