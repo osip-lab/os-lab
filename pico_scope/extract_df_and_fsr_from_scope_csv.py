@@ -1,9 +1,8 @@
 import pandas as pd
 import matplotlib
-
 from utilities.video_tools.utils import wait_for_video_path_from_clipboard
 
-matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
+matplotlib.use('Qt5Agg')
 from local_config import PATH_DROPBOX
 import os
 import numpy as np
@@ -11,7 +10,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from matplotlib.widgets import SpanSelector
 import itertools
-
 
 specific_file_path = wait_for_video_path_from_clipboard(filetype='csv')
 
@@ -21,11 +19,8 @@ data_numpy = df.to_numpy()
 
 x = data_numpy[:, 0]  # Time column
 y = data_numpy[:, 1]  # Channel B column
-# CONSTANT_TITLE = "press: 1=single, 2=position, 3=double, d=delete last fit, enter=next group, z=zoom"
-# def generate_title(i, mode):
 
 
-# Lorentzian Function
 def lorentzian(x, x0, gamma, A, y0):
     return A * gamma / (np.pi * ((x - x0) ** 2 + gamma ** 2)) + y0
 
@@ -34,7 +29,6 @@ def double_lorentzian(x, x01, gamma1, A1, x02, gamma2, A2, y0):
     return (lorentzian(x, x01, gamma1, A1, 0) + lorentzian(x, x02, gamma2, A2, 0) + y0)
 
 
-# List to store only x0 results
 lorentzian_positions = [[]]
 fit_colors = itertools.cycle(["r", "g", "b", "m", "c", "y"])
 current_color = next(fit_colors)
@@ -44,14 +38,26 @@ ax.plot(x, y, label="Raw Data")
 fit_lines = []
 position_lines = []
 mode = "single"  # Can be 'single', 'position', or 'double'
-temp_clicks = []
-waiting_for_double_span = False
-double_span_stage = 0  # 0 = wait for data span, 1 = wait for guess span
+double_span_stage = 0
 
 
-# SpanSelector callback for single or double fit
+def add_position(x0):
+    if not lorentzian_positions:
+        lorentzian_positions.append([x0])
+    elif len(lorentzian_positions[-1]) < 2:
+        lorentzian_positions[-1].append(x0)
+    else:
+        lorentzian_positions.append([x0])
+    print(lorentzian_positions)
+
+    if len(lorentzian_positions[-1]) == 2:
+        global current_color
+        print("Changing color")
+        current_color = next(fit_colors)
+
+
 def onselect(xmin, xmax):
-    global current_color, mode, temp_clicks, waiting_for_double_span, double_span_stage
+    global current_color, mode, double_span_stage
 
     indices = np.where((x >= xmin) & (x <= xmax))[0]
     if len(indices) < 5:
@@ -67,14 +73,19 @@ def onselect(xmin, xmax):
         A_init = np.pi * gamma_init * np.max(y_range)
         p0 = [x0_init, gamma_init, A_init, y0_init]
 
-        popt, _ = curve_fit(lorentzian, x_range, y_range, p0=p0)
-        x0_fitted = popt[0]
-        lorentzian_positions[-1].append([x0_fitted])
+        try:
+            popt, _ = curve_fit(lorentzian, x_range, y_range, p0=p0)
+            x0_fitted = popt[0]
 
-        fit_x = np.linspace(xmin, xmax, 200)
-        fit_y = lorentzian(fit_x, *popt)
-        fit_line, = ax.plot(fit_x, fit_y, color=current_color, linestyle="--")
-        fit_lines.append(fit_line)
+            fit_x = np.linspace(xmin, xmax, 200)
+            fit_y = lorentzian(fit_x, *popt)
+            fit_line, = ax.plot(fit_x, fit_y, color=current_color, linestyle="--")
+            fit_lines.append(fit_line)
+
+            add_position(x0_fitted)
+
+        except Exception as e:
+            print("Single fit failed:", e)
 
     elif mode == "double":
         if double_span_stage == 0:
@@ -102,9 +113,7 @@ def onselect(xmin, xmax):
             try:
                 popt, _ = curve_fit(double_lorentzian, x_range, y_range, p0=p0)
                 x01_fitted, x02_fitted = popt[0], popt[3]
-                print(f" onselect, try, before appending: {lorentzian_positions}")
                 lorentzian_positions.append([x01_fitted, x02_fitted])
-                print(f" onselect, try, after appending: {lorentzian_positions}")
 
                 fit_x = np.linspace(xmin, xmax, 300)
                 fit_y = double_lorentzian(fit_x, *popt)
@@ -114,15 +123,12 @@ def onselect(xmin, xmax):
                 current_color = next(fit_colors)
                 double_span_stage = 0
             except Exception as e:
-                print("Fit failed:", e)
+                print("Double fit failed:", e)
                 double_span_stage = 0
 
     ax.set_title(f"Mode: {mode}")
-    print(f"onselect, final {lorentzian_positions}")
     plt.draw()
 
-
-# Mouse click for position mode
 
 def onclick(event):
     if event.inaxes != ax:
@@ -133,48 +139,39 @@ def onclick(event):
 
     if mode == "position":
         x_clicked = event.xdata
-        lorentzian_positions[-1].append([x_clicked])
+        add_position(x_clicked)
         line = ax.axvline(x_clicked, color=current_color, linestyle=":")
         position_lines.append(line)
         ax.set_title(f"Mode: {mode}")
         plt.draw()
 
 
-# Key events
 def on_key(event):
-    global current_color, mode, waiting_for_double_span, double_span_stage
+    global current_color, mode, double_span_stage
     if event.key == "d" and lorentzian_positions[-1]:
         lorentzian_positions[-1].pop()
+        if not lorentzian_positions[-1] and len(lorentzian_positions) > 1:
+            lorentzian_positions.pop()
         if mode == "position" and position_lines:
             position_lines.pop().remove()
         elif fit_lines:
             fit_lines.pop().remove()
         plt.draw()
-    elif event.key == "enter":
-        if lorentzian_positions[-1]:
-            lorentzian_positions.append([])
-            current_color = next(fit_colors)
     elif event.key in ["1", "2", "3"]:
         if event.key == "1":
             mode = "single"
             ax.set_title("Mode: single-lorentzian fit")
-            print("Mode set to: single-lorentzian fit")
         elif event.key == "2":
             mode = "position"
             ax.set_title("Mode: manual position selection")
-            print("Mode set to: manual position selection")
         elif event.key == "3":
             mode = "double"
             double_span_stage = 0
             ax.set_title("Mode: sum of 2 lorentzians")
-            print("Mode set to: sum of 2 lorentzians — select data span first")
         plt.draw()
     elif event.key == "z":
         toolbar = plt.get_current_fig_manager().toolbar
-        if toolbar.mode == 'zoom rect':
-            toolbar.zoom()
-        else:
-            toolbar.zoom()
+        toolbar.zoom()
 
 
 # Temporary storage for double fit region
@@ -187,12 +184,8 @@ fig.canvas.mpl_connect("button_press_event", onclick)
 plt.xlabel("X")
 plt.ylabel("Y")
 plt.legend()
-plt.show()
+plt.show(block=True)
 # Remove all elements that are empty lists from lorentzian_positions:
-
-
-# %%
-lorentzian_positions = [[a[0][0], a[1][0]] for a in lorentzian_positions]
 # %%
 print("before cleaning:", lorentzian_positions)
 lorentzian_positions = [pos for pos in lorentzian_positions if pos]

@@ -6,8 +6,9 @@ import pyperclip
 import os
 import time
 
-
+I = 0
 def wait_for_video_path_from_clipboard(filetype: Optional[str] = None, poll_interval=0.5, verbose=True):
+    global I
     while True:
         clipboard = pyperclip.paste().strip().strip('"')  # Strip whitespace and quotes
 
@@ -32,5 +33,8 @@ def wait_for_video_path_from_clipboard(filetype: Optional[str] = None, poll_inte
                     print(f"✔ Detected path: {clipboard}")
                 return clipboard
         if verbose:
-            print("Waiting for a valid video path in clipboard...")
+            number_of_dots = I % 3 + 1
+            dots = '.' * number_of_dots
+            print(f"Waiting for path to be copied{dots}", end="\r")
+            I += 1
         time.sleep(poll_interval)
