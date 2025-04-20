@@ -46,7 +46,7 @@ def convert_all_avi_files_in_folder(folder_path,
                     success = convert_to_h265(input_path, output_path, compression_rate)
 
                     # Delete the original file after conversion
-                    if os.path.exists(input_path) and delete_original_files and success:
+                    if os.path.exists(input_path) and delete_original_files and success and os.path.exists(output_path):
                         os.remove(input_path)
                         print(f"Deleted original file: {input_path}")
 

@@ -5,12 +5,12 @@ from matplotlib.widgets import Slider
 import os
 from matplotlib.patches import Circle
 import matplotlib
-from utilities.video_tools.utils import wait_for_video_path_from_clipboard
+from utilities.video_tools.utils import wait_for_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 
 # ---- Set video path ----
-video_path = wait_for_video_path_from_clipboard(filetype='video')
+video_path = wait_for_path_from_clipboard(filetype='video')
 
 # ---- Set video path ----
 
@@ -73,6 +73,7 @@ clicked_points = []
 circle_patch = None
 current_frame_index = 0
 
+
 def calc_circle(x1, y1, x2, y2, x3, y3):
     temp = x2 ** 2 + y2 ** 2
     bc = (x1 ** 2 + y1 ** 2 - temp) / 2
@@ -85,6 +86,7 @@ def calc_circle(x1, y1, x2, y2, x3, y3):
     r = np.sqrt((cx - x1) ** 2 + (cy - y1) ** 2)
     return cx, cy, r
 
+
 def update_title(frame_idx, radius=None):
     time = frame_idx / fps
     base_title = f"Frame {frame_idx} (Time: {time:.2f}s)"
@@ -95,6 +97,7 @@ def update_title(frame_idx, radius=None):
         base_title += " [SELECTED]"
     ax.set_title(base_title)
 
+
 def rebin_image(img, factor):
     h, w = img.shape
     h_crop = (h // factor) * factor
@@ -103,12 +106,14 @@ def rebin_image(img, factor):
     rebinned = img_crop.reshape(h_crop // factor, factor, w_crop // factor, factor).sum(axis=(1, 3))
     return rebinned
 
+
 def update_selected_lines():
     global selected_lines
     for line in selected_lines:
         line.remove()
     selected_lines = [ax_plot.axvline(x=idx, color='red', linestyle='--', alpha=0.5) for idx in selected_frames_indices]
     fig.canvas.draw_idle()
+
 
 def update(val):
     global current_frame_index, circle_patch, clicked_points
@@ -125,8 +130,10 @@ def update(val):
     update_title(current_frame_index)
     fig.canvas.draw_idle()
 
+
 frame_slider.on_changed(update)
 vmax_slider.on_changed(update)
+
 
 def on_key(event):
     global rebin_factor
@@ -147,6 +154,7 @@ def on_key(event):
         rebin_factor = int(event.key)
         print(f"Rebinning factor set to: {rebin_factor}")
         update(None)
+
 
 def on_click(event):
     global clicked_points, circle_patch
@@ -177,6 +185,7 @@ def on_click(event):
             plt.draw()
         except ValueError as e:
             print("Error:", e)
+
 
 fig.canvas.mpl_connect('key_press_event', on_key)
 fig.canvas.mpl_connect('button_press_event', on_click)

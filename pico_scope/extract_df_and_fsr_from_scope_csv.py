@@ -1,17 +1,25 @@
 import pandas as pd
 import matplotlib
-from utilities.video_tools.utils import wait_for_video_path_from_clipboard
+from utilities.video_tools.utils import wait_for_path_from_clipboard
+from local_config import PATH_CAVITY_DESIGN_PROJECT
+import sys
 
-matplotlib.use('Qt5Agg')
-from local_config import PATH_DROPBOX
-import os
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from matplotlib.widgets import SpanSelector
 import itertools
 
-specific_file_path = wait_for_video_path_from_clipboard(filetype='csv')
+sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
+import plots_generations_scripts.df_over_fsr_to_NA_ratio_output as simulation
+df_over_FSR_interp, NAs, df_over_FSR, Ls = simulation.generate_lens_position_dependencies_output(plot_cavity=True,
+                                                                                                 plot_spectrum=True,
+                                                                                                 plot_dependencies=True)
+matplotlib.use('Qt5Agg')
+# %%
+specific_file_path = wait_for_path_from_clipboard(filetype='csv')
 
 df = pd.read_csv(specific_file_path, skiprows=[1, 2])
 df = df.loc[:, ['Time', 'Channel B']]
@@ -94,7 +102,9 @@ def onselect(xmin, xmax):
             double_fit_data['x_range'] = x_range
             double_fit_data['y_range'] = y_range
             double_span_stage = 1
-            print("Select second span to choose initial x0 positions")
+            ax.set_title(
+                "Select second span between estimated center of the first lorentzian and the "
+                "estimated center of the second lorentzian")
         elif double_span_stage == 1:
             x01_init = xmin
             x02_init = xmax
@@ -106,7 +116,8 @@ def onselect(xmin, xmax):
 
             y0_init = np.min(y_range)
             gamma1_init = gamma2_init = (xmax - xmin) / 6
-            A1_init = A2_init = np.max(y_range)
+            A1_init = np.pi * gamma1_init * y_range[np.argmin(np.abs(x_range - xmin))]
+            A2_init = np.pi * gamma2_init * y_range[np.argmin(np.abs(x_range - xmax))]
 
             p0 = [x01_init, gamma1_init, A1_init, x02_init, gamma2_init, A2_init, y0_init]
 
@@ -167,7 +178,7 @@ def on_key(event):
         elif event.key == "3":
             mode = "double"
             double_span_stage = 0
-            ax.set_title("Mode: sum of 2 lorentzians")
+            ax.set_title("Mode: sum of 2 lorentzians, choose a range in which to fit")
         plt.draw()
     elif event.key == "z":
         toolbar = plt.get_current_fig_manager().toolbar
@@ -209,4 +220,6 @@ else:
         results["df_over_fsr"].append(df_over_fsr)
 
     results_df = pd.DataFrame(results)
+    results_df["NA"] = df_over_FSR_interp(results_df["df_over_fsr"])
+
     print(results_df)
