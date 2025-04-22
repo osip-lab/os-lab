@@ -9,7 +9,7 @@ from utilities.video_tools.utils import wait_for_path_from_clipboard
 from basler_cam.mode_position_capture_gui import fit_gaussian
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 from matplotlib.widgets import TextBox
-
+from matplotlib import gridspec
 
 
 # ---- Set video path ----
@@ -37,10 +37,9 @@ while True:
 cap.release()
 
 frames = np.array(frames)
-frames = frames - np.quantile(frames, 0.3, axis=0, keepdims=True)
 
 PIXEL_SIZE_MM = 0.0055
-rebin_factor = 1
+rebin_factor = 64
 selected_frames = []
 selected_frames_indices = []
 
@@ -49,27 +48,96 @@ frame_sums = [np.sum(f) for f in frames]
 
 # ---- Initialize plot ----
 vmax_default = np.max(frames)
-fig, (ax, ax_plot) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [6, 1]})
-plt.subplots_adjust(left=0.25, bottom=0.3)
 
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
+from matplotlib.widgets import Slider, TextBox
+
+# Create the main figure window
+fig = plt.figure(figsize=(10, 8))
+
+# Define a grid layout with 3 rows and 3 columns
+# Row heights: [top projection, main image, bottom plot]
+# Column widths: [left projection, main image, colorbar]
+gs = gridspec.GridSpec(
+    3, 3,
+    height_ratios=[1, 6, 1],
+    width_ratios=[1, 6, 0.25]
+)
+
+# Create axes for each panel
+ax_top = fig.add_subplot(gs[0, 1])     # Top projection (column mean)
+ax_left = fig.add_subplot(gs[1, 0])    # Left projection (row mean)
+ax = fig.add_subplot(gs[1, 1])         # Main image display
+ax_cb = fig.add_subplot(gs[1, 2])      # Colorbar
+ax_plot = fig.add_subplot(gs[2, 1])    # Intensity vs. frame plot
+
+# Adjust layout to make room for sliders and help text below
+plt.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.25)
+
+# Display the first frame in grayscale
 img_disp = ax.imshow(frames[0], cmap='gray', vmin=0, vmax=vmax_default)
-cb = plt.colorbar(img_disp, ax=ax)
 
-intensity_line, = ax_plot.plot(frame_sums, lw=1)
-selected_lines = []
+# Add a colorbar for intensity scaling
+cb = plt.colorbar(img_disp, cax=ax_cb)
+
+# === Line objects for projections ===
+
+# These lines show the row/column means of the raw image
+col_mean_line, = ax_top.plot([], [], lw=1)       # Top projection
+row_mean_line, = ax_left.plot([], [], lw=1)      # Left projection
+
+# These lines show the Gaussian fit projections (dashed red)
+gauss_col_line, = ax_top.plot([], [], 'r--', lw=1)
+gauss_row_line, = ax_left.plot([], [], 'r--', lw=1)
+
+# Lines for fitted Gaussian mean positions (vertical/horizontal markers)
+gauss_xline = ax_top.axvline(0, color='r', linestyle='--', visible=False)
+gauss_yline = ax_left.axhline(0, color='r', linestyle='--', visible=False)
+
+# === Styling for side projection plots ===
+
+# Remove ticks to declutter side plots
+ax_top.set_xticks([])
+ax_top.set_yticks([])
+ax_left.set_xticks([])
+ax_left.set_yticks([])
+
+# Invert the y-axis on the left projection so it aligns with image
+ax_left.invert_yaxis()
+
+# === Bottom intensity plot (total image intensity per frame) ===
+
+intensity_line, = ax_plot.plot(frame_sums, lw=1)  # Main intensity trace
+selected_lines = []                               # To store markers for selected frames
+
 ax_plot.set_xlim(0, len(frames) - 1)
 ax_plot.set_ylabel("Total Intensity")
 ax_plot.set_xlabel("Frame")
 
-# Sliders
+# === UI Controls ===
+
+# Slider to select the current frame
 ax_frame = plt.axes([0.25, 0.2, 0.65, 0.03])
 frame_slider = Slider(ax_frame, 'Frame', 0, len(frames) - 1, valinit=0, valstep=1)
 
+# Slider to adjust the display intensity max (vmax)
 ax_vmax = plt.axes([0.25, 0.15, 0.65, 0.03])
 vmax_slider = Slider(ax_vmax, 'vmax', 1, 255, valinit=vmax_default)
 
+# Text box to set the rebinning factor
 ax_rebin = plt.axes([0.25, 0.1, 0.2, 0.03])
 rebin_textbox = TextBox(ax_rebin, "Rebin", initial=str(rebin_factor))
+
+# === Help instructions at the bottom ===
+
+# Add a fixed help text at the bottom center of the window
+help_text = (
+    "Press: space to add frame to frames for fitting, w to fit, "
+    "arrows to navigate between frames, and the number box is for rebinningFrame"
+)
+fig.text(0.5, 0.02, help_text, ha='center', va='bottom', fontsize=9)
+
 
 def on_rebin_text_submit(text):
     global rebin_factor
@@ -109,7 +177,7 @@ def calc_circle(x1, y1, x2, y2, x3, y3):
 
 def update_title(frame_idx, radius=None, status=""):
     time = frame_idx / fps
-    base_title = f"Frame {frame_idx} (Time: {time:.2f}s)"
+    base_title = (f" {frame_idx} (Time: {time:.2f}s)")
     if radius is not None:
         radius_mm = radius * PIXEL_SIZE_MM
         base_title += f" | Radius: {radius:.2f}px = {radius_mm:.3f}mm"
@@ -145,6 +213,7 @@ def update(val):
     frame = rebin_image(frame, rebin_factor) if rebin_factor > 1 else frame
     img_disp.set_data(frame)
     img_disp.set_clim(vmin=0, vmax=vmax_val)
+    print("kaki 1")
 
     # Remove old overlays
     if circle_patch:
@@ -157,13 +226,58 @@ def update(val):
 
     clicked_points = []
 
-    # Draw new contour if fit was successful
+    # Update projections
+    row_mean = np.mean(frame, axis=1)
+    col_mean = np.mean(frame, axis=0)
+    col_mean_line.set_data(np.arange(len(col_mean)), col_mean)
+    row_mean_line.set_data(row_mean, np.arange(len(row_mean)))
+    ax_top.set_xlim(0, len(col_mean))
+    ax_top.set_ylim(0, np.max(col_mean) * 1.1)
+    ax_left.set_xlim(0, np.max(row_mean) * 1.1)
+    ax_left.set_ylim(0, len(row_mean))
+
+    # Hide Gaussian projection lines
+    # Hide Gaussian lines initially
+    # gauss_xline.set_visible(False)
+    # gauss_yline.set_visible(False)
+    # gauss_col_line.set_data([], [])
+    # gauss_row_line.set_data([], [])
+    print("kaki 3")
+    # If Gaussian fit is available, plot the contour and projections
     if fit_data is not None:
-        gauss, _ = fit_data
+        print("kaki 4")
+        gauss, par = fit_data
         gaussian_contour = ax.contour(gauss, levels=5, colors='r')
+
+        # Gaussian mean position
+        # x_mean, y_mean = par['x_0'], par['y_0']
+        # gauss_xline.set_visible(True)
+        # gauss_yline.set_visible(True)
+        # gauss_xline.set_xdata([x_mean])
+        # gauss_yline.set_ydata([y_mean])
+
+        # Gaussian projections
+        gauss_col_mean = np.mean(gauss, axis=0)
+        gauss_row_mean = np.mean(gauss, axis=1)
+        print(f"{col_mean.shape=}")
+        print(f"{col_mean=}")
+        print(f"{gauss_col_mean.shape=}")
+        print(f"{gauss_col_mean=}")
+
+        gauss_col_line.set_visible(True)
+        gauss_row_line.set_visible(True)
+        gauss_col_line.set_data(np.arange(len(gauss_col_mean)) / rebin_factor, gauss_col_mean)
+        gauss_row_line.set_data(gauss_row_mean, np.arange(len(gauss_row_mean)) / rebin_factor)
+
+        # Update axis limits to ensure lines are shown
+        ax_top.relim()
+        ax_top.autoscale_view()
+        ax_left.relim()
+        ax_left.autoscale_view()
 
     update_title(current_frame_index)
     fig.canvas.draw_idle()
+
 
 
 frame_slider.on_changed(update)
@@ -190,12 +304,12 @@ def on_key(event):
         update_title(current_frame_index)
         fig.canvas.draw_idle()
 
-    elif event.key.isdigit() and 1 <= int(event.key) <= 9:
-        rebin_factor = int(event.key)
-        print(f"Rebinning factor set to: {rebin_factor}")
-        update(None)
+    # elif event.key.isdigit() and 1 <= int(event.key) <= 9:
+    #     rebin_factor = int(event.key)
+    #     print(f"Rebinning factor set to: {rebin_factor}")
+    #     update(None)
 
-    elif event.key == 'enter':
+    elif event.key == 'w':
         if not selected_frames_indices:
             print("No frames selected.")
             return
@@ -207,15 +321,15 @@ def on_key(event):
         try:
             selected_array = frames[selected_frames_indices]
             averaged_frame = np.mean(selected_array, axis=0)
-            averaged_frame -= np.min(averaged_frame)
 
             # rebinned = rebin_image(averaged_frame, rebin_factor) if rebin_factor > 1 else averaged_frame
+            # print ("rebinned_shape :", rebinned.shape)
             # gauss, par = fit_gaussian(rebinned, rebinning=1)  # already rebinned
-
+            # print("gauss shape:", gauss.shape)
             gauss, par = fit_gaussian(averaged_frame, rebinning=rebin_factor)  # already rebinned
             print("Fit parameters:", par)
             fit_data = (gauss, par)
-
+            print("updating title")
             update_title(current_frame_index, status="Fit finished")
             update(None)
 

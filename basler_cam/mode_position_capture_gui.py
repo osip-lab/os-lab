@@ -278,15 +278,19 @@ def gaussian2d(xy, ampl, xo, yo, sigma_x, sigma_y, theta, offset):
     return np.ravel(g)
 
 
-def rebin(a, shape):
-    sh = shape[0], a.shape[0]//shape[0], shape[1], a.shape[1]//shape[1]
-    return a.reshape(sh).mean(-1).mean(1)
+def rebin_image(img, factor):
+    h, w = img.shape
+    h_crop = (h // factor) * factor
+    w_crop = (w // factor) * factor
+    img_crop = img[:h_crop, :w_crop]
+    rebinned = img_crop.reshape(h_crop // factor, factor, w_crop // factor, factor).mean(axis=(1, 3))
+    return rebinned
 
 
 def fit_gaussian(arr, rebinning=1):
 
     sy0, sx0 = np.shape(arr)
-    arr = rebin(arr, (int(sy0 / rebinning), int(sx0 / rebinning)))
+    arr = rebin_image(arr, rebinning)
     sy, sx = np.shape(arr)
 
     xx = np.linspace(0, sx - 1, sx)
