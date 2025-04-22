@@ -1,13 +1,9 @@
 # os-lab
-This repository contains the scripts of the lab of Osip Schwartz. it does not include the specific simulations of Kali regarding p
+This repository contains the scripts of the lab of Osip Schwartz.
+it does not include the specific simulations: ```cavity-design``` and ```electron-laser-interaction```
 
 ## How to work with data files:
-Here I assume all data files are either in our group's Dropbox, or locally in the computer.
-* go to local_config.py file and set there the local path to the group's Dropbox on your computer, where data should sit, like so:
-```python
-PATH_DROPBOX = r"C:\Users\michaeka\Dropbox (Weizmann Institute)\Lab's Dropbox"
-PATH_DATA_LOCAL = r"C:\Users\michaeka\data_bank"  
-```
+* copy the file ```local_config_template.py``` to a new file, called ```local_config.py``` and set there the relevant local paths.
 * Whenever wanting to read or write data, you can access it like so:
 
 ```python
@@ -29,7 +25,7 @@ Open the git Gui and clone the repository to a local path of your choice on your
 ![image](https://github.com/user-attachments/assets/e4208795-88a5-402f-a09e-1adda10f5aac)
 The path to the repository that is in the image should be the link to the github page of this repository: https://github.com/mkali-weizmann/os-lab
 
-Go to pycharm and open the to which you cloned the git project as a new project:
+Go to pycharm and open the folder to which you cloned the git project as a new project:
 ![image](https://github.com/user-attachments/assets/a5bf101b-432a-4f65-8457-9230f352da71)
 
 He will suggest you to open a venv enviorenment for the project. If your local folder is in a cloud service such as Dropbox or Google Drive, it is recommend that you change the suggested path in the first row to another path which sits outside of the cloud folder. The reason for this it that there will be many automatically generated files in the venv, which we don't want the cloud service to constantly upload and download we we work on the project.
@@ -37,10 +33,10 @@ He will suggest you to open a venv enviorenment for the project. If your local f
 
 * **Note**: Do not work on the same shared folder together - if you work on the same shared folder your code will be ran over by someone else before you commited it, and changes will be lost. It is fine if your folder is in a cloud storage service, but there should be a different folder for each pesron to work with it.
 
-In the requirements.txt file all the python packages that are required for the project are specified. Pycharm will detect them and offer to install them for you. If it failed, you can download them manually using pip. It is important that you do it through the Pycharm terminal, as you want those packages to be installed in the venv directory, and using the pycharm's terminal guarantees it.
+In the ```requirements.txt``` file all the python packages that are required for the project are specified. Pycharm will detect them and offer to install them for you. If it failed, you can download them manually using pip. It is important that you do it through the Pycharm terminal, as you want those packages to be installed in the venv directory, and using the pycharm's terminal guarantees it.
 
 to do so, go to the terminal window in pycharm and install the packages, specifying the version that appears in the requirements file.
-Here is an example of installing a specific version of matplotlib (typing 'pip install -v "matplotlib==3.9.2"' into the terminal and then pressing enter):
+Here is an example of installing a specific version of matplotlib (typing ```pip install -v "matplotlib==3.9.2"``` into the terminal and then pressing enter):
 
 ![image](https://github.com/user-attachments/assets/1812c0ef-f737-472b-8eec-54a3bddaa6e7)
 
@@ -48,14 +44,21 @@ Here is an example of installing a specific version of matplotlib (typing 'pip i
 ![image](https://github.com/user-attachments/assets/b39eb518-70e0-4e77-af6e-ca12223bfd2c)
 
 ## How to ignore big data files in the project (ignore = don't track and don't upload them with git):
-add them to the .gitignore text file:
+add them to the ```.gitignore``` text file:
 ![image](https://github.com/user-attachments/assets/22f727dc-4804-4ad9-ba1e-fcb172bfaaf5)
 
 ## How to compress heavy videos:
-1. Make sure you have ffmpeg on the computer by typing 'ffmpeg' in the terminal. If you don't have it, download it according to those instruction: https://phoenixnap.com/kb/ffmpeg-windows
-2. run utilities/compress_videos.cmd and follow the instructions (it converts all files in the folder you give it). 
+1. Make sure you have ffmpeg on the computer by typing ```ffmpeg``` in the terminal (Winkey+r, type cmd, enter, and then type ffmpeg in the window).
+If you don't have it, download it according to those instruction: https://phoenixnap.com/kb/ffmpeg-windows
+2. run utilities/compress_videos.cmd and follow the instructions (it converts all files in the folder you give it).
+3. If you did not choose to delete the original files, when compressing, but wish to delete them afterwards, run utilities/video_tools/delete_redundant_avi_files.py on the same folder.
+
+## How to conveniently work on data files that change rapidly:
+This syntax takes the file from your clipboard (if it is a file with the relevant format), or wait for a file from the relevant format to be copied.
+It is convenient when you run the script, each time on a different data file (csv, video, etc.) and you want to avoid changing the path in the code each time.
+```python
+from utilities.video_tools.utils import wait_for_path_from_clipboard
+video_path = wait_for_path_from_clipboard(filetype='video')
+```
 
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
-
-
-
