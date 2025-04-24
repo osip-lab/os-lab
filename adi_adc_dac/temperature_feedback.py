@@ -94,6 +94,7 @@ if __name__ == "__main__":
     v_lim = (0.25, 2.25)  # limitation for DAC voltage, V
     t_skip = 3.0  # time for skipping next DAC increase, s
     t_show = 60.0  # last time to show on graph, s
+    t_pause = 1.0  # pause time between measurements, s
 
     w_dir = os.path.join(path_data_local, 'adi_adc_dac')
     data = pd.DataFrame({col: pd.Series(dtype=dt) for col, dt in zip(['ts', 't', *[f'adc_ch{i}' for i in range(8)], 'dac_ch0'], [str, *([float] * 10)])})
@@ -243,6 +244,6 @@ if __name__ == "__main__":
 
         shutil.rmtree(folder)
 
-        plt.pause(0.2)
+        plt.pause(t_pause)
 
     client.CloseSession()
