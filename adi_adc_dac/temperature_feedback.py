@@ -7,6 +7,8 @@ import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Button
+import matplotlib.gridspec as grid
 from local_config import path_data_local
 
 sys.path.append(r'C:\Program Files\Analog Devices\ACE\Client')
@@ -40,26 +42,44 @@ def dac_volt2code(x):
 
 
 def set_dac(cl, volt, lims=(0.0, 2.5)):
+    global text_temp
     context = cl.get_ContextPath()
     client.ContextPath = r'\System\Subsystem_2\EVAL-AD5679RSDZ\AD5679R'  # noqa
-    plt.pause(0.01)
+    # plt.pause(0.01)
     volt = min(max(volt, lims[0]), lims[1])
     code = dac_volt2code(volt)
     client.SetBigIntParameter('Input_Value_DAC0', str(code), '-1')
     client.Run('@SoftwareLdac0')  # noqa
     m = f'DAC loaded ch0 - volt = {dac_code2volt(code):01.4f}, code = {code:d}'
     logging.info(m)
+    text_temp.set_text(f'Temp voltage {v_dac * 1000:+07.1f} mV')
     client.ContextPath = context
-    plt.pause(0.01)
+    # plt.pause(0.01)
     return volt
 
 
-def press(event):
-    global trig_main, trig_lock
-    if event.key == 'e':
-        trig_main = False
-    elif event.key == 'l':
-        trig_lock = not trig_lock
+def toggle_lock(event):
+    global trig_lock, text_lock
+    trig_lock = not trig_lock
+    text_lock.set_text('Locking is on' if trig_lock else 'Locking is off')
+    fig.canvas.draw_idle()
+
+
+def temp_up(event):
+    global v_dac, v_st_m
+    v_dac += v_st_m
+    v_dac = set_dac(client, v_dac, lims=v_lim)
+
+
+def temp_down(event):
+    global v_dac, v_st_m
+    v_dac -= v_st_m
+    v_dac = set_dac(client, v_dac, lims=v_lim)
+
+
+def exit_app(event):
+    global trig_main
+    trig_main = False
 
 
 if __name__ == "__main__":
@@ -70,6 +90,7 @@ if __name__ == "__main__":
     v_dac = 1.25  # initial voltage for DAC, V
     v_th = 0.1  # threshold voltage to react, V
     v_st = 0.01  # step voltage for DAC, V
+    v_st_m = 0.01  # step voltage for manual adjusting of DAC, V
     v_lim = (0.25, 2.25)  # limitation for DAC voltage, V
     t_skip = 3.0  # time for skipping next DAC increase, s
     t_show = 60.0  # last time to show on graph, s
@@ -81,20 +102,40 @@ if __name__ == "__main__":
     dac_ls = ['dac_ch0']
     labels = adc_ls + dac_ls
 
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    cid = fig.canvas.mpl_connect('key_press_event', press)  # noqa
+    fig = plt.figure(figsize=(10, 6))
+    gs = grid.GridSpec(10, 4, figure=fig)
+    ax = fig.add_subplot(gs[1:, :])
+    button_lock_ax = fig.add_subplot(gs[0, 0])
+    button_up_ax = fig.add_subplot(gs[0, 1])
+    button_down_ax = fig.add_subplot(gs[0, 2])
+    button_exit_ax = fig.add_subplot(gs[0, 3])
+
     sax = ax.twinx()
     lines = dict()
     for lbl in adc_ls:
         lines[lbl] = ax.plot([], [], marker='.')[0]
     for lbl in dac_ls:
         lines[lbl] = sax.plot([], [], ls='--', marker='x', c='tab:orange')[0]
+
+    button_lock = Button(button_lock_ax, 'Toggle Lock')
+    button_up = Button(button_up_ax, 'Temp up')
+    button_down = Button(button_down_ax, 'Temp down')
+    button_exit = Button(button_exit_ax, 'Exit')
+    text_lock = ax.text(0.5, 0.95, 'Locking is off', transform=ax.transAxes, fontsize=12, ha='center', color='red')
+    text_piezo = ax.text(0.2, 0.95, f'Piezo voltage {0.0 * 1000:+07.1f} mV', transform=ax.transAxes, fontsize=12, ha='center', color='k')
+    text_temp = ax.text(0.8, 0.95, f'Temp voltage {v_dac * 1000:+07.1f} mV', transform=ax.transAxes, fontsize=12, ha='center', color='k')
+    button_lock.on_clicked(toggle_lock)
+    button_up.on_clicked(temp_up)
+    button_down.on_clicked(temp_down)
+    button_exit.on_clicked(exit_app)
+
     ax.set_xlabel('time, s')
     ax.set_ylabel('adc voltage, V')
     sax.set_ylabel('dac voltage, V')
     ax.grid()
     sax.grid(ls='--')
     fig.tight_layout()
+
     plt.show(block=False)
     plt.pause(0.1)
 
@@ -163,6 +204,7 @@ if __name__ == "__main__":
         msg = (f"ADC measured - ts = {data.loc[i, 'ts']}, t = {data.loc[i, 't']:09.3f} s, " +
                ", ".join(f"ch{k} = {data.loc[i, f'adc_ch{k}']:+01.4f} V" for k in range(8)))
         logging.info(msg)
+        text_piezo.set_text(f"Piezo voltage {np.array(data['adc_ch0'])[-1] * 1000:+07.1f} mV")
 
         mask = np.max(data['t']) - data['t'] < t_show
         tdf = data[mask]
