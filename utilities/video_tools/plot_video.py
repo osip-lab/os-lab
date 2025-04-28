@@ -1,42 +1,54 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider
 import os
 from matplotlib.patches import Circle
 import matplotlib
 from utilities.video_tools.utils import wait_for_path_from_clipboard
-from basler_cam.mode_position_capture_gui import fit_gaussian
+from basler_cam.mode_position_capture_gui import fit_gaussian, rebin_image
+
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
-from matplotlib.widgets import TextBox
 from matplotlib import gridspec
+from matplotlib.widgets import Slider, TextBox
 
+# ---- Set video/image path ----
+path = wait_for_path_from_clipboard(filetype='media')  # <--- changed from 'video' to 'media'
 
-# ---- Set video path ----
-video_path = wait_for_path_from_clipboard(filetype='video')
+if not os.path.exists(path):
+    raise FileNotFoundError(f"File not found: {path}")
 
-if not os.path.exists(video_path):
-    raise FileNotFoundError(f"Video not found: {video_path}")
-
-# ---- Load video into memory ----
-cap = cv2.VideoCapture(video_path)
-if not cap.isOpened():
-    raise IOError(f"Cannot open video: {video_path}")
-
-frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-fps = cap.get(cv2.CAP_PROP_FPS)
+# ---- Try to load as video ----
 frames = []
+is_video = False
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    frames.append(gray)
+cap = cv2.VideoCapture(path)
+if cap.isOpened():
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
 
-cap.release()
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frames.append(gray)
 
-frames = np.array(frames)
+    cap.release()
+
+    if len(frames) > 0:
+        frames = np.array(frames)
+        is_video = True
+    else:
+        print("⚠ Detected empty video file. Trying to load as image instead.")
+else:
+    print("⚠ Failed to open as video. Trying to load as image instead.")
+
+# ---- If not a video, try to load as an image ----
+if not is_video:
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise IOError(f"Cannot open file as video or image: {path}")
+    frames = np.array([img])  # Add an extra dimension: shape (1, H, W)
 
 PIXEL_SIZE_MM = 0.0055
 rebin_factor = 64
@@ -49,10 +61,6 @@ frame_sums = [np.sum(f) for f in frames]
 # ---- Initialize plot ----
 vmax_default = np.max(frames)
 
-import matplotlib.pyplot as plt
-from matplotlib import gridspec
-from matplotlib.widgets import Slider, TextBox
-
 # Create the main figure window
 fig = plt.figure(figsize=(10, 8))
 
@@ -64,6 +72,7 @@ gs = gridspec.GridSpec(
     height_ratios=[1, 6, 1],
     width_ratios=[1, 6, 0.25]
 )
+
 
 # Create axes for each panel
 ax_top = fig.add_subplot(gs[0, 1])     # Top projection (column mean)
@@ -176,6 +185,7 @@ def calc_circle(x1, y1, x2, y2, x3, y3):
 
 
 def update_title(frame_idx, radius=None, status=""):
+    global fit_data
     time = frame_idx / fps
     base_title = (f" {frame_idx} (Time: {time:.2f}s)")
     if radius is not None:
@@ -185,16 +195,10 @@ def update_title(frame_idx, radius=None, status=""):
         base_title += " [SELECTED]"
     if status:
         base_title += f" | {status}"
+    if fit_data is not None:
+        gauss, par = fit_data
+        base_title += f" | Fit: w_x={par['w_x'] * 5.5e-3:.2f}mm, w_y={par['w_y'] * 5.5e-3:.2f}mm"
     ax.set_title(base_title)
-
-
-def rebin_image(img, factor):
-    h, w = img.shape
-    h_crop = (h // factor) * factor
-    w_crop = (w // factor) * factor
-    img_crop = img[:h_crop, :w_crop]
-    rebinned = img_crop.reshape(h_crop // factor, factor, w_crop // factor, factor).mean(axis=(1, 3))
-    return rebinned
 
 
 def update_selected_lines():
@@ -242,10 +246,8 @@ def update(val):
     # gauss_yline.set_visible(False)
     # gauss_col_line.set_data([], [])
     # gauss_row_line.set_data([], [])
-    print("kaki 3")
     # If Gaussian fit is available, plot the contour and projections
     if fit_data is not None:
-        print("kaki 4")
         gauss, par = fit_data
         gaussian_contour = ax.contour(gauss, levels=5, colors='r')
 
@@ -376,3 +378,4 @@ fig.canvas.mpl_connect('button_press_event', on_click)
 
 update_title(0)
 plt.show()
+# %%
