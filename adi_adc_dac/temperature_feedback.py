@@ -14,7 +14,7 @@ from local_config import path_data_local
 sys.path.append(r'C:\Program Files\Analog Devices\ACE\Client')
 clr.AddReference('AnalogDevices.Csa.Remoting.Clients')  # noqa
 clr.AddReference('AnalogDevices.Csa.Remoting.Contracts')  # noqa
-from AnalogDevices.Csa.Remoting.Clients import ClientManager  # noqa
+from AnalogDevices.Csa.Remoting.Clients import ClientManager, AceOperationException  # noqa
 
 
 def timestamp():
@@ -87,13 +87,14 @@ if __name__ == "__main__":
     trig_main = True
     trig_lock = False
 
-    v_dac = 1.25  # initial voltage for DAC, V
-    v_th = 0.1  # threshold voltage to react, V
-    v_st = 0.01  # step voltage for DAC, V
-    v_st_m = 0.01  # step voltage for manual adjusting of DAC, V
+    v_dac = 1.250  # initial voltage for DAC, V
+    v_th = 1.0  # threshold voltage to react, V
+    v_c = 0.0  # central voltage to react, V
+    v_st = 0.001  # step voltage for DAC, V
+    v_st_m = 0.001  # step voltage for manual adjusting of DAC, V
     v_lim = (0.25, 2.25)  # limitation for DAC voltage, V
     t_skip = 3.0  # time for skipping next DAC increase, s
-    t_show = 60.0  # last time to show on graph, s
+    t_show = 600.0  # last time to show on graph, s
     t_pause = 1.0  # pause time between measurements, s
 
     w_dir = os.path.join(path_data_local, 'adi_adc_dac')
@@ -185,7 +186,13 @@ if __name__ == "__main__":
         folder = os.path.join(w_dir, time_stamp)
         os.makedirs(folder)
 
-        client.PullAllCaptureDataToFile(os.path.join(folder, 'Data_'), '-1', '0', '1000', 'test', 'Create')
+        # client.PullAllCaptureDataToFile(os.path.join(folder, 'Data_'), '-1', '0', '1000', 'test', 'Create')
+        try:
+            client.PullAllCaptureDataToFile(os.path.join(folder, 'Data_'), '-1', '0', '100', 'test', 'Create')
+        except AceOperationException:
+            shutil.rmtree(folder)
+            plt.pause(t_pause)
+            continue
 
         i = len(data)
         data.loc[i, 'ts'] = time_stamp
@@ -234,10 +241,10 @@ if __name__ == "__main__":
         # here is the feedback loop
         if trig_lock and ((np.array(data['t'])[-1] - t_last) > t_skip):
             v = np.array(data['adc_ch0'])[-1]
-            if v > v_th:
+            if v > (v_c + v_th):
                 v_dac -= v_st
                 v_dac = set_dac(client, v_dac, lims=v_lim)
-            elif v < -v_th:
+            elif v < (v_c - v_th):
                 v_dac += v_st
                 v_dac = set_dac(client, v_dac, lims=v_lim)
             t_last = time.time()
