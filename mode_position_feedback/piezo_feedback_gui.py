@@ -82,7 +82,7 @@ class PiezoFeedbackWidget(ThreadedWidget):
 
     xi, yi = 1024.0, 1024.0
     V23 = np.array([0, 0])
-    mat = np.array([[1/np.sqrt(3), 1.], [2/np.sqrt(3), 0.]])
+    mat = np.array([[1/np.sqrt(3), -1.], [2/np.sqrt(3), 0.]])
 
     def __init__(self, font_size=14):
         super(PiezoFeedbackWidget, self).__init__(font_size=font_size)
@@ -108,7 +108,7 @@ class PiezoFeedbackWidget(ThreadedWidget):
         self.btn_read_V.clicked.connect(self.read_V)
         self.lock_switch = QCheckBox('lock')
         self.lock_switch.setChecked(False)
-        self.spin_sensitivity = QMySpinBox(v_min=-10000.0, v_max=10000.0, v_ini=10, decimals=3, step=1, suffix=' pxl/V', prefix='sensitivity: ')
+        self.spin_sensitivity = QMySpinBox(v_min=-10000.0, v_max=10000.0, v_ini=20, decimals=3, step=1, suffix=' pxl/V', prefix='sensitivity: ')
         self.spin_integral_coef = QMySpinBox(v_min=1.0, v_max=10000.0, v_ini=10, decimals=1, step=1.0, suffix='', prefix='I_c: ')
 
         self.worker = PiezoFeedbackWorker(self.thread())
