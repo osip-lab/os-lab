@@ -76,6 +76,16 @@ def temp_down(event):
     v_dac -= v_st_m
     v_dac = set_dac(client, v_dac, lims=v_lim)
 
+def temp_up10(event):
+    global v_dac, v_st_m
+    v_dac += v_st_m * 10
+    v_dac = set_dac(client, v_dac, lims=v_lim)
+
+
+def temp_down10(event):
+    global v_dac, v_st_m
+    v_dac -= v_st_m * 10
+    v_dac = set_dac(client, v_dac, lims=v_lim)
 
 def exit_app(event):
     global trig_main
@@ -105,12 +115,14 @@ if __name__ == "__main__":
     labels = adc_ls + dac_ls
 
     fig = plt.figure(figsize=(10, 6))
-    gs = grid.GridSpec(10, 4, figure=fig)
+    gs = grid.GridSpec(10, 6, figure=fig)
     ax = fig.add_subplot(gs[1:, :])
     button_lock_ax = fig.add_subplot(gs[0, 0])
-    button_up_ax = fig.add_subplot(gs[0, 1])
-    button_down_ax = fig.add_subplot(gs[0, 2])
-    button_exit_ax = fig.add_subplot(gs[0, 3])
+    button_up10_ax = fig.add_subplot(gs[0, 1])
+    button_up_ax = fig.add_subplot(gs[0, 2])
+    button_down_ax = fig.add_subplot(gs[0, 3])
+    button_down10_ax = fig.add_subplot(gs[0, 4])
+    button_exit_ax = fig.add_subplot(gs[0, 5])
 
     sax = ax.twinx()
     lines = dict()
@@ -120,8 +132,10 @@ if __name__ == "__main__":
         lines[lbl] = sax.plot([], [], ls='--', marker='x', c='tab:orange')[0]
 
     button_lock = Button(button_lock_ax, 'Toggle Lock')
+    button_up10 = Button(button_up10_ax, 'Temp up x10')
     button_up = Button(button_up_ax, 'Temp up')
     button_down = Button(button_down_ax, 'Temp down')
+    button_down10 = Button(button_down10_ax, 'Temp down x10')
     button_exit = Button(button_exit_ax, 'Exit')
     text_lock = ax.text(0.5, 0.95, 'Locking is off', transform=ax.transAxes, fontsize=12, ha='center', color='red')
     text_piezo = ax.text(0.2, 0.95, f'Piezo voltage {0.0 * 1000:+07.1f} mV', transform=ax.transAxes, fontsize=12, ha='center', color='k')
@@ -129,6 +143,8 @@ if __name__ == "__main__":
     button_lock.on_clicked(toggle_lock)
     button_up.on_clicked(temp_up)
     button_down.on_clicked(temp_down)
+    button_up10.on_clicked(temp_up10)
+    button_down10.on_clicked(temp_down10)
     button_exit.on_clicked(exit_app)
 
     ax.set_xlabel('time, s')

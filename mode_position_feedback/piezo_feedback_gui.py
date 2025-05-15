@@ -108,7 +108,7 @@ class PiezoFeedbackWidget(ThreadedWidget):
         self.btn_read_V.clicked.connect(self.read_V)
         self.lock_switch = QCheckBox('lock')
         self.lock_switch.setChecked(False)
-        self.spin_sensitivity = QMySpinBox(v_min=-10000.0, v_max=10000.0, v_ini=1, decimals=3, step=0.1, suffix=' pxl/V', prefix='sensitivity: ')
+        self.spin_sensitivity = QMySpinBox(v_min=-10000.0, v_max=10000.0, v_ini=10, decimals=3, step=1, suffix=' pxl/V', prefix='sensitivity: ')
         self.spin_integral_coef = QMySpinBox(v_min=1.0, v_max=10000.0, v_ini=10, decimals=1, step=1.0, suffix='', prefix='I_c: ')
 
         self.worker = PiezoFeedbackWorker(self.thread())
