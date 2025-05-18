@@ -2,7 +2,7 @@
 
 import subprocess
 import os
-
+from utilities.video_tools.utils import wait_for_path_from_clipboard
 
 def convert_to_h265(input_file, output_file, compression_rate: int):
     """
@@ -57,7 +57,7 @@ def input_with_default(prompt, default):
 
 
 def main():
-    folder_path = input("Folder path to convert all AVI files in: ")
+    folder_path = wait_for_path_from_clipboard('directory')
     compression_rate = int(input_with_default(
         "Compression rate (a number in range [18, 28]. lower = better quality, larger file), use 23 for default", "23"))
     delete_original_files = input_with_default(r"Delete original files? (y/n)", "n").lower() == "y"
