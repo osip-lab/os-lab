@@ -63,4 +63,8 @@ from utilities.media_tools.utils import wait_for_path_from_clipboard
 video_path = wait_for_path_from_clipboard(filetype='video')
 ```
 
+## How to use the Python-Driver-for-Thorlabs-power-meter submodule:
+run in cmd:
+```git submodule update --init --recursive```
+
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
