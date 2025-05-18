@@ -205,5 +205,5 @@ ax.set_title("Draw polygon. Press Enter to finish.")
 selector_holder = {'selector': None, 'done': False}
 
 a = PolygonSelector(ax, lambda verts: None, useblit=True)
-
-plt.show()
+plt.show(hold=True)
+p = Path(verts=a.verts)
