@@ -1,0 +1,3 @@
+[submodule "Python-Driver-for-Thorlabs-power-meter"]
+	path = Python-Driver-for-Thorlabs-power-meter
+	url = https://github.com/Tinyblack/Python-Driver-for-Thorlabs-power-meter.git
