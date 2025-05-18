@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, Slider
 import matplotlib.gridspec as grid
 from local_config import path_data_local
 
@@ -64,6 +64,12 @@ def toggle_lock(event):
     text_lock.set_text('Locking is on' if trig_lock else 'Locking is off')
     fig.canvas.draw_idle()
 
+def toggle_drift(event):
+    global trig_drift, text_drift
+    trig_drift = not trig_drift
+    text_drift.set_text('Drift is on' if trig_drift else 'Drift is off')
+    fig.canvas.draw_idle()
+
 
 def temp_up(event):
     global v_dac, v_st_m
@@ -76,6 +82,16 @@ def temp_down(event):
     v_dac -= v_st_m
     v_dac = set_dac(client, v_dac, lims=v_lim)
 
+def temp_up10(event):
+    global v_dac, v_st_m
+    v_dac += v_st_m * 10
+    v_dac = set_dac(client, v_dac, lims=v_lim)
+
+
+def temp_down10(event):
+    global v_dac, v_st_m
+    v_dac -= v_st_m * 10
+    v_dac = set_dac(client, v_dac, lims=v_lim)
 
 def exit_app(event):
     global trig_main
@@ -86,6 +102,7 @@ if __name__ == "__main__":
 
     trig_main = True
     trig_lock = False
+    trig_drift = False
 
     v_dac = 1.250  # initial voltage for DAC, V
     v_th = 1.0  # threshold voltage to react, V
@@ -95,7 +112,7 @@ if __name__ == "__main__":
     v_lim = (0.25, 2.25)  # limitation for DAC voltage, V
     t_skip = 3.0  # time for skipping next DAC increase, s
     t_show = 600.0  # last time to show on graph, s
-    t_pause = 1.0  # pause time between measurements, s
+    t_pause = 0.5  # pause time between measurements, s
 
     w_dir = os.path.join(path_data_local, 'adi_adc_dac')
     data = pd.DataFrame({col: pd.Series(dtype=dt) for col, dt in zip(['ts', 't', *[f'adc_ch{i}' for i in range(8)], 'dac_ch0'], [str, *([float] * 10)])})
@@ -105,12 +122,16 @@ if __name__ == "__main__":
     labels = adc_ls + dac_ls
 
     fig = plt.figure(figsize=(10, 6))
-    gs = grid.GridSpec(10, 4, figure=fig)
-    ax = fig.add_subplot(gs[1:, :])
+    gs = grid.GridSpec(10, 6, figure=fig)
+    ax = fig.add_subplot(gs[2:, :])
     button_lock_ax = fig.add_subplot(gs[0, 0])
-    button_up_ax = fig.add_subplot(gs[0, 1])
+    button_up10_ax = fig.add_subplot(gs[0, 4])
+    button_up_ax = fig.add_subplot(gs[0, 3])
     button_down_ax = fig.add_subplot(gs[0, 2])
-    button_exit_ax = fig.add_subplot(gs[0, 3])
+    button_down10_ax = fig.add_subplot(gs[0, 1])
+    button_exit_ax = fig.add_subplot(gs[0, 5])
+    button_drift_ax = fig.add_subplot(gs[1, 0])
+    slider_drift_ax = fig.add_subplot(gs[1, 1:5])
 
     sax = ax.twinx()
     lines = dict()
@@ -120,16 +141,24 @@ if __name__ == "__main__":
         lines[lbl] = sax.plot([], [], ls='--', marker='x', c='tab:orange')[0]
 
     button_lock = Button(button_lock_ax, 'Toggle Lock')
+    button_up10 = Button(button_up10_ax, 'Temp up x10')
     button_up = Button(button_up_ax, 'Temp up')
     button_down = Button(button_down_ax, 'Temp down')
+    button_down10 = Button(button_down10_ax, 'Temp down x10')
     button_exit = Button(button_exit_ax, 'Exit')
+    button_drift = Button(button_drift_ax, 'Toggle Drift')
+    slider_drift = Slider(slider_drift_ax, label='', valmin = -3, valmax = 3, valinit = 0)
     text_lock = ax.text(0.5, 0.95, 'Locking is off', transform=ax.transAxes, fontsize=12, ha='center', color='red')
     text_piezo = ax.text(0.2, 0.95, f'Piezo voltage {0.0 * 1000:+07.1f} mV', transform=ax.transAxes, fontsize=12, ha='center', color='k')
     text_temp = ax.text(0.8, 0.95, f'Temp voltage {v_dac * 1000:+07.1f} mV', transform=ax.transAxes, fontsize=12, ha='center', color='k')
+    text_drift = ax.text(0.5, 0.9, 'Drift is off', transform=ax.transAxes, fontsize=12, ha='center', color='red')
     button_lock.on_clicked(toggle_lock)
     button_up.on_clicked(temp_up)
     button_down.on_clicked(temp_down)
+    button_up10.on_clicked(temp_up10)
+    button_down10.on_clicked(temp_down10)
     button_exit.on_clicked(exit_app)
+    button_drift.on_clicked(toggle_drift)
 
     ax.set_xlabel('time, s')
     ax.set_ylabel('adc voltage, V')
@@ -177,9 +206,16 @@ if __name__ == "__main__":
 
     t_last = 0.0
 
+    time_stamp = timestamp()
+
     while trig_main:
 
-        time_stamp = timestamp()
+        time_stamp2 = timestamp()
+        t_drift = timestamp_to_float(time_stamp2) - timestamp_to_float(time_stamp)
+        time_stamp = time_stamp2
+        v_dac_old = v_dac
+        print(t_drift)
+
         client.Run('@AsyncDataCapture("test")')
         plt.pause(0.05)
 
@@ -238,16 +274,24 @@ if __name__ == "__main__":
             else:
                 a.set_ylim(v1 - 0.1 * dv, v2 + 0.1 * dv)
 
+        # here is the drift
+        if trig_drift:
+            v_dac += slider_drift.val * t_drift / 1000
+            #v_dac = set_dac(client, v_dac, lims=v_lim)
+
         # here is the feedback loop
         if trig_lock and ((np.array(data['t'])[-1] - t_last) > t_skip):
             v = np.array(data['adc_ch0'])[-1]
             if v > (v_c + v_th):
                 v_dac -= v_st
-                v_dac = set_dac(client, v_dac, lims=v_lim)
+                #v_dac = set_dac(client, v_dac, lims=v_lim)
             elif v < (v_c - v_th):
                 v_dac += v_st
-                v_dac = set_dac(client, v_dac, lims=v_lim)
+                #v_dac = set_dac(client, v_dac, lims=v_lim)
             t_last = time.time()
+
+        if v_dac != v_dac_old:
+            v_dac = set_dac(client, v_dac, lims=v_lim)
 
         shutil.rmtree(folder)
 
