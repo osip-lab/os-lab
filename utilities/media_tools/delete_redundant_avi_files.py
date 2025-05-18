@@ -1,5 +1,5 @@
 import os
-from utilities.video_tools.utils import delete_redundant_avi_files
+from utilities.media_tools.utils import delete_redundant_avi_files
 
 
 directory = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\Experiments\Results"

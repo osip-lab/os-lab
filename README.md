@@ -56,8 +56,10 @@ If you don't have it, download it according to those instruction: https://phoeni
 ## How to conveniently work on data files that change rapidly:
 This syntax takes the file from your clipboard (if it is a file with the relevant format), or wait for a file from the relevant format to be copied.
 It is convenient when you run the script, each time on a different data file (csv, video, etc.) and you want to avoid changing the path in the code each time.
+
 ```python
-from utilities.video_tools.utils import wait_for_path_from_clipboard
+from utilities.media_tools.utils import wait_for_path_from_clipboard
+
 video_path = wait_for_path_from_clipboard(filetype='video')
 ```
 

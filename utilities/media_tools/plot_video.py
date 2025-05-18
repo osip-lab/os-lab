@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import os
 from matplotlib.patches import Circle
 import matplotlib
-from utilities.video_tools.utils import wait_for_path_from_clipboard
+from utilities.media_tools.utils import wait_for_path_from_clipboard
 from basler_cam.mode_position_capture_gui import fit_gaussian, rebin_image
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work

@@ -1,6 +1,6 @@
 import pandas as pd
 import matplotlib
-from utilities.video_tools.utils import wait_for_path_from_clipboard
+from utilities.media_tools.utils import wait_for_path_from_clipboard
 from local_config import PATH_CAVITY_DESIGN_PROJECT
 import sys
 

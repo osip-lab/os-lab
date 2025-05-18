@@ -8,7 +8,7 @@ from matplotlib.widgets import SpanSelector
 from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass, median_filter
 from basler_cam.mode_position_capture_gui import rebin, fit_gaussian, gaussian2d
-from utilities.video_tools.utils import wait_for_path_from_clipboard
+from utilities.media_tools.utils import wait_for_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns

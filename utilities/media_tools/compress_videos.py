@@ -2,7 +2,7 @@
 
 import subprocess
 import os
-from utilities.video_tools.utils import wait_for_path_from_clipboard
+from utilities.media_tools.utils import wait_for_path_from_clipboard
 
 def convert_to_h265(input_file, output_file, compression_rate: int):
     """

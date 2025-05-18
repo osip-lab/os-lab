@@ -1,4 +1,4 @@
 @echo off
 cd /d %~dp0
-python -m video_tools.compress_videos
+python -m media_tools.compress_videos
 pause
