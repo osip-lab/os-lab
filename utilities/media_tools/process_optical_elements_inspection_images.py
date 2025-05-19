@@ -155,11 +155,11 @@ def sum_intensity_in_polygon(image: Union[None, str, np.ndarray] = None) -> None
             plt.close()
 
     # Create and store selector
-    selector['object'] = PolygonSelector(ax, lambda verts: None, useblit=True)
+    selector['object'] = PolygonSelector(ax, lambda verts: None, useblit=True, props={'color': 'red', 'alpha': 0.5})
     fig.canvas.mpl_connect('key_press_event', on_key)
 
     # Block until Enter pressed
-    plt.show()
+    plt.show(block=True)
 
     poly = selector['object'].verts
     if not done['finished'] or poly is None or len(poly) < 3:
@@ -177,7 +177,7 @@ def sum_intensity_in_polygon(image: Union[None, str, np.ndarray] = None) -> None
     values = gray[mask]
     total = np.sum(values)
     mean = np.mean(values)
-
+    print(len(poly))
     print(f"Total intensity inside polygon: {total}")
     print(f"Mean intensity inside polygon: {mean}")
 
@@ -186,24 +186,8 @@ def sum_intensity_in_polygon(image: Union[None, str, np.ndarray] = None) -> None
 # 🟦 Usage Example
 # Replace this with your folder path
 FREQUENCY_CUTOFF = 20
-# folder_path = wait_for_path_from_clipboard('directory')
-# high_pass_n_clip_in_folder(folder_path, FREQUENCY_CUTOFF)
-# clean_consistent_noises(os.path.join(folder_path, HIGH_PASSED_FOLDER))
-sum_intensity_in_polygon(r"C:\Users\michaeka\Desktop\IPA test\High pass filtered\removed_noise\5 - 5X - 5000ms_high_passed.png")
-# %%
-import matplotlib.pyplot as plt
-from matplotlib.widgets import PolygonSelector
-from matplotlib.path import Path
-import numpy as np
+folder_path = wait_for_path_from_clipboard('directory')
+high_pass_n_clip_in_folder(folder_path, f_threshold=FREQUENCY_CUTOFF)
+clean_consistent_noises(os.path.join(folder_path, HIGH_PASSED_FOLDER))
+sum_intensity_in_polygon()
 
-image = np.random.rand(200, 200)  # random grayscale image
-
-fig, ax = plt.subplots()
-ax.imshow(image, cmap='gray')
-ax.set_title("Draw polygon. Press Enter to finish.")
-
-selector_holder = {'selector': None, 'done': False}
-
-a = PolygonSelector(ax, lambda verts: None, useblit=True)
-plt.show(hold=True)
-p = Path(verts=a.verts)
