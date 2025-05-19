@@ -75,8 +75,8 @@ def load_images_from_folder(folder):
     supported_formats = ('*.jpg', '*.jpeg', '*.png', '*.bmp')
     image_paths = []
     for ext in supported_formats:
-        image_paths.extend(glob(os.path.join(folder, ext)))
-    images = [cv2.imread(path) for path in sorted(image_paths)]
+        image_paths.extend(sorted(glob(os.path.join(folder, ext))))
+    images = [cv2.imread(path) for path in image_paths]
     return images, image_paths
 
 
@@ -182,12 +182,97 @@ def sum_intensity_in_polygon(image: Union[None, str, np.ndarray] = None) -> None
     print(f"Mean intensity inside polygon: {mean}")
 
 
+def align_images_from_3_points(
+    img1: np.ndarray,
+    img2: np.ndarray,
+    saved_reference_points=None,
+    ref_name: str = "Reference Image",
+    cur_name: str = "Current Image"
+):
+    if saved_reference_points is None:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        axes[0].imshow(img1)
+        axes[0].set_title(f"{ref_name}: Click 3 points")
+        axes[1].imshow(img2)
+        axes[1].set_title(f"{cur_name}: Click 3 points or press 's' to skip")
+
+        plt.suptitle("Click 3 points in Reference Image (left), then 3 points in Current Image (right)")
+        points = plt.ginput(6, timeout=0)
+        plt.close()
+
+        if len(points) != 6:
+            print("Skipping image. You must click exactly 3 points on each image.")
+            return None, None
+
+        pts1 = np.float32(points[:3])
+        pts2 = np.float32(points[3:])
+    else:
+        pts1 = saved_reference_points
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.imshow(img2)
+        ax.set_title(f"{cur_name}: Click 3 points or press 's' to skip")
+
+        plt.suptitle("Click 3 points in Current Image (right)")
+        points = plt.ginput(3, timeout=0)
+        plt.close()
+
+        if len(points) != 3:
+            print("Skipping image. You must click exactly 3 points on the current image.")
+            return None, None
+
+        pts2 = np.float32(points)
+
+    # Compute affine transform from img2 to img1
+    M = cv2.getAffineTransform(pts2, pts1)
+    h, w = img2.shape[:2]
+    aligned_img2 = cv2.warpAffine(img2, M, (w, h))
+
+    return aligned_img2, pts1
+
+
+def align_folder(folder_path: str, reference_image_path: str):
+    images, paths = load_images_from_folder(folder_path)
+    reference_image = cv2.imread(reference_image_path)
+    aligned_images = []
+    saved_reference_points = None
+
+    ref_name = os.path.basename(reference_image_path)
+
+    for img, path in zip(images, paths):
+        if os.path.abspath(path) == os.path.abspath(reference_image_path):
+            continue
+
+        cur_name = os.path.basename(path)
+        print(f"Processing: {path}")
+
+        if saved_reference_points is None:
+            aligned_img, saved_reference_points = align_images_from_3_points(reference_image, img, None, ref_name, cur_name)
+        else:
+            aligned_img, _ = align_images_from_3_points(reference_image, img, saved_reference_points, ref_name, cur_name)
+
+        if aligned_img is None:
+            print(f"Skipped: {path}")
+            continue
+
+        aligned_images.append(aligned_img)
+
+        filename = os.path.basename(path)
+        output_folder = os.path.join(folder_path, f"aligned")
+        os.makedirs(output_folder, exist_ok=True)
+        output_path = os.path.join(output_folder, filename)
+        cv2.imwrite(output_path, aligned_img)
+
+    return aligned_images
+
+
 # %%
 # 🟦 Usage Example
 # Replace this with your folder path
 FREQUENCY_CUTOFF = 20
 folder_path = wait_for_path_from_clipboard('directory')
 high_pass_n_clip_in_folder(folder_path, f_threshold=FREQUENCY_CUTOFF)
-clean_consistent_noises(os.path.join(folder_path, HIGH_PASSED_FOLDER))
-sum_intensity_in_polygon()
+clean_consistent_noises(r"C:\Users\michaeka\Desktop\IPA test\High pass filtered")  # os.path.join(folder_path, HIGH_PASSED_FOLDER)
+align_folder(r"C:\Users\michaeka\Desktop\IPA test\High pass filtered\removed_noise", r"C:\Users\michaeka\Desktop\IPA test\High pass filtered\removed_noise\1 - 5X - 5000ms.png")
+# sum_intensity_in_polygon()
+
 
