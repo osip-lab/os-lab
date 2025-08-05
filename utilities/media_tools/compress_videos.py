@@ -37,7 +37,7 @@ def convert_all_avi_files_in_folder(folder_path,
                                     delete_original_files=False):
     for root, dirs, files in os.walk(folder_path):
         for file in files:
-            if file.endswith(".avi"):
+            if file.endswith(".avi") or file.endswith(".MOV"):
                 input_path = os.path.join(root, file)
                 output_path = os.path.splitext(input_path)[0] + ".mp4"
                 if os.path.exists(output_path):

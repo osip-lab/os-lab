@@ -291,12 +291,14 @@ def sum_intensity_in_polygon(image: Union[None, str, np.ndarray] = None) -> None
 # %%
 # 🟦 Usage Example
 # Replace this with your folder path
-folder_path = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Elements inspection\Coast line\FS - 200mm\mirror 0104"
+folder_path = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Elements inspection\ASA insepction\1162025 adaptor"
 FREQUENCY_CUTOFF = 20
-high_pass_filtered_folder = high_pass_n_clip_in_folder(folder_path, f_threshold=FREQUENCY_CUTOFF, include_subfolders=True)
+high_pass_filtered_folder = 'C:\\Users\\michaeka\\Weizmann Institute Dropbox\\Michael Kali\\Labs Dropbox\\Laser Phase Plate\\Elements inspection\\ASA insepction\\1162025 adaptor\\High pass filtered'  # high_pass_n_clip_in_folder(folder_path, f_threshold=FREQUENCY_CUTOFF, include_subfolders=True)
 cleaned_noise_folder = clean_consistent_noises(high_pass_filtered_folder, include_subfolders=True)
-#
-# align_folder(r"C:\Users\michaeka\Desktop\IPA test\High pass filtered\removed_noise", r"C:\Users\michaeka\Desktop\IPA test\High pass filtered\removed_noise\1 - 5X - 5000ms.png")
+# %%
+align_folder(r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Elements inspection\ASA insepction\1162025 adaptor\High pass filtered",
+             r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Elements inspection\ASA insepction\1162025 adaptor\High pass filtered\before tapping\5X  -  5000ms - 400%.png",
+             include_subfolders=True)
 # %%
 sum_intensity_in_polygon()
 
