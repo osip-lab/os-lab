@@ -1,85 +1,58 @@
 import time
 
-# import pytesseract
-import pyautogui
 import cv2
 import pyperclip
-from pynput import keyboard
 import numpy as np
-from PIL import ImageGrab
 import os
 from typing import Optional, Tuple
 from mss import mss
 import pyautogui
 from pynput import keyboard
 from tkinter import Tk
-from tkinter.filedialog import askopenfilename
 import pandas as pd
 from time import sleep
 import re
-from local_config_template import GENERAL_GUI_CONTROLLER_TEMPLATES_PATH
-import winsound
-
+from utilities.media_tools.utils import wait_for_path_from_clipboard
+import sys
+from pynput.keyboard import Key, Controller
 
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# import pytesseract
 
-I = 1
-def wait_for_path_from_clipboard(filetype: Optional[str] = None, poll_interval=0.5, verbose=True):
-    global I
-    while True:
-        clipboard = pyperclip.paste().strip().strip('"')  # Strip whitespace and quotes
+GENERAL_GUI_CONTROLLER_TEMPLATES_PATH = r"utilities\ggc-templates"
 
-        if os.path.isfile(clipboard) or os.path.isdir(clipboard):
-            filetype_lower = filetype.lower() if filetype else None
+def minimize_current_window():
+    keyboard = Controller()
+    keyboard.press(Key.cmd)  # Windows key
+    keyboard.press(Key.down)  # Down arrow
+    time.sleep(0.05)
+    keyboard.release(Key.down)
+    keyboard.release(Key.cmd)
+    time.sleep(0.2)  # Small pause between the two presses
 
-            if filetype_lower in ['video', 'media']:
-                # Try to open as a video
-                cap = cv2.VideoCapture(clipboard)
-                if cap.isOpened():
-                    cap.release()
-                    if verbose:
-                        print(f"✔ Detected valid video path: {clipboard}")
-                    return clipboard
-                cap.release()
 
-            if filetype_lower == 'image' or filetype_lower == 'media':
-                # Try to read as an image
-                img = cv2.imread(clipboard)
-                if img is not None:
-                    if verbose:
-                        print(f"✔ Detected valid image path: {clipboard}")
-                    return clipboard
+def set_correct_path(num_of_sup_folders: int = 2):
+    """
+    Sets the working directory to a number of levels above the script's directory.
 
-            if filetype_lower == 'csv':
-                if clipboard.endswith('.csv'):
-                    if verbose:
-                        print(f"✔ Detected valid CSV path: {clipboard}")
-                    return clipboard
+    Args:
+        num_of_sup_folders (int): Number of levels to go up from the script's directory.
+    """
+    # Get the directory of the current script
+    current_file_path = os.path.abspath(__file__)
+    script_dir = os.path.dirname(current_file_path)
 
-            if filetype_lower in ['folder', 'directory', 'dir']:
-                if os.path.isdir(clipboard):
-                    if verbose:
-                        print(f"✔ Detected valid directory path: {clipboard}")
-                    return clipboard
+    # Build the path to climb up num_of_sup_folders
+    up_path = os.path.join(script_dir, *(['..'] * num_of_sup_folders))
+    desired_working_dir = os.path.abspath(up_path)
 
-            if filetype is not None and filetype_lower not in ['video', 'image', 'media', 'csv', 'folder', 'directory',
-                                                               'dir']:
-                raise NotImplementedError(
-                    f"File type '{filetype}' not implemented. For skipping filetype validation just set filetype=None."
-                )
+    # Set as working directory
+    os.chdir(desired_working_dir)
+    print(f"[INFO] Working directory set to: {os.getcwd()}")
 
-            if filetype is None:
-                # No specific filetype validation
-                if verbose:
-                    print(f"✔ Detected path: {clipboard}")
-                return clipboard
-
-        if verbose:
-            number_of_dots = I % 3 + 1
-            dots = '.' * number_of_dots
-            print(f"Waiting for path to be copied{dots}", end="\r")
-            I += 1
-        time.sleep(poll_interval)
+    # Optionally add to sys.path for module imports
+    if desired_working_dir not in sys.path:
+        sys.path.insert(0, desired_working_dir)
 
 
 def get_cursor_position(target_name):
@@ -111,6 +84,7 @@ def detect_position(
         crop_ur: Optional[Tuple[int, int]] = None,
         click: bool = True,
         sleep: Optional[float] = None,
+        minimal_confidence: float = 0.8,
         **kwargs,
 ) -> tuple[float, float] | None:
     """
@@ -144,7 +118,6 @@ def detect_position(
             return x + w / 2, y + h / 2
 
     # 1. Determine the type and contents of the template
-    print(os.getcwd())
     template_path = os.path.join(GENERAL_GUI_CONTROLLER_TEMPLATES_PATH, input_template)
     base_name, ext = os.path.splitext(template_path)
     ext = ext.lower()
@@ -241,10 +214,10 @@ def detect_position(
                 best_val = max_val
                 best_loc = max_loc
                 best_w, best_h = tW, tH
-                if best_val > 0.8:
+                if best_val > minimal_confidence:
                     break
 
-        if best_loc and best_val > 0.5:
+        if best_loc and best_val > minimal_confidence:
             x, y = best_loc
             px, py = compute_point(x, y, best_w, best_h)
             abs_x, abs_y = px + crop_offset_x, py + crop_offset_y
@@ -277,78 +250,76 @@ def paste_value(value, location):
     sleep(0.1)
 
 
-def clean_number(x):
-    if isinstance(x, str):
-        # Remove commas before extracting numbers
-        x_no_commas = x.replace(',', '')
-        match = re.search(r'[\d.]+', x_no_commas)
-        x_extracted = float(match.group()) if match else None
-        return x_extracted
-    elif isinstance(x, (int, float)):
-        return x
-    else:
-        return None
+def record_gui_template():
+    def wait_for_ctrl(prompt_text) -> Tuple[int, int]:
+        print(prompt_text)
+        pos = None
 
+        def on_press(key):
+            nonlocal pos
+            if key == keyboard.Key.ctrl_l:
+                pos = pyautogui.position()
+                return False
 
-def clean_text(x):
-    # Removes '*' from text:
-    if isinstance(x, str):
-        return x.replace('*', '').strip()
-    elif isinstance(x, (int, float)):
-        return str(x).strip()
-    else:
-        return None
+        with keyboard.Listener(on_press=on_press) as listener:
+            listener.join()
 
+        return (pos.x, pos.y)
 
-def load_and_select_columns(thorlabs_format=True):
-    # Hide the main Tkinter window
-    Tk().withdraw()
+    def capture_all_screens() -> Tuple[np.ndarray, int, int]:
+        """
+        Returns full-screen RGB image + origin offset of virtual screen.
+        """
+        with mss() as sct:
+            full_bounds = sct.monitors[0]  # union of all monitors
+            screenshot = np.array(sct.grab(full_bounds))  # BGRA
+            img_rgb = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2RGB)
+            return img_rgb, full_bounds["left"], full_bounds["top"]
 
-    # Open file dialog and let the user choose a file
-    file_path = wait_for_path_from_clipboard(filetype='csv')
-    # file_path = askopenfilename(title="Select a CSV or Excel file",
-    #                 filetypes=[("Excel or CSV files", ".csv .xlsx .xls")])
-    if not file_path:
-        raise ValueError("No file was selected.")
+    # Step 1: Get bounding box corners in screen coords
+    ll_screen = wait_for_ctrl("Place the cursor on the LOWER LEFT corner of the box and press Left Ctrl.")
+    ur_screen = wait_for_ctrl("Place the cursor on the UPPER RIGHT corner of the box and press Left Ctrl.")
 
-    # Check the file extension and load the file
-    if file_path.endswith('.csv'):
-        df = pd.read_csv(file_path)
-    elif file_path.endswith('.xlsx'):
-        df = pd.read_excel(file_path)
-    else:
-        raise ValueError("Unsupported file format. Please select a .csv or .xlsx file.")
+    # Step 2: Capture screen and compute coordinate shift
+    screen_rgb, origin_x, origin_y = capture_all_screens()
+    full_h, full_w = screen_rgb.shape[:2]
 
-    # Define the target columns in lowercase
-    required_columns = ['id', 'description', 'quantity', 'price', 'discount']
-    if thorlabs_format:
-        # remove the last line of the dataframe if it's Ln value is nan:
-        if df.iloc[-1]['Quantity'] == 'TOTAL':
-            df = df.iloc[:-1]
-        df[['id', 'description']] = df['Part Number and Description'].str.split('\n', n=1, expand=True)
-        # rename the column "unit price" to "price":
-        df.rename(columns={'Unit Price': 'price'}, inplace=True)
+    # Convert screen coords to image coords
+    x1, y1 = ll_screen[0] - origin_x, ll_screen[1] - origin_y
+    x2, y2 = ur_screen[0] - origin_x, ur_screen[1] - origin_y
 
-    # Normalize column names to lowercase for matching
-    df.columns = df.columns.str.lower()
+    left = min(x1, x2)
+    right = max(x1, x2)
+    top = min(y1, y2)
+    bottom = max(y1, y2)
 
-    # Ensure all required columns exist, adding missing columns as empty
-    for col in required_columns:
-        if col not in df.columns:
-            df[col] = None
+    width = right - left
+    height = bottom - top
 
-    # Clean the columns
-    # Clean the columns
-    df['discount'] = df['discount'].apply(clean_number)
-    df['discount'] = df['discount'].apply(lambda x: 0 if x is None else x * 100 if x < 1 else x)
-    df['quantity'] = df['quantity'].apply(clean_number)
-    df['price'] = df['price'].apply(clean_number)
-    df['id'] = df['id'].apply(clean_text)
-    df['description'] = df['description'].apply(clean_text)
+    if width <= 0 or height <= 0:
+        print(f"[ERROR] Invalid bounding box dimensions: width={width}, height={height}")
+        return
 
-    # Select and return only the required columns
-    df = df.loc[:df.last_valid_index()]
-    return df[required_columns]
+    # Step 3: Crop and save
+    cropped = screen_rgb[top:bottom, left:right]
+    filename = input("Enter a name for the template (without extension), then press Enter: ").strip()
+    os.makedirs(GENERAL_GUI_CONTROLLER_TEMPLATES_PATH, exist_ok=True)
+    output_path = os.path.join(GENERAL_GUI_CONTROLLER_TEMPLATES_PATH, filename + ".png")
+    cv2.imwrite(output_path, cv2.cvtColor(cropped, cv2.COLOR_RGB2BGR))
+    print(f"Saved cropped image to: {output_path}")
+
+    # Step 4: Record target position
+    target_screen = wait_for_ctrl("Place the cursor at the TARGET DESTINATION and press Left Ctrl.")
+    tx, ty = target_screen[0] - origin_x, target_screen[1] - origin_y
+
+    # Step 5: Compute relative position to bottom-left of cropped box
+    relative_x = (tx - left) / width
+    relative_y = (bottom - ty) / height  # Inverted Y axis
+
+    print(f"Relative position: ({relative_x:.3f}, {relative_y:.3f})")
+
+if __name__ == "__main__":
+    record_gui_template()
 
 
 # %%

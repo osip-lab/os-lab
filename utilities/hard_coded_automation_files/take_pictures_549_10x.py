@@ -11,8 +11,6 @@ desired_working_dir = os.path.abspath(os.path.join(script_dir, '..', '..'))
 # Set it as the current working directory
 os.chdir(desired_working_dir)
 
-print(os.getcwd())
-
 # Optional: add it to sys.path if you import other modules from there
 if desired_working_dir not in sys.path:
     sys.path.insert(0, desired_working_dir)

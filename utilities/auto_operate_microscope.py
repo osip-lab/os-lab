@@ -1,5 +1,6 @@
 # %%
 from utilities.general_gui_controller import *
+import winsound
 # %%
 
 SESSION_PATH = wait_for_path_from_clipboard(filetype='dir')
@@ -10,6 +11,7 @@ session_path_2422 = os.path.join(SESSION_PATH, '2422')
 os.makedirs(SESSION_PATH, exist_ok=True)
 os.makedirs(session_path_549, exist_ok=True)
 os.makedirs(session_path_2422, exist_ok=True)
+
 
 def decompose_exposure_time(exposure_time_ms: float):
     # Convert to total microseconds for precision
@@ -77,8 +79,6 @@ def take_an_image(magnification, exposure_time_ms, gain, ROC):
     if detected_warning is not None:
         winsound.Beep(445, 500)
         raise Exception("overwriting file")
-
-
 
 
 def take_all_images(magnification, ROC):

@@ -5,4 +5,4 @@ PATH_DROPBOX = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's
 PATH_DATA_LOCAL = r"C:\Users\michaeka\Documents\local-os-lab-data"
 # For the cavity-design project (https://github.com/mkali-weizmann/cavity-design) - required for the script pico_scope/extract_df_and_fsr_from_scope_csv.py
 PATH_CAVITY_DESIGN_PROJECT = r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Lab's Dropbox\Laser Phase Plate\cavity-design"
-GENERAL_GUI_CONTROLLER_TEMPLATES_PATH = r"utilities\ggc-templates"
+
