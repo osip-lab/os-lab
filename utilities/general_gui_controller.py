@@ -1,6 +1,6 @@
 import time
 
-import pytesseract
+# import pytesseract
 import pyautogui
 import cv2
 import pyperclip
@@ -17,10 +17,13 @@ from tkinter.filedialog import askopenfilename
 import pandas as pd
 from time import sleep
 import re
+from local_config_template import GENERAL_GUI_CONTROLLER_TEMPLATES_PATH
+import winsound
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+I = 1
 def wait_for_path_from_clipboard(filetype: Optional[str] = None, poll_interval=0.5, verbose=True):
     global I
     while True:
@@ -141,7 +144,8 @@ def detect_position(
             return x + w / 2, y + h / 2
 
     # 1. Determine the type and contents of the template
-    template_path = os.path.join("templates", input_template)
+    print(os.getcwd())
+    template_path = os.path.join(GENERAL_GUI_CONTROLLER_TEMPLATES_PATH, input_template)
     base_name, ext = os.path.splitext(template_path)
     ext = ext.lower()
 
@@ -189,28 +193,29 @@ def detect_position(
         crop_offset_x, crop_offset_y = origin_x, origin_y
 
     # 4. Template Matching Logic
-    if ext == ".txt":
-        data = pytesseract.image_to_data(screen_rgb, output_type=pytesseract.Output.DICT, **kwargs)
+    # if ext == ".txt":
+    #     data = pytesseract.image_to_data(screen_rgb, output_type=pytesseract.Output.DICT, **kwargs)
+    #
+    #     for i, text in enumerate(data['text']):
+    #         if text.strip().lower() == target_text.lower():
+    #             x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+    #             px, py = compute_point(x, y, w, h)
+    #             abs_x, abs_y = px + crop_offset_x, py + crop_offset_y
+    #             print(f"[INFO] Found text '{target_text}' at ({abs_x:.1f}, {abs_y:.1f})")
+    #             pyautogui.moveTo(abs_x, abs_y)
+    #             if click:
+    #                 pyautogui.click(abs_x, abs_y)
+    #             if sleep is not None:
+    #                 time.sleep(sleep)
+    #             return (abs_x, abs_y)
+    #
+    #     print(f"[WARNING] Text '{target_text}' not found.")
+    #     return None
 
-        for i, text in enumerate(data['text']):
-            if text.strip().lower() == target_text.lower():
-                x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-                px, py = compute_point(x, y, w, h)
-                abs_x, abs_y = px + crop_offset_x, py + crop_offset_y
-                print(f"[INFO] Found text '{target_text}' at ({abs_x:.1f}, {abs_y:.1f})")
-                pyautogui.moveTo(abs_x, abs_y)
-                if click:
-                    pyautogui.click(abs_x, abs_y)
-                if sleep is not None:
-                    time.sleep(sleep)
-                return (abs_x, abs_y)
-
-        print(f"[WARNING] Text '{target_text}' not found.")
-        return None
-
-    elif ext in [".png", ".jpg", ".jpeg", ".bmp"]:
+    if ext in [".png", ".jpg", ".jpeg", ".bmp"]:
         template_img = cv2.imread(template_path, cv2.IMREAD_COLOR)
         if template_img is None:
+            print(os.getcwd())
             print(f"[ERROR] Failed to load image template: {template_path}")
             return None
 

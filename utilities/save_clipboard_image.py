@@ -10,7 +10,7 @@ current_time = now.strftime("%y%m%d%H%M%S")
 im = ImageGrab.grabclipboard()
 
 # Get the user's desktop path
-desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+desktop_path = r"C:\Users\OSIPLAB\git-projects\os-lab\utilities\ggc-templates"  # os.path.join(os.path.expanduser("~"), "Desktop")
 
 # Construct full path for saving the image
 save_path = os.path.join(desktop_path, f"{current_time}.png")

@@ -1,4 +1,7 @@
+import pyautogui
+
 from utilities.general_gui_controller import *
+
 BOX_LL = (3, 1072)  # get_cursor_position("lower-left corner of the tafnit window")
 BOX_UR = (1916, 4)  # get_cursor_position("upper-right corner of the tafnit window")
 SLEEP_TIME = 0.2
