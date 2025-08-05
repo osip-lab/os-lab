@@ -19,3 +19,4 @@ pythonnet~=3.0.5  # for ADI ACE for connection to ADC and DAC
 # utilities
 pyperclip~=1.9.0  # for copying into the clipboard
 jsbeautifier~=1.15.1  # for prettier jsons
+pillow~=11.3.0
