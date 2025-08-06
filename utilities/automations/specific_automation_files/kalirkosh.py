@@ -6,7 +6,7 @@ current_file_path = os.path.abspath(__file__)
 script_dir = os.path.dirname(current_file_path)
 
 # Go to the parent of the parent directory
-desired_working_dir = os.path.abspath(os.path.join(script_dir, '..'))
+desired_working_dir = os.path.abspath(os.path.join(script_dir, '..', '..', '..'))
 
 # Set it as the current working directory
 os.chdir(desired_working_dir)
@@ -15,7 +15,7 @@ os.chdir(desired_working_dir)
 if desired_working_dir not in sys.path:
     sys.path.insert(0, desired_working_dir)
 
-from utilities.general_gui_controller import *
+from utilities.automations.general_gui_controller import *
 
 
 def clean_number(x):

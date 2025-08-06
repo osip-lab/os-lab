@@ -1,5 +1,5 @@
 # %%
-from utilities.general_gui_controller import *
+from utilities.automations.general_gui_controller import *
 import winsound
 # %%
 
