@@ -68,3 +68,7 @@ run in cmd:
 ```git submodule update --init --recursive```
 
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
+
+## For voice commands operations (under utilities/automations):
+
+download vosk-model-small-en-us-0.15 from https://alphacephei.com/vosk/models and put it in the folder utilities/automations/models/vosk-model-small-en-us-0.15
