@@ -70,18 +70,3 @@ plt.imshow(img_np, cmap='gray')
 plt.show()
 # %%
 print(pyautogui.position())
-
-# from screeninfo import get_monitors
-#
-#
-#
-# top_left, bottom_right = get_virtual_screen_bounds()
-# print(f"Top-left: {top_left}, Bottom-right: {bottom_right}")
-# # %%
-# from plyer import notification
-#
-# notification.notify(
-#     title="Hello",
-#     message="This is your main screen",
-#     timeout=5
-# )
