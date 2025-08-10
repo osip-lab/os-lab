@@ -12,3 +12,4 @@ qt_gui/__pycache__/
 utilities/.ipynb_checkpoints/
 /Python-Driver-for-Thorlabs-power-meter/Thorlabs_DotNet_dll/
 /utilities/automations/models/
+/utilities/automations/voice_command_log.txt
