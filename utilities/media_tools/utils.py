@@ -6,13 +6,11 @@ import pyperclip
 import os
 import time
 
-I = 0
-
-
 def wait_for_path_from_clipboard(filetype: Optional[str] = None, poll_interval=0.5, verbose=True, instructions_message=None):
     if instructions_message is not None:
         print(instructions_message + '\n')
-    global I
+
+    I = 0
     while True:
         clipboard = pyperclip.paste().strip().strip('"')  # Strip whitespace and quotes
 
