@@ -1,3 +1,6 @@
 [submodule "Python-Driver-for-Thorlabs-power-meter"]
 	path = Python-Driver-for-Thorlabs-power-meter
 	url = https://github.com/Tinyblack/Python-Driver-for-Thorlabs-power-meter.git
+[submodule "utilities/automations"]
+	path = utilities/automations
+	url = https://github.com/mkali-personal/general-gui-controller
