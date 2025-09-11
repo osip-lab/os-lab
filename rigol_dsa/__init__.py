@@ -2,6 +2,7 @@ import sys
 import time
 import numpy as np
 import pyvisa
+from pyvisa.errors import VisaIOError
 
 from PyQt6.QtWidgets import QApplication, QWidget
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
@@ -34,21 +35,29 @@ class RigolDSAWorker(ThreadedWorker):
 
     @pyqtSlot(name='Start')
     def start(self):
+        success = False
+        while not success:
+            try:
+                fs = float(self.dsa.query(':SENS:FREQ:START?'))
+                ff = float(self.dsa.query(':SENS:FREQ:STOP?'))
 
-        fs = float(self.dsa.query(':SENS:FREQ:START?'))
-        ff = float(self.dsa.query(':SENS:FREQ:STOP?'))
+                self.dsa.write(':INIT')
 
-        self.dsa.write(':INIT')
+                while int(self.dsa.query(':STATUS:OPERATION:CONDITION?')) != 0:
+                    time.sleep(0.1)
 
-        while int(self.dsa.query(':STATUS:OPERATION:CONDITION?')) != 0:
-            time.sleep(0.1)
+                data = self.dsa.query(':TRACE:DATA? TRACE1')
+                data = data.split(', ')
+                data[0] = data[0].split()[1]
+                ampl = np.array(data, dtype='float64')
 
-        data = self.dsa.query(':TRACE:DATA? TRACE1')
-        data = data.split(', ')
-        data[0] = data[0].split()[1]
-        ampl = np.array(data, dtype='float64')
-
-        freq = np.linspace(fs, ff, len(ampl))
+                freq = np.linspace(fs, ff, len(ampl))
+                success = True
+            except VisaIOError as e:
+                if e.error_code == pyvisa.constants.VI_ERROR_TMO:
+                    print('Timeout occurred while communicating with the device.')
+                else:
+                    print(f'Visa IO Error: {e}')
 
         self.finish(self.measured, {'ampl': ampl, 'freq': freq})
 
