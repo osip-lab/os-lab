@@ -63,7 +63,7 @@ if __name__ == "__main__":
                     t = t1 + t2
                     data['time'] = np.append(data['time'], t)
                     for lbl in labels:
-                        v = re.search(lbl + r' = \d{1,12}\.\d{1,12}', line).group()
+                        v = re.search(lbl + r' = -?\d{1,12}\.\d{1,12}', line).group()
                         v = float(re.search(r'\d{1,12}\.\d{1,12}', v).group())
                         offset = fsr0 if lbl == 'FSR' else 0.0
                         data[lbl] = np.append(data[lbl], v - offset)
