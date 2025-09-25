@@ -43,6 +43,10 @@ class FitterWidget(ThreadedWidget):
         self.switch_fit.setChecked(False)
         self.switch_fit.setToolTip('enable fitting')
 
+        self.switch_save = QCheckBox('save')
+        self.switch_save.setChecked(False)
+        self.switch_save.setToolTip('enable saving raw data')
+
         self.switch_auto = QCheckBox('continuous')
         self.switch_auto.setChecked(False)
         self.switch_auto.setToolTip('enable continuous measurement')
@@ -64,7 +68,10 @@ class FitterWidget(ThreadedWidget):
         self.moment.timeout.connect(self.timeout)
 
         layout = QMyVBoxLayout()
-        layout.addLayout(QMyHBoxLayout(self.switch_fit, self.switch_auto))
+        lt = QMyHBoxLayout(self.switch_fit, self.switch_save)
+        lt.addStretch(0)
+        layout.addLayout(lt)
+        layout.addWidget(self.switch_auto)
         for lbl in self.labels:
             layout.addWidget(self.spinboxes[lbl])
         self.setLayout(layout)
@@ -87,6 +94,15 @@ class FitterWidget(ThreadedWidget):
         # data = np.loadtxt(os.path.join(PATH_DATA_LOCAL, 'line_shape_measurer', 'test.txt'))
         # data = data.transpose()
         # data = {'freq': data[0], 'ampl': data[1]}
+
+        if self.switch_save.isChecked():
+            tic = time.time()
+            ms = int((tic - int(tic)) * 1000)
+            ts = time.strftime('%Y-%m-%d %H-%M-%S', time.localtime(tic))
+            ts = f'{ts}-{ms:03d}'
+            np.savetxt(os.path.join(PATH_DATA_LOCAL, 'line_shape_measurer', 'raw_data', f'{ts}.txt'),
+                       np.transpose(np.array((data['freq'], data['ampl']))), header='frequency[Hz] amplitude[V]')
+            logging.info('raw data saved')
 
         if self.switch_fit.isChecked():
             try:
