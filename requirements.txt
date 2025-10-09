@@ -20,3 +20,6 @@ pythonnet~=3.0.5  # for ADI ACE for connection to ADC and DAC
 pyperclip~=1.9.0  # for copying into the clipboard
 jsbeautifier~=1.15.1  # for prettier jsons
 pillow~=11.3.0
+opencv-python~=4.11.0.86
+PyAutoGUI~=0.9.54
+pynput~=1.8.1

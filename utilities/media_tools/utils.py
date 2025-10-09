@@ -6,9 +6,6 @@ import pyperclip
 import os
 import time
 
-
-
-
 def delete_redundant_avi_files(directory):
     """
     Deletes .avi files in the specified directory if there's a .mp4 file

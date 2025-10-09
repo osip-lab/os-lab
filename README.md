@@ -64,8 +64,32 @@ video_path = wait_for_path_from_clipboard(filetype='video')
 ```
 
 ## How to use the Python-Driver-for-Thorlabs-power-meter submodule:
-run in cmd:
-```git submodule update --init --recursive```
+run in terminal:
+```angular2html
+# make sure the parent submodule exists locally
+git submodule update --init Python-Driver-for-Thorlabs-power-meter
+
+# switch the nested submodule to HTTPS (run inside the parent submodule)
+git -C Python-Driver-for-Thorlabs-power-meter submodule set-url GlobalLogger https://github.com/Tinyblack/GlobalLogger.git
+git -C Python-Driver-for-Thorlabs-power-meter submodule sync --recursive
+
+# clean any partial clone
+Remove-Item -Recurse -Force .\Python-Driver-for-Thorlabs-power-meter\GlobalLogger -ErrorAction SilentlyContinue
+
+# now fetch everything
+git submodule update --init --recursive
+
+# from the superproject root
+# Point the submodule at HTTPS instead of SSH
+git submodule set-url Python-Driver-for-Thorlabs-power-meter/GlobalLogger https://github.com/Tinyblack/GlobalLogger.git
+
+# Sync submodule config to .git/config
+git submodule sync --recursive
+
+# Clean any half-created clone (optional, if it exists)
+Remove-Item -Recurse -Force .\Python-Driver-for-Thorlabs-power-meter\GlobalLogger -ErrorAction SilentlyContinue
+
+```
 
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
 
