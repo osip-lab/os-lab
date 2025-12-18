@@ -4,7 +4,7 @@ scipy~=1.14.0
 pandas==2.2.2
 openpyxl==3.1.5
 # calculation acceleration
-numba~=0.60.0
+numba~=0.63.1
 # gui
 PyQt6~=6.7.1
 # plotting
