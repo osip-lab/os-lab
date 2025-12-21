@@ -4,6 +4,7 @@ Subpackage description.
 import numpy as np
 from numba import njit
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QThread, QTimer
+from PyQt6.QtWidgets import QComboBox
 from qt_gui.qt_ext import ThreadedWidget, ThreadedWorker, QMyHBoxLayout, QMyStandardButton
 
 try:
@@ -35,6 +36,7 @@ class XimeaCamControlWorker(ThreadedWorker):
     scanned = pyqtSignal(dict, name='Scanned')
     connected = pyqtSignal(name='Connected')
     captured = pyqtSignal(dict, name='Captured')
+    closed = pyqtSignal(name='Closed')
 
     def __init__(self, thread):
         super(XimeaCamControlWorker, self).__init__(thread)
@@ -45,9 +47,7 @@ class XimeaCamControlWorker(ThreadedWorker):
         self.width = None
         self.height = None
         self.depth = None
-        self.maximum = None
         self.bin_size = None
-        self.delay = None
         self.frame = None
         self.rebinned = None
         self.scaled = None
@@ -60,31 +60,33 @@ class XimeaCamControlWorker(ThreadedWorker):
 
     @pyqtSlot(name='Scan')
     def scan(self):
-        pass
-
-    @pyqtSlot(name='Connect')
-    def connect(self):
-        # create instance for first connected camera
         self.cam = xiapi.Camera()
-        print('Opening the first camera...')
-        self.cam.open_device()
+        n = self.cam.get_number_devices()
+        serials = []
+        for i in range(n):
+            self.cam = xiapi.Camera(dev_id=i)
+            self.cam.open_device()
+            sn = self.cam.get_device_sn(buffer_size=256)
+            sn = sn.decode('ascii')
+            serials.append(sn)
+            self.cam.close_device()
+        self.cam = None
+        info = {'serial_numbers': serials}
+        self.finish(self.scanned, info)
+
+    @pyqtSlot(dict, name='Open')
+    def open(self, info):
+        self.cam = xiapi.Camera()
+        print(f"Opening camera with SN {info['sn']}")
+        self.cam.open_device_by_SN(info['sn'])
 
         # settings
         self.cam.set_exposure(1000)
         self.cam.set_acq_timing_mode('XI_ACQ_TIMING_MODE_FRAME_RATE')
         self.cam.set_framerate(10)
 
-        # mode_used = self.cam.get_acq_timing_mode()
-        # if mode_used == 'XI_ACQ_TIMING_MODE_FRAME_RATE':
-        #     print('Mode is XI_ACQ_TIMING_MODE_FRAME_RATE')
-        # else:
-        #     print('Mode is not XI_ACQ_TIMING_MODE_FRAME_RATE')
         print(f'Frame rate: {self.cam.get_framerate()}')
         print('Exposure was set to %i us' % self.cam.get_exposure())
-
-        # print('The maximal width of this camera is %i.' % self.cam.get_width_maximum())
-        # print('The minimal width of this camera is %i.' % self.cam.get_width_minimum())
-        # print('The increment of the width of this camera is %i.' % self.cam.get_width_increment())
 
         self.cam.set_imgdataformat('XI_MONO16')  # need it to have 10-bit image depth
 
@@ -94,13 +96,10 @@ class XimeaCamControlWorker(ThreadedWorker):
         # Image size and depth
         self.width, self.height = self.cam.get_width(), self.cam.get_height()
         print(f'Height: {self.height}, Width: {self.width}')
-        # print(self.cam.get_sensor_bit_depth())
         self.depth = int(str(self.cam.get_sensor_bit_depth()).split('_')[2])
         print(f'Depth: {self.depth} bit')
-        # self.maximum = int(2 ** self.depth - 1)
 
         self.bin_size = 4  # change to 2, 4, or 8
-        # self.delay = 1  # ms
 
         self.frame = np.zeros((self.height, self.width), dtype=np.uint16)
         self.rebinned = np.zeros((self.height // self.bin_size, self.width // self.bin_size), dtype=np.uint16)
@@ -131,52 +130,100 @@ class XimeaCamControlWorker(ThreadedWorker):
         print('Stopping acquisition...')
         self.cam.stop_acquisition()
 
+    @pyqtSlot(name='Close')
+    def close(self):
+        self.cam.close_device()
+        self.cam = None
+        print('Camera closed')
+        self.finish(self.closed)
+
 
 # ---------------- Controller ---------------- #
 class XimeaCamControlWidget(ThreadedWidget):
     new_frame = pyqtSignal(np.ndarray)
-    sig_connect = pyqtSignal(name='Connect')
+    sig_scan = pyqtSignal(name='Scan')
+    sig_open = pyqtSignal(dict, name='Open')
     sig_start = pyqtSignal(name='Start')
     sig_stop = pyqtSignal(name='Stop')
+    sig_close = pyqtSignal(name='Close')
 
     def __init__(self, font_size=14):
         super(XimeaCamControlWidget, self).__init__(font_size=font_size)
         self.setTitle('Camera Control')
 
-        self.btn_connect = QMyStandardButton('connect', font_size=self.font_size)
-        self.btn_connect.setToolTip('connect')
-        self.btn_connect.clicked.connect(self.connect)
+        self.settings = {'exposure': 100, 'gain': 0.0}
+
+        self.btn_scan = QMyStandardButton('scan', font_size=self.font_size)
+        self.btn_scan.setToolTip('scan for possible camera S/N')
+        self.btn_scan.clicked.connect(self.scan)
+
+        self.combobox_sn = QComboBox()
+        self.combobox_sn.setToolTip('serial numbers of cameras connected to PC')
+        self.combobox_sn.setMinimumContentsLength(12)
+
+        self.btn_open = QMyStandardButton('open', font_size=self.font_size)
+        self.btn_open.setToolTip('open')
+        self.btn_open.clicked.connect(self.open_cam)
 
         self.btn_start = QMyStandardButton('start', font_size=self.font_size)
         self.btn_start.setToolTip('start')
-        self.btn_start.clicked.connect(self.start)
+        self.btn_start.clicked.connect(self.start_cam)
 
         self.btn_stop = QMyStandardButton('stop', font_size=self.font_size)
         self.btn_stop.setToolTip('stop')
-        self.btn_stop.clicked.connect(self.stop)
+        self.btn_stop.clicked.connect(self.stop_cam)
+
+        self.btn_close = QMyStandardButton('close', font_size=self.font_size)
+        self.btn_close.setToolTip('close')
+        self.btn_close.clicked.connect(self.close_cam)
 
         self.worker = XimeaCamControlWorker(self.thread())
         self.worker_thread = None
-        self.sig_connect.connect(self.worker.connect)
+        self.sig_scan.connect(self.worker.scan)
+        self.sig_open.connect(self.worker.open)
         self.sig_start.connect(self.worker.start)
         self.sig_stop.connect(self.worker.stop)
+        self.sig_close.connect(self.worker.close)
+        self.worker.scanned.connect(self.scanned)
         self.worker.captured.connect(self.generate_frame)
 
-        layout = QMyHBoxLayout(self.btn_connect, self.btn_start, self.btn_stop)
+        layout = QMyHBoxLayout(self.btn_scan, self.combobox_sn, self.btn_open, self.btn_start, self.btn_stop, self.btn_close)
         self.setLayout(layout)
 
-    @pyqtSlot(name='Connect')
-    def connect(self):
+    def get_settings(self):
+        self.settings['sn'] = self.combobox_sn.currentText()
+        # self.settings['exposure'] = int(self.spinbox_exposure.value())
+        # self.settings['gain'] = int(self.spinbox_gain.value())
+        return self.settings
+
+    @pyqtSlot(name='Scan')
+    def scan(self):
         self.worker_thread = QThread()
-        self.start_branch(self.worker, self.worker_thread, self.sig_connect)
+        self.start_branch(self.worker, self.worker_thread, self.sig_scan)
+
+    @pyqtSlot(dict, name='Scanned')
+    def scanned(self, info):
+        items = [self.combobox_sn.itemText(i) for i in range(self.combobox_sn.count())]
+        for sn in info['serial_numbers']:
+            if sn not in items:
+                self.combobox_sn.addItem(sn)
+
+    @pyqtSlot(name='Open')
+    def open_cam(self):
+        self.worker_thread = QThread()
+        self.start_branch(self.worker, self.worker_thread, self.sig_open, self.get_settings())
 
     @pyqtSlot(name='Start')
-    def start(self):
+    def start_cam(self):
         self.sig_start.emit()
 
     @pyqtSlot(name='Stop')
-    def stop(self):
+    def stop_cam(self):
         self.sig_stop.emit()
+
+    @pyqtSlot(name='Close')
+    def close_cam(self):
+        self.sig_close.emit()
 
     @pyqtSlot(dict, name='Generate')
     def generate_frame(self, data):
