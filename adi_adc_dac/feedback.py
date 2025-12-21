@@ -280,7 +280,8 @@ if __name__ == "__main__":
         # here is the feedback loop
         if trig_lock:
             v = np.array(data['adc_ch0'])[-1]
-            v_dac -= (v - SP0) / cI
+            if v > -10000:
+                v_dac -= (v - SP0) / cI
 
         if v_dac != v_dac_old:
             v_dac = set_dac(client, v_dac)
