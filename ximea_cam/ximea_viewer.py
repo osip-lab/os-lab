@@ -20,19 +20,19 @@ class Plotter(QLabel):
         super().__init__()
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(512, 512)
-        self.tic = None
-        self.i = 0
+        # self.tic = None
+        # self.i = -3
 
     def update_image(self, frame: np.ndarray):
         # Convert NumPy array to QImage without copying
         h, w = frame.shape
         img = QImage(frame.data, w, h, w * 2, QImage.Format.Format_Grayscale16)
         self.setPixmap(QPixmap.fromImage(img))
-        if self.tic is None:
-            self.tic = time.time()
-        else:
-            print(f'Effective FPS: {1 / ((time.time() - self.tic) / self.i):.1f}')
-        self.i += 1
+        # if self.i <= 0:
+        #     self.tic = time.time()
+        # else:
+        #     print(f'Effective FPS: {self.i / (time.time() - self.tic):.1f}')
+        # self.i += 1
 
 
 class MainWidget(QWidget):
