@@ -23,7 +23,7 @@ download git from here: https://git-scm.com/download/win  (use default settings 
 
 Open the git Gui and clone the repository to a local path of your choice on your computer:
 ![image](https://github.com/user-attachments/assets/e4208795-88a5-402f-a09e-1adda10f5aac)
-The path to the repository that is in the image should be the link to the github page of this repository: https://github.com/mkali-weizmann/os-lab
+The path to the repository that is in the image should be the link to the github page of this repository: [[https://github.com/mkali-weizmann/os-lab](https://github.com/osip-lab/os-lab)](https://github.com/osip-lab/os-lab)
 
 Go to pycharm and open the folder to which you cloned the git project as a new project:
 ![image](https://github.com/user-attachments/assets/a5bf101b-432a-4f65-8457-9230f352da71)
