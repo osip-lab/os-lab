@@ -5,12 +5,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib.widgets import SpanSelector
+from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from basler_cam.mode_position_capture_gui import fit_gaussian
 from utilities.automations.core.utils import wait_for_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
-from matplotlib.patches import Circle
 
 
 def load_video_as_numpy(video_path):
@@ -95,6 +95,7 @@ timestamps = times[int(selected_time_range[0] * fps):int(selected_time_range[1] 
 nrows = 2
 ncols = (trimmed_video.shape[0] // nrows) + (trimmed_video.shape[0] % nrows)
 fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(7, nrows * 5))
+fig.suptitle("Click frames to select them, then press Enter to average and continue", fontsize=11)
 clicked_axes = []
 averaged_frame = np.zeros((video_array.shape[1], video_array.shape[2]))  # Initialize averaged_frame to None
 
@@ -116,11 +117,17 @@ def on_key(event):
         if clicked_axes:
             global averaged_frame
             averaged_frame = np.mean(trimmed_video[clicked_axes], axis=0)
-            plt.figure()
-            plt.title("Summed Frame of Selected Axes")
-            plt.imshow(averaged_frame, cmap='gray')
-            plt.axis('off')
-            plt.show()
+
+            avg_fig, avg_ax = plt.subplots()
+            avg_ax.imshow(averaged_frame, cmap='gray')
+            avg_ax.axis('off')
+            avg_fig.suptitle("Averaged frame — press Enter to run Gaussian fit", fontsize=12)
+
+            def close_on_enter(e):
+                if e.key == 'enter':
+                    plt.close('all')
+            avg_fig.canvas.mpl_connect('key_press_event', close_on_enter)
+            plt.close(fig)
 
 fig.canvas.mpl_connect('key_press_event', on_key)
 
@@ -139,9 +146,33 @@ plt.show()
 # %% Plot resulted fit on top of the image with ellipses:
 if not averaged_frame.any():
     raise RuntimeError("No frames were selected — click frames in the grid then press Enter before closing the window.")
-fig, ax = plt.subplots()
-ax.imshow(averaged_frame, cmap='gray')
+
 gauss, pars = fit_gaussian(averaged_frame, rebinning=2)
+
+sy, sx = averaged_frame.shape
+x0, y0 = int(pars['x_0']), int(pars['y_0'])
+
+fig, ax = plt.subplots(figsize=(10, 10))
+div = make_axes_locatable(ax)
+hax = div.append_axes('top', size='20%', pad=0.2)
+hax.sharex(ax)
+hax.tick_params(bottom=False, top=True, labelbottom=False, labeltop=True)
+vax = div.append_axes('right', size='20%', pad=0.2)
+vax.sharey(ax)
+vax.tick_params(left=False, right=True, labelleft=False, labelright=True)
+
+ax.imshow(averaged_frame, cmap='gray', origin='upper')
 ax.contour(gauss, levels=5, colors='r')
-plt.title(f"s_x = {pars['s_x']:.0f}, s_y = {pars['s_y']:.0f}")
+
+hax.plot(np.arange(sx), averaged_frame[y0, :])
+hax.plot(np.arange(sx), gauss[y0, :])
+vax.plot(averaged_frame[:, x0], np.arange(sy))
+vax.plot(gauss[:, x0], np.arange(sy))
+
+s_x_mm = pars['s_x'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
+s_y_mm = pars['s_y'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
+fig.suptitle(f"s_x = {s_x_mm:.3f} mm,  s_y = {s_y_mm:.3f} mm", fontsize=14)
+
+fig.tight_layout()
+fig.subplots_adjust(top=0.93)
 plt.show()

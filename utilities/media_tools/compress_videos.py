@@ -2,7 +2,8 @@
 
 import subprocess
 import os
-from utilities.automations.core.utils import wait_for_path_from_clipboard
+from send2trash import send2trash
+from automations.core.utils import wait_for_path_from_clipboard
 
 def convert_to_h265(input_file, output_file, compression_rate: int):
     """
@@ -18,7 +19,7 @@ def convert_to_h265(input_file, output_file, compression_rate: int):
         "-c:v", "libx265",  # Use H.265 codec for better compression
         "-crf", str(compression_rate),  # Control quality (lower = better quality, larger file), \in [18, 28]
         "-preset", "slower",  # Encoding speed vs compression tradeoff
-        "-pix_fmt", "gray",  # Force 1-channel greyscale output
+        "-pix_fmt", "yuv420p", # "gray",  # Force 1-channel greyscale output
         "-c:a", "copy",  # Keep original audio without re-encoding
         output_file  # Output file
     ]
@@ -47,8 +48,8 @@ def convert_all_avi_files_in_folder(folder_path,
 
                     # Delete the original file after conversion
                     if os.path.exists(input_path) and delete_original_files and success and os.path.exists(output_path):
-                        os.remove(input_path)
-                        print(f"Deleted original file: {input_path}")
+                        send2trash(input_path)
+                        print(f"Moved to trash: {input_path}")
 
 
 def input_with_default(prompt, default):

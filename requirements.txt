@@ -18,6 +18,7 @@ picosdk~=1.1  # for PicoScope
 pythonnet~=3.0.5  # for ADI ACE for connection to ADC and DAC
 # utilities
 pyperclip~=1.9.0  # for copying into the clipboard
+send2trash~=2.1.0  # for moving files to trash instead of permanent deletion
 jsbeautifier~=1.15.1  # for prettier jsons
 pillow~=11.3.0
 opencv-python~=4.11.0.86
