@@ -5,10 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib.widgets import SpanSelector
-from scipy.optimize import curve_fit
-from scipy.ndimage import center_of_mass, median_filter
-from basler_cam.mode_position_capture_gui import rebin, fit_gaussian, gaussian2d
-from utilities.media_tools.utils import wait_for_path_from_clipboard
+from basler_cam.mode_position_capture_gui import fit_gaussian
+from utilities.automations.core.utils import wait_for_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
@@ -93,7 +91,7 @@ selected_time_range = get_time_range_from_user(times, intensity_t)
 
 trimmed_video = trim_video_by_time_range(video_array, selected_time_range, fps)
 timestamps = times[int(selected_time_range[0] * fps):int(selected_time_range[1] * fps)]
-
+# %%
 nrows = 2
 ncols = (trimmed_video.shape[0] // nrows) + (trimmed_video.shape[0] % nrows)
 fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(7, nrows * 5))
@@ -135,13 +133,15 @@ for i, ax in enumerate(axes.flat):
         ax.axis('off')  # Hide any unused subplots
 
 fig.tight_layout()
-plt.get_current_fig_manager().window.showMaximized()
+# plt.get_current_fig_manager().window.showMaximized()
 plt.show()
 
 # %% Plot resulted fit on top of the image with ellipses:
+if not averaged_frame.any():
+    raise RuntimeError("No frames were selected — click frames in the grid then press Enter before closing the window.")
 fig, ax = plt.subplots()
 ax.imshow(averaged_frame, cmap='gray')
-gauss, pars = fit_gaussian(averaged_frame, rebinning=1)
+gauss, pars = fit_gaussian(averaged_frame, rebinning=2)
 ax.contour(gauss, levels=5, colors='r')
 plt.title(f"s_x = {pars['s_x']:.0f}, s_y = {pars['s_y']:.0f}")
 plt.show()
