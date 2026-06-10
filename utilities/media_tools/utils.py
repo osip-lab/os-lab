@@ -1,10 +1,7 @@
 # general functions for the project
-from typing import Optional
 import matplotlib.pyplot as plt
-import cv2
-import pyperclip
 import os
-import time
+from send2trash import send2trash
 
 def delete_redundant_avi_files(directory):
     """
@@ -19,8 +16,7 @@ def delete_redundant_avi_files(directory):
 
             if os.path.isfile(mp4_path) and os.path.getsize(mp4_path) > 10 * 1024:
                 print(f"Deleting: {avi_path}")
-                os.remove(avi_path)
-
+                send2trash(avi_path)
 
 def save_fig_safe(filepath, **kwargs):
     """
