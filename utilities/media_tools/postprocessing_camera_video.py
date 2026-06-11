@@ -169,9 +169,9 @@ hax.plot(np.arange(sx), gauss[y0, :])
 vax.plot(averaged_frame[:, x0], np.arange(sy))
 vax.plot(gauss[:, x0], np.arange(sy))
 
-s_x_mm = pars['s_x'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
-s_y_mm = pars['s_y'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
-fig.suptitle(f"s_x = {s_x_mm:.3f} mm,  s_y = {s_y_mm:.3f} mm", fontsize=14)
+w_x_mm = pars['w_x'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
+w_y_mm = pars['w_y'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
+fig.suptitle(f"w_x = {w_x_mm:.3f} mm,  s_y = {w_y_mm:.3f} mm", fontsize=14)
 
 fig.tight_layout()
 fig.subplots_adjust(top=0.93)
