@@ -35,8 +35,14 @@ def convert_to_h265(input_file, output_file, compression_rate: int):
 
 def convert_all_avi_files_in_folder(folder_path,
                                     compression_rate=23,
-                                    delete_original_files=False):
-    for root, dirs, files in os.walk(folder_path):
+                                    delete_original_files=False,
+                                    recursive=False):
+    if recursive:
+        walker = os.walk(folder_path)
+    else:
+        walker = [(folder_path, [], os.listdir(folder_path))]
+
+    for root, dirs, files in walker:
         for file in files:
             if file.endswith(".avi") or file.endswith(".MOV"):
                 input_path = os.path.join(root, file)
@@ -62,11 +68,13 @@ def main():
     compression_rate = int(input_with_default(
         "Compression rate (a number in range [18, 28]. lower = better quality, larger file), use 23 for default", "23"))
     delete_original_files = input_with_default(r"Delete original files? (y/n)", "n").lower() == "y"
+    recursive = input_with_default(r"Run recursively in subfolders? (y/n)", "n").lower() == "y"
 
     convert_all_avi_files_in_folder(
         folder_path=folder_path,
         compression_rate=compression_rate,
-        delete_original_files=delete_original_files
+        delete_original_files=delete_original_files,
+        recursive=recursive
     )
 
 
