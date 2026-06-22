@@ -3,8 +3,9 @@ import sys
 import time
 import numpy as np
 import logging
+from collections import deque
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel
 from PyQt6.QtGui import QImage, QPixmap
 
@@ -13,26 +14,42 @@ from ximea_cam import XimeaCamControlWidget
 
 from local_config import PATH_DATA_LOCAL
 
+fps_counter_flag = False
+
+
+class FPSCounter(QLabel):
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.times = deque(maxlen=10)
+        self.setText('Effective FPS:')
+
+    def update_fps(self):
+        if fps_counter_flag:
+            self.times.append(time.time())
+            if len(self.times) == self.times.maxlen:
+                fps = (len(self.times) - 1) / (self.times[-1] - self.times[0])
+                self.setText(f'Effective FPS: {fps:.1f}')
+
 
 # ---------------- Plotter ---------------- #
 class Plotter(QLabel):
+    sig_image_size_changed = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(512, 512)
-        # self.tic = None
-        # self.i = -3
 
     def update_image(self, frame: np.ndarray):
         # Convert NumPy array to QImage without copying
         h, w = frame.shape
+        if self.width() != w or self.height() != h:
+            self.setMinimumSize(w, h)
+            self.resize(w, h)
+            self.sig_image_size_changed.emit()
         img = QImage(frame.data, w, h, w * 2, QImage.Format.Format_Grayscale16)
         self.setPixmap(QPixmap.fromImage(img))
-        # if self.i <= 0:
-        #     self.tic = time.time()
-        # else:
-        #     print(f'Effective FPS: {self.i / (time.time() - self.tic):.1f}')
-        # self.i += 1
 
 
 class MainWidget(QWidget):
@@ -42,24 +59,36 @@ class MainWidget(QWidget):
         self.font_size = 14
 
         self.controller = XimeaCamControlWidget(font_size=self.font_size)
+        if fps_counter_flag:
+            self.fps_counter = FPSCounter()
         self.plotter = Plotter()
 
         self.controller.new_frame.connect(self.plotter.update_image)
+        if fps_counter_flag:
+            self.controller.new_frame.connect(self.fps_counter.update_fps)
+        self.plotter.sig_image_size_changed.connect(self.adjust_window)
 
-        layout = QMyVBoxLayout(self.controller, self.plotter, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout = QMyVBoxLayout(self.controller, alignment=Qt.AlignmentFlag.AlignCenter)
+        if fps_counter_flag:
+            layout.addWidget(self.fps_counter)
+        layout.addWidget(self.plotter)
         self.setLayout(layout)
+
+    @pyqtSlot(name='AdjustWindow')
+    def adjust_window(self):
+        self.window().adjustSize()
 
 
 class MainWindow(MyStandardWindow):
 
     def __init__(self):
         super().__init__()
-        font = self.font()
-        font.setPointSize(14)
+        # font = self.font()
+        # font.setPointSize(14)
         self.widget = MainWidget()
         self.widget.setFont(font)
-        self.widget.font_size = 14
-        self.appear_with_central_widget('Image', self.widget)
+        # self.widget.font_size = 14
+        self.appear_with_central_widget('Ximea Viewer', self.widget)
 
 
 if __name__ == '__main__':
@@ -72,5 +101,8 @@ if __name__ == '__main__':
                         level=logging.INFO, format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%Y.%m.%d %H:%M:%S')
 
     app = QApplication(sys.argv)
+    font = app.font()
+    font.setPointSize(14)
+    app.setFont(font)
     ex = MainWindow()
     sys.exit(app.exec())
