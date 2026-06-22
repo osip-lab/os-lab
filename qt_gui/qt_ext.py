@@ -75,6 +75,12 @@ class QMySpinBox(QDoubleSpinBox):
         self.setPrefix(prefix)
         self.setSuffix(suffix)
 
+    def adjust_width(self):
+        self.ensurePolished()
+        fm = self.fontMetrics()
+        text = f"{int(self.maximum())}{self.suffix()}"
+        self.setFixedWidth(fm.horizontalAdvance(text) + 50)
+
 
 class QMyStandardButton(QPushButton):
     def __init__(self, *args, font_size=8):
