@@ -1,28 +1,22 @@
 import pandas as pd
 import matplotlib
-from utilities.media_tools.utils import wait_for_path_from_clipboard
-from local_config import PATH_CAVITY_DESIGN_PROJECT
-import sys
-
-
-
+matplotlib.use('Qt5Agg')
+from utilities.automations.core.utils import wait_for_path_from_clipboard
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from matplotlib.widgets import SpanSelector
 import itertools
 
-sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
-import plots_generations_scripts.df_over_fsr_to_NA_ratio_output as simulation
-df_over_FSR_interp, NAs, df_over_FSR, Ls = simulation.generate_lens_position_dependencies_output(plot_cavity=True,
+import simple_analysis_scripts.mode_spacing_to_NA as simulation
+df_over_FSR_interp, NAs, df_over_FSR, Ls = simulation.generate_lens_position_dependencies_output(plot_cavity=False,
                                                                                                  plot_spectrum=True,
                                                                                                  plot_dependencies=True)
-matplotlib.use('Qt5Agg')
 # %%
 specific_file_path = wait_for_path_from_clipboard(filetype='csv')
 
 df = pd.read_csv(specific_file_path, skiprows=[1, 2])
-df = df.loc[:, ['Time', 'Channel B']]
+df = df.loc[:, ['Time', 'Channel D']]
 data_numpy = df.to_numpy()
 
 x = data_numpy[:, 0]  # Time column

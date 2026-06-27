@@ -7,6 +7,7 @@ openpyxl==3.1.5
 numba~=0.63.1
 # gui
 PyQt6~=6.7.1
+PyQt5~=5.15.11  # required by PyCharm's Python console Qt event-loop hook
 # plotting
 matplotlib~=3.9.2
 pyqtgraph~=0.13.7
@@ -24,3 +25,5 @@ pillow~=11.3.0
 opencv-python~=4.11.0.86
 PyAutoGUI~=0.9.54
 pynput~=1.8.1
+tqdm~=4.68.3
+PySide6~=6.11.1
