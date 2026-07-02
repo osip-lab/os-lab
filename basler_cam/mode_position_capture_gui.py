@@ -298,7 +298,12 @@ def fit_gaussian(arr, rebinning=1):
     xx, yy = np.meshgrid(xx, yy)
 
     background = np.percentile(arr, 15)
-    mh = arr > np.percentile(arr - background, (1 - 100 / sx0 / sy0) * 100)
+    thresh = np.percentile(arr - background, (1 - 100 / sx0 / sy0) * 100)
+    mh = (arr - background) >= thresh
+    if not mh.any():
+        # Saturated / flat-top frame: the top percentile equals the max value,
+        # so a strict '>' selects nothing. Fall back to the brightest pixels.
+        mh = arr >= arr.max()
     amplitude = np.mean(arr[mh]) - background
     y0, x0 = center_of_mass(np.array(mh, dtype=np.float64))
     mc = arr > amplitude / np.e**0.5
