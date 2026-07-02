@@ -22,6 +22,10 @@ from qt_gui.qt_ext import (MyStandardWindow, QMyVBoxLayout, QMyHBoxLayout, Threa
 from local_config import PATH_DATA_LOCAL
 
 
+PIXEL_SIZE_UM = 5.5
+PIXEL_SIZE_MM = PIXEL_SIZE_UM / 1000.0
+
+
 class BaslerCamControlWorker(ThreadedWorker):
     scanned = pyqtSignal(dict, name='Scanned')
     connected = pyqtSignal(dict, name='Connected')
@@ -89,7 +93,7 @@ class BaslerCamControlWidget(ThreadedWidget):
         super(BaslerCamControlWidget, self).__init__(font_size=font_size)
         self.setTitle('Camera Control')
 
-        self.settings = {'exposure': 100, 'gain': 0.0}
+        self.settings = {'exposure': 3000, 'gain': 0.0}
 
         self.btn_scan = QMyStandardButton('scan', font_size=self.font_size)
         self.btn_scan.setToolTip('scan for possible camera S/N')
@@ -121,7 +125,7 @@ class BaslerCamControlWidget(ThreadedWidget):
 
         self.auto_switch = QCheckBox('auto')
         self.auto_switch.setToolTip('auto capture after 1 s')
-        self.auto_switch.setChecked(False)
+        self.auto_switch.setChecked(True)
         self.auto_timer = QTimer()
         self.auto_timer.setInterval(1000)
         self.auto_timer.setSingleShot(True)
@@ -367,14 +371,15 @@ class GaussianFitterWidget(ThreadedWidget):
 
         self.fit_switch = QCheckBox('fit')
         self.fit_switch.setToolTip('fit Gaussian to image')
-        self.fit_switch.setChecked(False)
+        self.fit_switch.setChecked(True)
 
         self.spinbox_threshold = QMySpinBox(decimals=0, v_ini=1000, v_min=0, v_max=9999, suffix='', step=100)
 
         self.labels = ('x_0', 'y_0', 'w_x', 'w_y')
         self.spinboxes = dict()
         for lbl in self.labels:
-            spinbox = QMySpinBox(decimals=1, v_min=0.0, v_max=9999.0, prefix=f'{lbl}: ', suffix=' pxl')
+            suffix = ' mm' if lbl in ('w_x', 'w_y') else ' pxl'
+            spinbox = QMySpinBox(decimals=2, v_min=0.0, v_max=9999.0, prefix=f'{lbl}: ', suffix=suffix)
             spinbox.setReadOnly(True)
             spinbox.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             self.spinboxes[lbl] = spinbox
@@ -404,14 +409,19 @@ class GaussianFitterWidget(ThreadedWidget):
 
     def log_msg(self):
         pars = self.parameters
+        w_x_mm = pars['w_x'] * PIXEL_SIZE_MM
+        w_y_mm = pars['w_y'] * PIXEL_SIZE_MM
         log_msg = (f"gaussian parameters - x_0 = {pars['x_0']:06.1f} pxl, y_0 = {pars['y_0']:06.1f} pxl, "
-                   f"w_x = {pars['w_x']:06.1f} pxl, w_y = {pars['w_y']:06.1f} pxl, angle = {pars['angle']:+01.2f} rad, "
+                   f"w_x = {w_x_mm:06.3f} mm, w_y = {w_y_mm:06.3f} mm, angle = {pars['angle']:+01.2f} rad, "
                    f"ampl = {pars['amplitude']:06.1f}, offset = {pars['offset']:06.1f}, time = {pars['time']:05.2f} s")
         return log_msg
 
     def show_parameters(self):
         for lbl in self.labels:
-            self.spinboxes[lbl].setValue(self.parameters[lbl])
+            value = self.parameters[lbl]
+            if lbl in ('w_x', 'w_y'):
+                value *= PIXEL_SIZE_MM
+            self.spinboxes[lbl].setValue(value)
 
     @pyqtSlot(dict, name='Fitted')
     def fitted(self, data):
@@ -442,6 +452,8 @@ class MainWidget(QWidget):
 
         layout = QMyVBoxLayout(self.controller, self.fitter, self.plotter, alignment=Qt.AlignmentFlag.AlignCenter)
         self.setLayout(layout)
+
+        QTimer.singleShot(0, self.controller.scan)
 
 
 class MainWindow(MyStandardWindow):
