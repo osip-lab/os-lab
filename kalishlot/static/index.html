@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OS Lab Dashboard</title>
+<link rel="stylesheet" href="/vendor/gridstack.min.css">
+<style>
+  :root {
+    --bg: #1e1e22;
+    --panel: #2a2a30;
+    --panel-header: #34343c;
+    --text: #e4e4e8;
+    --accent: #4a9eda;
+    --border: #46464e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  button {
+    background: var(--panel-header);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #add-device { border-color: var(--accent); }
+
+  .grid-stack { padding: 8px; }
+  .grid-stack-item-content {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .box-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: var(--panel-header);
+    cursor: move;
+    font-size: 13px;
+    user-select: none;
+  }
+  .box-header .box-close {
+    padding: 0 8px;
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .box-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 6px;
+    gap: 6px;
+  }
+
+  /* modal for the + flow */
+  #modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  #modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 22px;
+    min-width: 320px;
+  }
+  #modal h2 { margin: 0 0 12px; font-size: 15px; }
+  #modal .choice {
+    display: block;
+    width: 100%;
+    text-align: left;
+    margin: 6px 0;
+    padding: 8px 12px;
+  }
+  #modal .modal-cancel { margin-top: 12px; float: right; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OS Lab Dashboard</h1>
+  <button id="add-device">+ add device</button>
+  <span id="server-status" style="font-size:12px; opacity:0.7;"></span>
+</header>
+<div class="grid-stack"></div>
+<div id="modal-backdrop" hidden>
+  <div id="modal">
+    <h2 id="modal-title"></h2>
+    <div id="modal-choices"></div>
+    <button class="modal-cancel" id="modal-cancel">cancel</button>
+  </div>
+</div>
+<script src="/vendor/gridstack-all.js"></script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
