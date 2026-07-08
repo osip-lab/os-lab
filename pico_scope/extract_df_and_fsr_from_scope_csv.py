@@ -9,9 +9,10 @@ from matplotlib.widgets import SpanSelector
 import itertools
 
 import simple_analysis_scripts.mode_spacing_to_NA as simulation
-df_over_FSR_interp, NAs, df_over_FSR, Ls = simulation.generate_lens_position_dependencies_output(plot_cavity=False,
-                                                                                                 plot_spectrum=True,
-                                                                                                 plot_dependencies=True)
+# Requires to map the cavity-design project to this project via PyCharm's settings -> Project Structure
+mode_spacing_interp, mode_spacing_over_fsr_interp = simulation.generate_lens_position_dependencies_output(plot_cavity=False,
+                                                                                                 plot_spectrum=False,
+                                                                                                 plot_dependencies=False)
 # %%
 specific_file_path = wait_for_path_from_clipboard(filetype='csv')
 
@@ -214,6 +215,6 @@ else:
         results["df_over_fsr"].append(df_over_fsr)
 
     results_df = pd.DataFrame(results)
-    results_df["NA"] = df_over_FSR_interp(results_df["df_over_fsr"])
+    results_df["NA"] = mode_spacing_over_fsr_interp(results_df["df_over_fsr"])
 
     print(results_df)

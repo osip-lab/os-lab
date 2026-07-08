@@ -18,7 +18,6 @@ from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 
 from qt_gui.qt_ext import (MyStandardWindow, QMyVBoxLayout, QMyHBoxLayout, ThreadedWidget, ThreadedWorker,
                            QMyStandardButton, QMySpinBox)
-
 from local_config import PATH_DATA_LOCAL
 
 
@@ -291,7 +290,14 @@ def rebin_image(img, factor):
     return rebinned
 
 
-def fit_gaussian(arr, rebinning=1):
+def fit_gaussian(arr, rebinning=1, manual_guess=None):
+    """Fit a 2D Gaussian to `arr`.
+
+    If `manual_guess` is provided it should be a dict with keys 'x_0', 'y_0' and
+    'sigma' given in full-resolution pixel coordinates. These override the
+    automatically estimated center and width used as the fit's initial guess
+    (amplitude and background are still estimated from the image).
+    """
 
     sy0, sx0 = np.shape(arr)
     arr = rebin_image(arr, rebinning)
@@ -312,6 +318,12 @@ def fit_gaussian(arr, rebinning=1):
     y0, x0 = center_of_mass(np.array(mh, dtype=np.float64))
     mc = arr > amplitude / np.e**0.5
     radius = max((np.sum(mc) / np.pi) ** 0.5, 1)
+    if manual_guess is not None:
+        # User-provided guess is in full-resolution pixels; convert to the
+        # rebinned grid used for fitting.
+        x0 = manual_guess['x_0'] / rebinning
+        y0 = manual_guess['y_0'] / rebinning
+        radius = max(manual_guess['sigma'] / rebinning, 1)
     initial_guess = (amplitude, x0, y0, radius, radius, 0.0, background)
     tic = time.time()
     try:

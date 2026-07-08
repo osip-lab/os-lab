@@ -11,6 +11,10 @@ from utilities.automations.core.utils import wait_for_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
+# If True, the user clicks the Gaussian center and a point ~1 sigma away on the
+# averaged frame to seed the fit. If False, the initial guess is estimated
+# automatically (as before).
+MANUAL_INITIAL_GUESS = True
 
 
 def load_video_as_numpy(video_path):
@@ -67,6 +71,23 @@ def get_time_range_from_user(times, intensity):
 
     plt.show(block=True)
     return tuple(selected_range)
+
+
+def get_manual_initial_guess(frame):
+    """Presents `frame` and lets the user click the Gaussian center followed by a
+    point ~1 sigma away. Returns a dict with 'x_0', 'y_0' and 'sigma' (pixels)."""
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(frame, cmap='gray')
+    ax.set_title("Click the Gaussian center, then a point ~1 sigma away")
+    fig.tight_layout()
+    pts = plt.ginput(2, timeout=0)
+    plt.close(fig)
+    if len(pts) < 2:
+        raise RuntimeError("Manual initial guess requires two clicks (center and 1-sigma point).")
+    (cx, cy), (px, py) = pts
+    sigma = float(np.hypot(px - cx, py - cy))
+    print(f"Manual initial guess: center=({cx:.1f}, {cy:.1f}), sigma={sigma:.1f} px")
+    return {'x_0': float(cx), 'y_0': float(cy), 'sigma': max(sigma, 1.0)}
 
 
 def trim_video_by_time_range(video_array, time_range, fps):
@@ -147,7 +168,8 @@ plt.show()
 if not averaged_frame.any():
     raise RuntimeError("No frames were selected — click frames in the grid then press Enter before closing the window.")
 
-gauss, pars = fit_gaussian(averaged_frame, rebinning=2)
+manual_guess = get_manual_initial_guess(averaged_frame) if MANUAL_INITIAL_GUESS else None
+gauss, pars = fit_gaussian(averaged_frame, rebinning=2, manual_guess=manual_guess)
 
 sy, sx = averaged_frame.shape
 x0, y0 = int(pars['x_0']), int(pars['y_0'])
