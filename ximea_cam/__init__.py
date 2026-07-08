@@ -67,16 +67,23 @@ class XimeaCamControlWorker(ThreadedWorker):
         self.cam = xiapi.Camera()
         n = self.cam.get_number_devices()
         serials = []
+        failed = 0
         for i in range(n):
-            self.cam = xiapi.Camera(dev_id=i)
-            self.cam.open_device()
-            sn = self.cam.get_device_sn(buffer_size=256)
-            sn = sn.decode('ascii')
-            serials.append(sn)
-            self.cam.close_device()
+            try:
+                self.cam = xiapi.Camera(dev_id=i)
+                self.cam.open_device()
+                sn = self.cam.get_device_sn(buffer_size=256)
+                sn = sn.decode('ascii')
+                serials.append(sn)
+                self.cam.close_device()
+            except xiapi.Xi_error:
+                failed += 1
         self.cam = None
         info = {'serial_numbers': serials}
-        print('Scan finished')
+        if failed == 0:
+            print('Scan finished')
+        else:
+            print(f'Scan finished. Failed to scan {failed} camera/s')
         self.finish(self.scanned, info)
 
     def prepare_buffers(self):
