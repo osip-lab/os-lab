@@ -116,6 +116,23 @@ Conventions the existing frontend already understands:
   viewers stay in sync. NOTE the DG822 rule: connecting must be read-only
   (CH1 often drives the laser temperature scan, hard-capped at 5 Vpp in the
   adapter).
+- **Streaming-plot devices** (continuous data points, e.g. oscilloscopes,
+  power meters): see `adapters/picoscope.py` + `static/boxes/picoscope.js`.
+  Never send or draw per-sample: the device layer accumulates into numpy
+  ring buffers (`picoscope/ps4000a_scope.py` `RingBuffer`), an adapter
+  thread emits the visible window at ~20 Hz **min/max-envelope-decimated**
+  to <= ~1000 points per channel as a JSON event, and the box redraws once
+  per event with the vendored uPlot (`static/vendor/uPlot.iife.min.js`,
+  loaded globally in index.html). Device addresses may contain '/' (the
+  PicoScope serial does) — the server routes use `{device_id:path}` for
+  that reason. Register the bulky periodic event type in
+  `COALESCE_EVENT_TYPES` in `server.py`: a stalled viewer then receives
+  only the newest one instead of a backlog burst.
+- **Frontend sockets**: always connect through `connectDeviceStream` in
+  `static/boxes/stream.js` (see any box for usage) — it reconnects
+  automatically with backoff and calls your `onReattach(describe)` with a
+  fresh `describe()` so the box can resync state it missed while offline.
+  Never hand-roll `new WebSocket(...)` in a box.
 
 Register the class in `server.py`:
 

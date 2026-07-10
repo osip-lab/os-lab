@@ -7,6 +7,8 @@
 // after a 'refresh').
 // Returns a cleanup function that closes the socket.
 
+import { connectDeviceStream } from './stream.js';
+
 const FREQ_UNITS = [
   { label: 'mHz', factor: 1e-3 },
   { label: 'Hz', factor: 1 },
@@ -176,26 +178,24 @@ export function createRigolDGBox(device, container, sendCommand) {
   });
 
   // ----------------------------------------------------------- the stream
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const socket = new WebSocket(
-    `${protocol}://${location.host}/ws/devices/${encodeURIComponent(device.device_id)}`);
-  let closedByUs = false;
-
-  socket.onmessage = (message) => {
-    if (typeof message.data !== 'string') return; // no frames for this device
-    const event = JSON.parse(message.data);
-    if (event.type === 'channel' && sections[event.channel]) {
-      sections[event.channel].show(event.state);
-    } else if (event.type === 'error') {
-      status.textContent = `error: ${event.message}`;
-    }
-  };
-  socket.onclose = () => {
-    if (!closedByUs) status.textContent = 'connection lost';
-  };
+  const stream = connectDeviceStream({
+    deviceId: device.device_id,
+    status,
+    onEvent(event) {
+      if (event.type === 'channel' && sections[event.channel]) {
+        sections[event.channel].show(event.state);
+      } else if (event.type === 'error') {
+        status.textContent = `error: ${event.message}`;
+      }
+    },
+    onReattach(describe) {
+      (describe.channels ?? []).forEach((state, index) => {
+        if (sections[index + 1]) sections[index + 1].show(state);
+      });
+    },
+  });
 
   return function cleanup() {
-    closedByUs = true;
-    socket.close();
+    stream.close();
   };
 }

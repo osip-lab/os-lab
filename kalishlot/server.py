@@ -24,14 +24,18 @@ from pydantic import BaseModel
 
 from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
+from adapters.picoscope import PicoScopeAdapter
 from adapters.rigol_dg import RigolDGAdapter
 
 DEVICE_TYPES = {cls.type_name: cls
                 for cls in (DummyCameraAdapter, BaslerCameraAdapter,
-                            RigolDGAdapter)}
+                            RigolDGAdapter, PicoScopeAdapter)}
 
 JPEG_QUALITY = 80
 FRAME_POLL_S = 1 / 30  # how often each websocket checks for a newer frame
+# bulky periodic data events: a slow viewer gets only the newest one, so a
+# stalled browser tab can never build a backlog (same rule as video frames)
+COALESCE_EVENT_TYPES = {'scope_data'}
 
 app = FastAPI(title='OS Lab dashboard')
 
@@ -100,7 +104,7 @@ def list_open_devices():
                 for device_id, adapter in devices.items()]
 
 
-@app.delete('/api/devices/{device_id}')
+@app.delete('/api/devices/{device_id:path}')
 def close_device(device_id: str):
     with devices_lock:
         adapter = devices.pop(device_id, None)
@@ -115,7 +119,7 @@ class CommandRequest(BaseModel):
     args: dict = {}
 
 
-@app.post('/api/devices/{device_id}/command')
+@app.post('/api/devices/{device_id:path}/command')
 def device_command(device_id: str, request: CommandRequest):
     adapter = device_or_404(device_id)
     try:
@@ -135,10 +139,12 @@ def encode_jpeg(image):
     return encoded.tobytes()
 
 
-@app.websocket('/ws/devices/{device_id}')
+@app.websocket('/ws/devices/{device_id:path}')
 async def device_stream(websocket: WebSocket, device_id: str):
     """Per-viewer stream: binary messages are JPEG frames (newest only),
-    text messages are JSON events (settings applied, status, fit results)."""
+    text messages are JSON events (settings applied, status, fit results).
+    ':path' converters: device addresses may contain '/' (e.g. PicoScope
+    serial numbers like 10036/0060)."""
     with devices_lock:
         adapter = devices.get(device_id)
     if adapter is None:
@@ -150,13 +156,22 @@ async def device_stream(websocket: WebSocket, device_id: str):
     last_frame_id = 0
     try:
         while True:
-            # forward queued events
+            # forward queued events; of the bulky periodic ones only the
+            # newest is sent (state events always all go through)
+            events = []
             while True:
                 try:
-                    event = listener.get_nowait()
+                    events.append(listener.get_nowait())
                 except Exception:
                     break
+            newest_data = None
+            for event in events:
+                if event.get('type') in COALESCE_EVENT_TYPES:
+                    newest_data = event
+                    continue
                 await websocket.send_text(json.dumps(event))
+            if newest_data is not None:
+                await websocket.send_text(json.dumps(newest_data))
             # send the newest frame if it changed
             frame_id, frame = adapter.latest_display_frame()
             if frame is not None and frame_id != last_frame_id:

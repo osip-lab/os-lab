@@ -7,6 +7,8 @@
 // Shared by every camera-like device type (dummy, Basler).
 // Returns a cleanup function that closes the socket.
 
+import { connectDeviceStream } from './stream.js';
+
 const LEVELS_MAX = 4095; // 12-bit sensor data
 const STRIP = 70;        // cross-section strip thickness, px
 const GAP = 4;
@@ -348,15 +350,10 @@ export function createCameraBox(device, container, sendCommand) {
   };
 
   // ----------------------------------------------------------- the stream
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const socket = new WebSocket(
-    `${protocol}://${location.host}/ws/devices/${encodeURIComponent(device.device_id)}`);
-  socket.binaryType = 'blob';
-  let closedByUs = false;
-
-  socket.onmessage = async (message) => {
-    if (typeof message.data === 'string') {
-      const event = JSON.parse(message.data);
+  const stream = connectDeviceStream({
+    deviceId: device.device_id,
+    status,
+    onEvent(event) {
       if (event.type === 'status') setPlaying(event.playing);
       else if (event.type === 'setting_applied') showAppliedSetting(event.name, event.value);
       else if (event.type === 'fit_status') {
@@ -383,25 +380,34 @@ export function createCameraBox(device, container, sendCommand) {
       } else if (event.type === 'error') {
         status.textContent = `error: ${event.message}`;
       }
-      return;
-    }
-    const bitmap = await createImageBitmap(message.data);
-    if (videoCanvas.width !== bitmap.width || videoCanvas.height !== bitmap.height) {
-      videoCanvas.width = bitmap.width;
-      videoCanvas.height = bitmap.height;
-    }
-    videoCanvas.getContext('2d').drawImage(bitmap, 0, 0);
-    bitmap.close();
-  };
-  socket.onclose = () => {
-    if (!closedByUs) status.textContent = 'stream disconnected';
-  };
+    },
+    async onFrame(blob) {
+      const bitmap = await createImageBitmap(blob);
+      if (videoCanvas.width !== bitmap.width || videoCanvas.height !== bitmap.height) {
+        videoCanvas.width = bitmap.width;
+        videoCanvas.height = bitmap.height;
+      }
+      videoCanvas.getContext('2d').drawImage(bitmap, 0, 0);
+      bitmap.close();
+    },
+    onReattach(describe) {
+      setPlaying(describe.playing ?? true);
+      fitCheck.checked = describe.fitting ?? false;
+      if (!fitCheck.checked) clearFitDisplay();
+      guess = describe.guess
+        ? { x: describe.guess.x_0, y: describe.guess.y_0, r: describe.guess.sigma } : null;
+      for (const setting of describe.settings ?? []) {
+        showAppliedSetting(setting.name, setting.value);
+      }
+      redrawOverlay();
+      updateInfo();
+    },
+  });
 
   updateInfo();
 
   return function cleanup() {
-    closedByUs = true;
-    socket.close();
+    stream.close();
     resizeObserver.disconnect();
   };
 }
