@@ -3,10 +3,12 @@
 // only maps device types to their box renderers.
 
 import { createCameraBox } from './boxes/camera.js';
+import { createRigolDGBox } from './boxes/rigol_dg.js';
 
 const BOX_RENDERERS = {
   dummy_camera: createCameraBox,
   basler_camera: createCameraBox,
+  rigol_dg: createRigolDGBox,
 };
 
 const grid = GridStack.init({

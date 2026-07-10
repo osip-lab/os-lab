@@ -42,6 +42,15 @@ def start_server():
     raise RuntimeError('server did not start')
 
 
+async def wait_event(socket, event_type, timeout=30):
+    while True:
+        message = await asyncio.wait_for(socket.recv(), timeout=timeout)
+        if isinstance(message, str):
+            event = json.loads(message)
+            if event.get('type') == event_type:
+                return event
+
+
 async def check_stream(device_id):
     uri = f'ws://{HOST}:{PORT}/ws/devices/{device_id}'
     async with websockets.connect(uri) as socket:
@@ -86,6 +95,35 @@ async def check_stream(device_id):
             if isinstance(message, bytes):
                 print('single frame while paused ok')
                 break
+
+        # enable the Gaussian fit (still paused: fit_on refits the newest
+        # frame right away); the dummy beam is a real Gaussian, sigma 60 px
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'fit_on', 'args': {}})
+        event = await wait_event(socket, 'fit_status')
+        assert event['enabled'] is True
+        event = await wait_event(socket, 'fit')
+        assert event['success'], event
+        assert abs(event['params']['s_x'] - 60) < 6, event['params']
+        assert len(event['cross']['row']) > 100
+        print(f"fit event ok: s_x = {event['params']['s_x']:.1f} px "
+              f"(expected 60)")
+
+        # guess circle: broadcast to all viewers, then a refit with it
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'set_guess',
+             'args': {'x_0': 500, 'y_0': 500, 'sigma': 80}})
+        event = await wait_event(socket, 'guess')
+        assert event['guess']['sigma'] == 80
+        event = await wait_event(socket, 'fit')
+        assert event['success'], event
+        print('guess + refit ok')
+
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'fit_off', 'args': {}})
+        event = await wait_event(socket, 'fit_status')
+        assert event['enabled'] is False
+        print('fit_off ok')
 
 
 def main():

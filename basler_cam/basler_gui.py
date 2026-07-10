@@ -37,6 +37,8 @@ FIT_PEN = pg.mkPen((255, 90, 90, 170), width=1)  # thin and translucent, to not 
 DATA_PEN = pg.mkPen((70, 140, 220), width=1)  # cross-section data
 FIT_CURVE_PEN = pg.mkPen((255, 165, 40), width=1)  # cross-section fit curve
 CIRCLE_PEN = pg.mkPen((0, 220, 220, 220), width=1)  # user circle annotation
+GUESS_PEN = pg.mkPen((110, 255, 110, 220), width=1,
+                     style=Qt.PenStyle.DashLine)  # fit initial-guess circle
 
 
 class CircleDragViewBox(pg.ViewBox):
@@ -196,22 +198,42 @@ class CameraPanel(QGroupBox):
         grid.setColumnStretchFactor(0, 4)
         grid.setColumnStretchFactor(1, 1)
 
-        # --- user circle annotation: press on the center and drag to the
-        # circumference; persists across frames until cleared
+        # --- user circles, drawn by pressing on the center and dragging to
+        # the circumference. Two kinds: the marker circle is a pure
+        # annotation persisting across frames; the guess circle feeds the
+        # Gaussian fit its initial parameters (center -> x_0/y_0,
+        # radius -> sigma_x = sigma_y).
         self.btn_circle = QPushButton('mark circle')
         self.btn_circle.setCheckable(True)
         self.btn_circle.setToolTip('press on the circle center in the image '
                                    'and drag to its circumference')
-        self.btn_circle.toggled.connect(self._on_circle_mode)
+        self.btn_circle.toggled.connect(
+            lambda active: self._on_circle_mode('marker', active))
         self.btn_circle_clear = QPushButton('clear circle')
         self.btn_circle_clear.clicked.connect(self.clear_circle)
         self.lbl_circle = QLabel('')
         self._circle_center = None
+        self._drag_target = None  # which circle a drag is drawing
         self.circle_item = pg.PlotCurveItem(pen=CIRCLE_PEN)
         self.circle_center_item = pg.ScatterPlotItem(symbol='+', size=12,
                                                      pen=CIRCLE_PEN, brush=None)
         self.image_plot.addItem(self.circle_item)
         self.image_plot.addItem(self.circle_center_item)
+
+        self.btn_guess = QPushButton('guess circle')
+        self.btn_guess.setCheckable(True)
+        self.btn_guess.setToolTip('draw the fit initial guess: circle center '
+                                  '-> (x_0, y_0), radius -> sigma')
+        self.btn_guess.toggled.connect(
+            lambda active: self._on_circle_mode('guess', active))
+        self.btn_guess_clear = QPushButton('clear guess')
+        self.btn_guess_clear.clicked.connect(self.clear_guess_circle)
+        self.lbl_guess = QLabel('')
+        self.guess_circle_item = pg.PlotCurveItem(pen=GUESS_PEN)
+        self.guess_center_item = pg.ScatterPlotItem(symbol='+', size=12,
+                                                    pen=GUESS_PEN, brush=None)
+        self.image_plot.addItem(self.guess_circle_item)
+        self.image_plot.addItem(self.guess_center_item)
 
         # fit overlay: thin translucent ellipses at 1 sigma and at the beam
         # radius w = 2 sigma, plus a center marker
@@ -231,6 +253,9 @@ class CameraPanel(QGroupBox):
         circle_row.addWidget(self.btn_circle)
         circle_row.addWidget(self.btn_circle_clear)
         circle_row.addWidget(self.lbl_circle)
+        circle_row.addWidget(self.btn_guess)
+        circle_row.addWidget(self.btn_guess_clear)
+        circle_row.addWidget(self.lbl_guess)
         circle_row.addStretch()
 
         layout = QVBoxLayout()
@@ -399,25 +424,46 @@ class CameraPanel(QGroupBox):
             f"θ = {theta:+.2f} rad, fit took {pars['time']:.2f} s")
         self._refresh_after_fit()
 
-    # -------------------------------------------------- circle annotation
-    def _on_circle_mode(self, active):
+    # ------------------------------------------------------- user circles
+    def _on_circle_mode(self, which, active):
+        if active:
+            other = self.btn_guess if which == 'marker' else self.btn_circle
+            if other.isChecked():
+                other.setChecked(False)
+            self._drag_target = which
+        elif self._drag_target == which:
+            self._drag_target = None
         self._circle_center = None
-        self.view_box.circle_mode = active
-        self.btn_circle.setText('drag center → edge...' if active else 'mark circle')
+        self.view_box.circle_mode = self._drag_target is not None
+        self.btn_circle.setText('drag center → edge...'
+                                if self._drag_target == 'marker' else 'mark circle')
+        self.btn_guess.setText('drag center → edge...'
+                               if self._drag_target == 'guess' else 'guess circle')
 
     def _on_circle_drag(self, stage, x, y):
+        if self._drag_target is None:
+            return
+        marker = self._drag_target == 'marker'
         if stage == 'start':
             self._circle_center = (x, y)
-            self.circle_center_item.setData([x], [y])
-            self.circle_item.setData([], [])
+            (self.circle_center_item if marker
+             else self.guess_center_item).setData([x], [y])
+            (self.circle_item if marker else self.guess_circle_item).setData([], [])
             return
         if self._circle_center is None:
             return
         center_x, center_y = self._circle_center
         radius = float(np.hypot(x - center_x, y - center_y))
-        self.set_circle(center_x, center_y, radius)  # live preview while dragging
+        # live preview while dragging
+        if marker:
+            self.set_circle(center_x, center_y, radius)
+        else:
+            self.set_guess_circle(center_x, center_y, radius)
         if stage == 'finish':
-            self.btn_circle.setChecked(False)  # resets the button text
+            if not marker:
+                self._apply_guess(center_x, center_y, max(radius, 1.0))
+            # resets the button text
+            (self.btn_circle if marker else self.btn_guess).setChecked(False)
 
     def set_circle(self, center_x, center_y, radius):
         t = np.linspace(0, 2 * np.pi, 120)
@@ -433,6 +479,30 @@ class CameraPanel(QGroupBox):
         self.circle_item.setData([], [])
         self.circle_center_item.setData([], [])
         self.lbl_circle.setText('')
+
+    def set_guess_circle(self, center_x, center_y, radius):
+        t = np.linspace(0, 2 * np.pi, 120)
+        self.guess_circle_item.setData(center_x + radius * np.cos(t),
+                                       center_y + radius * np.sin(t))
+        self.guess_center_item.setData([center_x], [center_y])
+        self.lbl_guess.setText(
+            f'guess: center ({center_x:.0f}, {center_y:.0f}) px, '
+            f'σ = {radius:.1f} px')
+
+    def _apply_guess(self, center_x, center_y, sigma):
+        self.fit_loop.guess = {'x_0': center_x, 'y_0': center_y, 'sigma': sigma}
+        if self.check_fit.isChecked():
+            # refit the current frame right away, also when paused
+            with self._frame_lock:
+                frame = self._latest_frame
+            if frame is not None:
+                self.fit_loop.submit(frame)
+
+    def clear_guess_circle(self):
+        self.fit_loop.guess = None
+        self.guess_circle_item.setData([], [])
+        self.guess_center_item.setData([], [])
+        self.lbl_guess.setText('')
 
     def shutdown(self):
         self.display_timer.stop()
@@ -588,6 +658,8 @@ def main():
                           f'{" w_x=%.1f px" % pars["w_x"] if success else ""}'))
                 panel.check_fit.setChecked(True)
                 panel.set_circle(1024, 1024, 300)
+                panel.set_guess_circle(1024, 1024, 200)
+                panel._apply_guess(1024, 1024, 200)
                 panel.single()
 
         QTimer.singleShot(500, auto_connect)

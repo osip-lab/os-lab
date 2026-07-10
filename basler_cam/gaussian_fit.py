@@ -110,6 +110,9 @@ class FitLoop:
         self.on_result = on_result
         self.rebinning = rebinning
         self.min_signal = min_signal
+        # optional initial guess {'x_0', 'y_0', 'sigma'} in full-resolution
+        # pixels (e.g. from a user-drawn circle); None = automatic guess
+        self.guess = None
         self._pending = None
         self._new = threading.Event()
         self._stopping = threading.Event()
@@ -149,7 +152,8 @@ class FitLoop:
                 if peak - background < self.min_signal:
                     self.on_result(False, {'reason': 'low signal'})
                     continue
-                success, parameters = fit_gaussian(frame, rebinning=self.rebinning)
+                success, parameters = fit_gaussian(frame, rebinning=self.rebinning,
+                                                   manual_guess=self.guess)
                 self.on_result(success, parameters)
             except Exception as error:
                 self.on_result(False, {'reason': str(error)})

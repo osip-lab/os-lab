@@ -22,9 +22,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
+from adapters.rigol_dg import RigolDGAdapter
 
-DEVICE_TYPES = {cls.type_name: cls for cls in (DummyCameraAdapter,)}
+DEVICE_TYPES = {cls.type_name: cls
+                for cls in (DummyCameraAdapter, BaslerCameraAdapter,
+                            RigolDGAdapter)}
 
 JPEG_QUALITY = 80
 FRAME_POLL_S = 1 / 30  # how often each websocket checks for a newer frame
@@ -169,6 +173,16 @@ async def device_stream(websocket: WebSocket, device_id: str):
 
 
 # ------------------------------------------------------------- static files
+@app.middleware('http')
+async def no_cache_static(request, call_next):
+    """Make browsers revalidate JS/HTML on every load — otherwise a plain
+    refresh can keep running stale cached modules after a code update."""
+    response = await call_next(request)
+    if not request.url.path.startswith('/api'):
+        response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
 app.mount('/', StaticFiles(directory=Path(__file__).parent / 'static', html=True))
 
 

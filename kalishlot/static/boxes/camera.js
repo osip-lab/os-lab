@@ -1,23 +1,50 @@
-// Camera box: live video over WebSocket plus play / pause / single-frame
-// controls. Shared by every camera-like device type (dummy, Basler).
+// Camera box: live video over WebSocket, play / pause / single-frame,
+// exposure & gain inputs (commit on Enter or focus loss), Gaussian fit with
+// ellipse overlay + cross-section plots, and two draggable circles:
+//   marker ◯ — a persistent annotation (cyan), local to this viewer;
+//   guess ◯  — the fit's initial guess (dashed green): center -> (x_0, y_0),
+//              radius -> sigma; lives on the server so the fit can use it.
+// Shared by every camera-like device type (dummy, Basler).
 // Returns a cleanup function that closes the socket.
 
+const LEVELS_MAX = 4095; // 12-bit sensor data
+const STRIP = 70;        // cross-section strip thickness, px
+const GAP = 4;
+
+const COLOR_DATA = 'rgb(70, 140, 220)';        // cross-section data
+const COLOR_FIT_CURVE = 'rgb(255, 165, 40)';   // cross-section fit curve
+const COLOR_ELLIPSE = 'rgba(255, 90, 90, 0.67)';
+const COLOR_MARKER = 'rgba(0, 220, 220, 0.86)';
+const COLOR_GUESS = 'rgba(110, 255, 110, 0.86)';
+
 export function createCameraBox(device, container, sendCommand) {
+  // fit coordinates are full-resolution sensor pixels; the video stream may
+  // be downsampled, so all drawing is scaled from sensor_shape
+  const [sensorH, sensorW] = device.sensor_shape ?? device.frame_shape;
+  const pixelMm = device.pixel_size_mm ?? 0;
+
   container.innerHTML = `
     <div class="cam-controls" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
       <button data-command="play">play</button>
       <button data-command="pause">pause</button>
       <button data-command="snap">single frame</button>
+      <span class="cam-settings" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"></span>
+      <label style="display:flex; gap:4px; align-items:center; font-size:12px;">
+        <input type="checkbox" class="cam-fit"> fit</label>
+      <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
+      <button class="cam-mark-clear" title="clear the marker circle">✕</button>
+      <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
+      <button class="cam-guess-clear" title="clear the guess circle">✕</button>
       <span class="cam-status" style="font-size:12px; opacity:0.8;"></span>
     </div>
-    <div class="cam-view" style="flex:1; min-height:0; display:flex;">
-      <canvas class="cam-canvas"
-              style="flex:1; min-width:0; object-fit:contain; background:#111;"></canvas>
-    </div>`;
+    <div class="cam-info" style="font-size:12px; opacity:0.9; min-height:1.2em;"></div>
+    <div class="cam-view" style="flex:1; min-height:0; position:relative; overflow:hidden;"></div>`;
 
-  const canvas = container.querySelector('.cam-canvas');
-  const context = canvas.getContext('2d');
   const status = container.querySelector('.cam-status');
+  const info = container.querySelector('.cam-info');
+  const view = container.querySelector('.cam-view');
+
+  // ------------------------------------------------------- play/pause/snap
   const buttons = {
     play: container.querySelector('[data-command="play"]'),
     pause: container.querySelector('[data-command="pause"]'),
@@ -39,6 +66,287 @@ export function createCameraBox(device, container, sendCommand) {
     .then(() => { setPlaying(false); return sendCommand(device.device_id, 'snap'); })
     .catch((e) => alert(e.message));
 
+  // ------------------------------------------------------------- settings
+  // Number inputs from the adapter's settings schema. Commit on Enter or
+  // focus loss; the input then shows the value the hardware accepted
+  // (delivered as a 'setting_applied' event).
+  const settingsSpan = container.querySelector('.cam-settings');
+  const settingInputs = {}; // name -> { input, decimals }
+  for (const setting of device.settings ?? []) {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex; gap:4px; align-items:center; font-size:12px;';
+    label.textContent = `${setting.label}`;
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = setting.min;
+    input.max = setting.max;
+    input.step = setting.decimals ? Math.pow(10, -setting.decimals) : 1;
+    input.value = setting.value.toFixed(setting.decimals);
+    input.dataset.committed = input.value;
+    input.style.cssText = 'width:80px;';
+    const unit = document.createElement('span');
+    unit.textContent = setting.unit;
+    unit.style.opacity = '0.7';
+    label.appendChild(input);
+    label.appendChild(unit);
+    settingsSpan.appendChild(label);
+    settingInputs[setting.name] = { input, decimals: setting.decimals };
+
+    const commit = () => {
+      const value = parseFloat(input.value);
+      if (!isFinite(value) || input.value === input.dataset.committed) return;
+      input.dataset.committed = input.value;
+      sendCommand(device.device_id, 'set_setting', { name: setting.name, value })
+        .catch((e) => { status.textContent = e.message; });
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); });
+    input.addEventListener('blur', commit);
+  }
+
+  function showAppliedSetting(name, value) {
+    const entry = settingInputs[name];
+    if (!entry) return;
+    entry.input.value = value.toFixed(entry.decimals);
+    entry.input.dataset.committed = entry.input.value;
+  }
+
+  // ------------------------------------------- view: canvases and layout
+  // Desktop-GUI arrangement: row cross-section strip on top, image below it,
+  // column cross-section strip to the right. The strips keep their slots
+  // also when the fit is off. Sizes are computed here (not with CSS) so the
+  // strips stay exactly aligned with the image axes.
+  function makeCanvas(background) {
+    const canvas = document.createElement('canvas');
+    canvas.style.position = 'absolute';
+    if (background) canvas.style.background = background;
+    view.appendChild(canvas);
+    return canvas;
+  }
+  const hCanvas = makeCanvas('#151515');       // row cut, above the image
+  const vCanvas = makeCanvas('#151515');       // column cut, right of image
+  const videoCanvas = makeCanvas('#111');
+  const overlay = makeCanvas(null);            // ellipses + circles, on top
+  overlay.style.touchAction = 'none';
+
+  function place(canvas, x, y, w, h) {
+    canvas.style.left = `${x}px`;
+    canvas.style.top = `${y}px`;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+  }
+
+  function layout() {
+    const scale = Math.max(Math.min(
+      (view.clientWidth - STRIP - GAP) / sensorW,
+      (view.clientHeight - STRIP - GAP) / sensorH), 0.01);
+    const w = Math.round(sensorW * scale);
+    const h = Math.round(sensorH * scale);
+    place(hCanvas, 0, 0, w, STRIP);
+    place(videoCanvas, 0, STRIP + GAP, w, h);
+    place(overlay, 0, STRIP + GAP, w, h);
+    place(vCanvas, w + GAP, STRIP + GAP, STRIP, h);
+    hCanvas.width = w; hCanvas.height = STRIP;
+    vCanvas.width = STRIP; vCanvas.height = h;
+    overlay.width = w; overlay.height = h;
+    redrawOverlay();
+    drawStrips();
+  }
+  const resizeObserver = new ResizeObserver(layout);
+  resizeObserver.observe(view);
+
+  // --------------------------------------------------------- overlay state
+  let fitParams = null;   // last successful fit, sensor px
+  let fitCross = null;    // {step, row, col} pixel cuts through the center
+  let fitReason = '';
+  let marker = null;      // {x, y, r} sensor px
+  let guess = device.guess
+    ? { x: device.guess.x_0, y: device.guess.y_0, r: device.guess.sigma } : null;
+
+  const toCss = (v) => v * overlay.width / sensorW; // aspect is preserved
+
+  function drawCross(ctx, cx, cy, size) {
+    ctx.beginPath();
+    ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy);
+    ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size);
+    ctx.stroke();
+  }
+
+  function drawCircle(ctx, circle, color, dashed) {
+    ctx.strokeStyle = color;
+    ctx.setLineDash(dashed ? [6, 4] : []);
+    ctx.beginPath();
+    ctx.arc(toCss(circle.x), toCss(circle.y), toCss(circle.r), 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    drawCross(ctx, toCss(circle.x), toCss(circle.y), 5);
+  }
+
+  function redrawOverlay() {
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    ctx.lineWidth = 1;
+    if (fitParams) {
+      // thin translucent ellipses at 1 sigma and at the beam radius w = 2 sigma
+      ctx.strokeStyle = COLOR_ELLIPSE;
+      const cx = toCss(fitParams.x_0), cy = toCss(fitParams.y_0);
+      for (const k of [1, 2]) {
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, toCss(k * fitParams.s_x), toCss(k * fitParams.s_y),
+          fitParams.angle, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+      drawCross(ctx, cx, cy, 6);
+    }
+    if (marker) drawCircle(ctx, marker, COLOR_MARKER, false);
+    if (guess) drawCircle(ctx, guess, COLOR_GUESS, true);
+  }
+
+  // ------------------------------------------------- cross-section strips
+  function polyline(ctx, points, color) {
+    if (!points.length) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.stroke();
+  }
+
+  function drawStrips() {
+    const hCtx = hCanvas.getContext('2d');
+    const vCtx = vCanvas.getContext('2d');
+    hCtx.clearRect(0, 0, hCanvas.width, hCanvas.height);
+    vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
+    if (!fitParams || !fitCross) return;
+    const p = fitParams;
+    const step = fitCross.step;
+    // data: the image row/column through the fit center
+    polyline(hCtx, fitCross.row.map((value, i) =>
+      [i * step * hCanvas.width / sensorW,
+       hCanvas.height * (1 - value / LEVELS_MAX)]), COLOR_DATA);
+    polyline(vCtx, fitCross.col.map((value, i) =>
+      [vCanvas.width * value / LEVELS_MAX,
+       i * step * vCanvas.height / sensorH]), COLOR_DATA);
+    // analytic cuts of the fitted 2D Gaussian along y = y0 and x = x0
+    const sin2 = Math.sin(p.angle) ** 2, cos2 = Math.cos(p.angle) ** 2;
+    const a = cos2 / (2 * p.s_x ** 2) + sin2 / (2 * p.s_y ** 2);
+    const c = sin2 / (2 * p.s_x ** 2) + cos2 / (2 * p.s_y ** 2);
+    const n = 200;
+    const hPoints = [], vPoints = [];
+    for (let i = 0; i <= n; i++) {
+      const x = i / n * sensorW;
+      const hValue = p.offset + p.amplitude * Math.exp(-a * (x - p.x_0) ** 2);
+      hPoints.push([x * hCanvas.width / sensorW,
+                    hCanvas.height * (1 - hValue / LEVELS_MAX)]);
+      const y = i / n * sensorH;
+      const vValue = p.offset + p.amplitude * Math.exp(-c * (y - p.y_0) ** 2);
+      vPoints.push([vCanvas.width * vValue / LEVELS_MAX,
+                    y * vCanvas.height / sensorH]);
+    }
+    polyline(hCtx, hPoints, COLOR_FIT_CURVE);
+    polyline(vCtx, vPoints, COLOR_FIT_CURVE);
+  }
+
+  // -------------------------------------------------------- the info line
+  function updateInfo() {
+    const parts = [];
+    if (fitReason) parts.push(fitReason);
+    else if (fitParams) {
+      const p = fitParams;
+      parts.push(`x₀ = ${p.x_0.toFixed(1)} px, y₀ = ${p.y_0.toFixed(1)} px, `
+        + `w_x = ${(p.w_x * pixelMm).toFixed(3)} mm, `
+        + `w_y = ${(p.w_y * pixelMm).toFixed(3)} mm, `
+        + `θ = ${p.angle >= 0 ? '+' : ''}${p.angle.toFixed(2)} rad `
+        + `(fit ${p.time.toFixed(2)} s)`);
+    }
+    if (marker) {
+      parts.push(`marker: (${marker.x.toFixed(0)}, ${marker.y.toFixed(0)}) px, `
+        + `r = ${marker.r.toFixed(1)} px = ${(marker.r * pixelMm).toFixed(3)} mm`);
+    }
+    if (guess) {
+      parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
+        + `σ = ${guess.r.toFixed(1)} px`);
+    }
+    info.textContent = parts.join('   |   ');
+  }
+
+  // ------------------------------------------------------------------ fit
+  const fitCheck = container.querySelector('.cam-fit');
+  fitCheck.checked = device.fitting ?? false;
+  fitCheck.onchange = () => {
+    sendCommand(device.device_id, fitCheck.checked ? 'fit_on' : 'fit_off')
+      .catch((e) => { status.textContent = e.message; });
+  };
+
+  function clearFitDisplay() {
+    fitParams = null;
+    fitCross = null;
+    fitReason = '';
+    redrawOverlay();
+    drawStrips();
+    updateInfo();
+  }
+
+  // -------------------------------------------------------------- circles
+  const markButton = container.querySelector('.cam-mark');
+  const guessButton = container.querySelector('.cam-guess');
+  let armed = null;      // 'marker' | 'guess' — next drag draws this circle
+  let dragCenter = null;
+
+  function setArmed(which) {
+    armed = which;
+    markButton.style.outline = armed === 'marker' ? `1px solid ${COLOR_MARKER}` : '';
+    guessButton.style.outline = armed === 'guess' ? `1px solid ${COLOR_GUESS}` : '';
+    overlay.style.cursor = armed ? 'crosshair' : '';
+  }
+  markButton.onclick = () => setArmed(armed === 'marker' ? null : 'marker');
+  guessButton.onclick = () => setArmed(armed === 'guess' ? null : 'guess');
+  container.querySelector('.cam-mark-clear').onclick = () => {
+    marker = null;
+    redrawOverlay();
+    updateInfo();
+  };
+  container.querySelector('.cam-guess-clear').onclick = () => {
+    guess = null; // the 'guess' broadcast event confirms for all viewers
+    redrawOverlay();
+    updateInfo();
+    sendCommand(device.device_id, 'clear_guess')
+      .catch((e) => { status.textContent = e.message; });
+  };
+
+  function toSensor(event) {
+    const rect = overlay.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) / rect.width * sensorW,
+             y: (event.clientY - rect.top) / rect.height * sensorH };
+  }
+  overlay.onpointerdown = (event) => {
+    if (!armed) return;
+    overlay.setPointerCapture(event.pointerId);
+    dragCenter = toSensor(event);
+    event.preventDefault();
+  };
+  overlay.onpointermove = (event) => {
+    if (!dragCenter) return;
+    const point = toSensor(event);
+    const circle = { x: dragCenter.x, y: dragCenter.y,
+                     r: Math.hypot(point.x - dragCenter.x, point.y - dragCenter.y) };
+    if (armed === 'marker') marker = circle;
+    else guess = circle;
+    redrawOverlay();
+    updateInfo();
+  };
+  overlay.onpointerup = () => {
+    if (!dragCenter) return;
+    const which = armed;
+    dragCenter = null;
+    setArmed(null);
+    if (which === 'guess' && guess) {
+      sendCommand(device.device_id, 'set_guess',
+        { x_0: guess.x, y_0: guess.y, sigma: Math.max(guess.r, 1) })
+        .catch((e) => { status.textContent = e.message; });
+    }
+  };
+
   // ----------------------------------------------------------- the stream
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(
@@ -50,23 +358,50 @@ export function createCameraBox(device, container, sendCommand) {
     if (typeof message.data === 'string') {
       const event = JSON.parse(message.data);
       if (event.type === 'status') setPlaying(event.playing);
-      // more event types (settings, fit results) handled in later phases
+      else if (event.type === 'setting_applied') showAppliedSetting(event.name, event.value);
+      else if (event.type === 'fit_status') {
+        fitCheck.checked = event.enabled;
+        if (!event.enabled) clearFitDisplay();
+      } else if (event.type === 'fit') {
+        if (event.success) {
+          fitParams = event.params;
+          fitCross = event.cross ?? null;
+          fitReason = '';
+        } else {
+          fitParams = null;
+          fitCross = null;
+          fitReason = `fit: ${event.reason}`;
+        }
+        redrawOverlay();
+        drawStrips();
+        updateInfo();
+      } else if (event.type === 'guess') {
+        guess = event.guess
+          ? { x: event.guess.x_0, y: event.guess.y_0, r: event.guess.sigma } : null;
+        redrawOverlay();
+        updateInfo();
+      } else if (event.type === 'error') {
+        status.textContent = `error: ${event.message}`;
+      }
       return;
     }
     const bitmap = await createImageBitmap(message.data);
-    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-      canvas.width = bitmap.width;
-      canvas.height = bitmap.height;
+    if (videoCanvas.width !== bitmap.width || videoCanvas.height !== bitmap.height) {
+      videoCanvas.width = bitmap.width;
+      videoCanvas.height = bitmap.height;
     }
-    context.drawImage(bitmap, 0, 0);
+    videoCanvas.getContext('2d').drawImage(bitmap, 0, 0);
     bitmap.close();
   };
   socket.onclose = () => {
     if (!closedByUs) status.textContent = 'stream disconnected';
   };
 
+  updateInfo();
+
   return function cleanup() {
     closedByUs = true;
     socket.close();
+    resizeObserver.disconnect();
   };
 }

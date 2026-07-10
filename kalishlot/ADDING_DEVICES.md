@@ -92,6 +92,16 @@ Conventions the existing frontend already understands:
   (clamped/rounded), the GUI displays it back.
 - **Cameras**: commands `play` / `pause` / `snap`; emit
   `{'type': 'status', 'playing': bool}` on play/pause.
+- **Gaussian fit** (cameras): mix in `CameraFitMixin` from
+  `adapters/camera_fit.py` — call `_init_fit()` in `__init__`,
+  `_store_fit_frame(frame)` from the frame thread with the full-resolution
+  frame, `_stop_fit()` in `close()`, merge `fit_describe()` into `describe()`
+  and delegate to `fit_command(name, args)` first in `command()`. That adds
+  commands `fit_on` / `fit_off` / `set_guess` / `clear_guess` and events
+  `fit_status`, `fit` (params + row/column cuts), `guess`. All fit
+  coordinates are full-resolution sensor pixels; the frontend scales them
+  using `describe()['sensor_shape']` (add it next to the possibly-downsampled
+  `frame_shape`).
 - **Frames** (optional — control-only devices simply never call this): from
   the device thread call `self._store_display_frame(img)` with a display-ready
   `uint8` grayscale numpy array (12-bit data: `(frame >> 4).astype(np.uint8)`;
@@ -99,6 +109,13 @@ Conventions the existing frontend already understands:
   JPEG and streams it; only the newest frame is ever sent (slow viewers skip
   frames, they never lag).
 - **Errors** during operation: `self.emit({'type': 'error', 'message': ...})`.
+- **Control-only devices** (no frames): see `adapters/rigol_dg.py` +
+  `static/boxes/rigol_dg.js` — the reference for instruments that are pure
+  settings/state (function generators, power supplies, ...). Broadcast every
+  applied change as an event with the instrument-accepted state so all
+  viewers stay in sync. NOTE the DG822 rule: connecting must be read-only
+  (CH1 often drives the laser temperature scan, hard-capped at 5 Vpp in the
+  adapter).
 
 Register the class in `server.py`:
 

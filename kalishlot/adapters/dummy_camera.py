@@ -11,9 +11,10 @@ import time
 import numpy as np
 
 from .base import DeviceAdapter
+from .camera_fit import CameraFitMixin
 
 
-class DummyCameraAdapter(DeviceAdapter):
+class DummyCameraAdapter(CameraFitMixin, DeviceAdapter):
     type_name = 'dummy_camera'
     display_name = 'Dummy camera (synthetic beam)'
 
@@ -28,6 +29,7 @@ class DummyCameraAdapter(DeviceAdapter):
 
     def __init__(self, address):
         super().__init__(address)
+        self._init_fit()
         self.settings = {'exposure': 3000.0, 'gain': 0.0}
         self._playing = threading.Event()
         self._stopping = threading.Event()
@@ -48,6 +50,7 @@ class DummyCameraAdapter(DeviceAdapter):
         self._thread.start()
 
     def close(self):
+        self._stop_fit()
         self._stopping.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
@@ -57,8 +60,11 @@ class DummyCameraAdapter(DeviceAdapter):
         return {'type': self.type_name,
                 'label': f'{self.display_name} — {self.address}',
                 'frame_shape': list(self.SHAPE),
-                'commands': ['play', 'pause', 'snap', 'set_setting'],
+                'sensor_shape': list(self.SHAPE),
+                'commands': ['play', 'pause', 'snap', 'set_setting',
+                             'fit_on', 'fit_off', 'set_guess', 'clear_guess'],
                 'playing': self._playing.is_set(),
+                **self.fit_describe(),
                 'settings': [
                     {'name': 'exposure', 'label': 'exposure', 'unit': 'μs',
                      'min': 28, 'max': 10_000_000, 'decimals': 0,
@@ -70,6 +76,9 @@ class DummyCameraAdapter(DeviceAdapter):
 
     # ------------------------------------------------------------- commands
     def command(self, name, args):
+        result = self.fit_command(name, args)
+        if result is not None:
+            return result
         if name == 'play':
             self._playing.set()
             self.emit({'type': 'status', 'playing': True})
@@ -109,6 +118,7 @@ class DummyCameraAdapter(DeviceAdapter):
         frame += self._rng.normal(0, 30, self.SHAPE)
         frame = np.clip(frame, 0, 4095).astype(np.uint16)
         self._store_display_frame((frame >> 4).astype(np.uint8))
+        self._store_fit_frame(frame)
 
     def _loop(self):
         period = 1.0 / self.FRAME_RATE
