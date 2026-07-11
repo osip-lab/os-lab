@@ -1,7 +1,18 @@
 # general functions for the project
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import os
+
 from send2trash import send2trash
+from typing import Optional
+from local_config import PATH_OBSIDIAN_ATTACHMENTS_FOLDER
+
+def get_obsidian_save_path(filename: Optional[str] = None) -> str:
+    attachment_path = Path(PATH_OBSIDIAN_ATTACHMENTS_FOLDER)
+    if filename:
+        attachment_path = attachment_path / filename
+    return str(attachment_path)
 
 def delete_redundant_avi_files(directory):
     """
