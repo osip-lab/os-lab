@@ -2,7 +2,7 @@ import os
 import numpy as np
 import cv2
 from glob import glob
-from utilities.media_tools.utils import wait_for_path_from_clipboard
+from utilities.utils import wait_for_path_from_clipboard
 from matplotlib import pyplot as plt
 from typing import Union
 from matplotlib.path import Path

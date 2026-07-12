@@ -58,7 +58,7 @@ This syntax takes the file from your clipboard (if it is a file with the relevan
 It is convenient when you run the script, each time on a different data file (csv, video, etc.) and you want to avoid changing the path in the code each time.
 
 ```python
-from utilities.media_tools.utils import wait_for_path_from_clipboard
+from utilities.utils import wait_for_path_from_clipboard
 
 video_path = wait_for_path_from_clipboard(filetype='video')
 ```

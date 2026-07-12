@@ -35,6 +35,8 @@ Pipeline
 10. Map the mode spacing to the numerical aperture (NA) using the cavity-design
     simulation (simple_analysis_scripts.mode_spacing_to_NA).
 11. Print mode spacing, linewidths and NA together.
+12. Append a one-line record (long arm length, mode spacing, NA) to
+    numerical-results.txt in the folder of the original data file.
 
 Note for future development: steps 4-6 already produce raw coordinate guesses
 (x0_guess, x1_guess, d_guess). A future "coordinate-only" mode can skip the fit
@@ -57,8 +59,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
 from scipy.optimize import curve_fit
-
-from utilities.automations.core.utils import wait_for_path_from_clipboard
+from utilities.utils import append_numerical_result_line, wait_for_path_from_clipboard
 
 # --- configuration the user may want to tweak ------------------------------
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
@@ -435,6 +436,18 @@ results = report_results(
     x0, x1, d, s0, s1, f_sb_mhz,
     fit_params=fit_params, fit_errors=fit_errors,
     na_interp=mode_spacing_interp,
+)
+
+
+# %% [Step 12] Record the results next to the original data file -------------
+# Appends a one-line record to numerical-results.txt in the folder of the
+# original file (the .psdata/.csv the user copied, not the temporary CSV).
+na_text = f"{results['NA']:.4f}" if results['NA'] is not None else "N/A"
+append_numerical_result_line(
+    input_path,
+    f"long_arm_length = {LONG_ARM_LENGTH:.4g} m, "
+    f"mode_spacing = {results['mode_spacing_MHz']:.4f} MHz, "
+    f"NA = {na_text}",
 )
 
 # Keep all windows open (and responsive) after the report has been printed.

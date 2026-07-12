@@ -7,12 +7,17 @@ import matplotlib
 from matplotlib.widgets import SpanSelector
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from basler_cam.mode_position_capture_gui import fit_gaussian
-from utilities.automations.core.utils import wait_for_path_from_clipboard
+from utilities.utils import append_numerical_result_line, wait_for_path_from_clipboard
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
+# If None, it is ignored. If a float, the extracted spot sizes are converted to
+# an NA estimate via NA_x = NA_TO_SPOT_SIZE_RATIO * w_x (and likewise for y),
+# with w in METERS - so the ratio has units of 1/m. The NAs are then shown in
+# the fit plot title and recorded in numerical-results.txt.
+NA_TO_SPOT_SIZE_RATIO = None
 # If True, the user clicks the Gaussian center and a point ~1 sigma away on the
-# averaged frame to seed the fit. If False, the initial guess is estimated
+# selected frame to seed the fit. If False, the initial guess is estimated
 # automatically (as before).
 MANUAL_INITIAL_GUESS = True
 
@@ -116,41 +121,21 @@ timestamps = times[int(selected_time_range[0] * fps):int(selected_time_range[1] 
 nrows = 2
 ncols = (trimmed_video.shape[0] // nrows) + (trimmed_video.shape[0] % nrows)
 fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(7, nrows * 5))
-fig.suptitle("Click frames to select them, then press Enter to average and continue", fontsize=11)
-clicked_axes = []
-averaged_frame = np.zeros((video_array.shape[1], video_array.shape[2]))  # Initialize averaged_frame to None
+fig.suptitle("Click a frame to select it and continue", fontsize=11)
+selected_frame = None
 
 
 def on_click(event):
+    global selected_frame
     for i, ax in enumerate(axes.flat):
-        if ax == event.inaxes:
-            if i < trimmed_video.shape[0]:
-                ax.set_title(f"Frame {i} (Time: {timestamps[i]:.2f}s) Clicked!")
-                clicked_axes.append(i)
-                plt.draw()
+        if ax == event.inaxes and i < trimmed_video.shape[0]:
+            selected_frame = trimmed_video[i].astype(float)
+            print(f"Selected frame {i} (time {timestamps[i]:.2f}s)")
+            plt.close(fig)
+            return
 
 
 fig.canvas.mpl_connect('button_press_event', on_click)
-
-
-def on_key(event):
-    if event.key == 'enter':
-        if clicked_axes:
-            global averaged_frame
-            averaged_frame = np.mean(trimmed_video[clicked_axes], axis=0)
-
-            avg_fig, avg_ax = plt.subplots()
-            avg_ax.imshow(averaged_frame, cmap='gray')
-            avg_ax.axis('off')
-            avg_fig.suptitle("Averaged frame — press Enter to run Gaussian fit", fontsize=12)
-
-            def close_on_enter(e):
-                if e.key == 'enter':
-                    plt.close('all')
-            avg_fig.canvas.mpl_connect('key_press_event', close_on_enter)
-            plt.close(fig)
-
-fig.canvas.mpl_connect('key_press_event', on_key)
 
 for i, ax in enumerate(axes.flat):
     if i < trimmed_video.shape[0]:
@@ -162,16 +147,16 @@ for i, ax in enumerate(axes.flat):
 
 fig.tight_layout()
 # plt.get_current_fig_manager().window.showMaximized()
-plt.show()
+plt.show()  # blocks until a frame is clicked (the click closes the window)
 
 # %% Plot resulted fit on top of the image with ellipses:
-if not averaged_frame.any():
-    raise RuntimeError("No frames were selected — click frames in the grid then press Enter before closing the window.")
+if selected_frame is None:
+    raise RuntimeError("No frame was selected — click one of the frames in the grid.")
 
-manual_guess = get_manual_initial_guess(averaged_frame) if MANUAL_INITIAL_GUESS else None
-gauss, pars = fit_gaussian(averaged_frame, rebinning=2, manual_guess=manual_guess)
+manual_guess = get_manual_initial_guess(selected_frame) if MANUAL_INITIAL_GUESS else None
+gauss, pars = fit_gaussian(selected_frame, rebinning=2, manual_guess=manual_guess)
 
-sy, sx = averaged_frame.shape
+sy, sx = selected_frame.shape
 x0, y0 = int(pars['x_0']), int(pars['y_0'])
 
 fig, ax = plt.subplots(figsize=(10, 10))
@@ -183,18 +168,32 @@ vax = div.append_axes('right', size='20%', pad=0.2)
 vax.sharey(ax)
 vax.tick_params(left=False, right=True, labelleft=False, labelright=True)
 
-ax.imshow(averaged_frame, cmap='gray', origin='upper')
+ax.imshow(selected_frame, cmap='gray', origin='upper')
 ax.contour(gauss, levels=5, colors='r')
 
-hax.plot(np.arange(sx), averaged_frame[y0, :])
+hax.plot(np.arange(sx), selected_frame[y0, :])
 hax.plot(np.arange(sx), gauss[y0, :])
-vax.plot(averaged_frame[:, x0], np.arange(sy))
+vax.plot(selected_frame[:, x0], np.arange(sy))
 vax.plot(gauss[:, x0], np.arange(sy))
 
-w_x_mm = pars['w_x'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
-w_y_mm = pars['w_y'] * PIXEL_SIZE_BASLER_CAMERA * 1e3
-fig.suptitle(f"w_x = {w_x_mm:.3f} mm,  s_y = {w_y_mm:.3f} mm", fontsize=14)
+w_x_m = pars['w_x'] * PIXEL_SIZE_BASLER_CAMERA
+w_y_m = pars['w_y'] * PIXEL_SIZE_BASLER_CAMERA
+w_x_mm = w_x_m * 1e3
+w_y_mm = w_y_m * 1e3
+
+title = f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm"
+results_text = f"w_x = {w_x_mm:.4f} mm, w_y = {w_y_mm:.4f} mm"
+if NA_TO_SPOT_SIZE_RATIO is not None:
+    NA_x = NA_TO_SPOT_SIZE_RATIO * w_x_m
+    NA_y = NA_TO_SPOT_SIZE_RATIO * w_y_m
+    title += f"\nNA_x = {NA_x:.4f},  NA_y = {NA_y:.4f}"
+    results_text += (f", NA_x = {NA_x:.4f}, NA_y = {NA_y:.4f}, "
+                     f"NA_to_spot_size_ratio = {NA_TO_SPOT_SIZE_RATIO:.6g} 1/m")
+fig.suptitle(title, fontsize=14)
 
 fig.tight_layout()
-fig.subplots_adjust(top=0.93)
+fig.subplots_adjust(top=0.90 if NA_TO_SPOT_SIZE_RATIO is not None else 0.93)
+
+append_numerical_result_line(video_path, results_text)
+
 plt.show()

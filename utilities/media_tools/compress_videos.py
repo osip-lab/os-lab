@@ -5,7 +5,7 @@ import os
 import ctypes
 from ctypes import wintypes
 from send2trash import send2trash
-from automations.core.utils import wait_for_path_from_clipboard
+from utilities.utils import wait_for_path_from_clipboard
 
 
 def copy_file_timestamps(source_file, target_file):
