@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib
 matplotlib.use('Qt5Agg')
-from utilities.automations.core.utils import wait_for_path_from_clipboard
+from utilities.utils import wait_for_path_from_clipboard
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
