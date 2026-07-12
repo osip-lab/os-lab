@@ -123,14 +123,16 @@ ncols = (trimmed_video.shape[0] // nrows) + (trimmed_video.shape[0] % nrows)
 fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(7, nrows * 5))
 fig.suptitle("Click a frame to select it and continue", fontsize=11)
 selected_frame = None
+selected_frame_time = None  # time [s] of the chosen frame within the video
 
 
 def on_click(event):
-    global selected_frame
+    global selected_frame, selected_frame_time
     for i, ax in enumerate(axes.flat):
         if ax == event.inaxes and i < trimmed_video.shape[0]:
             selected_frame = trimmed_video[i].astype(float)
-            print(f"Selected frame {i} (time {timestamps[i]:.2f}s)")
+            selected_frame_time = timestamps[i]
+            print(f"Selected frame {i} (time {selected_frame_time:.2f}s)")
             plt.close(fig)
             return
 
@@ -182,7 +184,8 @@ w_x_mm = w_x_m * 1e3
 w_y_mm = w_y_m * 1e3
 
 title = f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm"
-results_text = f"w_x = {w_x_mm:.4f} mm, w_y = {w_y_mm:.4f} mm"
+results_text = (f"frame_time = {selected_frame_time:.2f} s, "
+                f"w_x = {w_x_mm:.4f} mm, w_y = {w_y_mm:.4f} mm")
 if NA_TO_SPOT_SIZE_RATIO is not None:
     NA_x = NA_TO_SPOT_SIZE_RATIO * w_x_m
     NA_y = NA_TO_SPOT_SIZE_RATIO * w_y_m

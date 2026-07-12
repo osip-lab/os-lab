@@ -69,9 +69,8 @@ DEFAULT_SIDEBAND_FREQ_MHZ = 20.0  # single-side EOM modulation frequency [MHz]
 SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
 LONG_ARM_LENGTH = 31e-2
 MID_ARM_LENGTH = 1.5e-2
-
+from local_config import PICOSCOPE_EXE
 # PicoScope 7 executable, used to convert .psdata files to CSV on the fly.
-PICOSCOPE_EXE = r"C:\Program Files\Pico Technology\PicoScope 7 T&M Stable\PicoScope.exe"
 
 # --- NA mapping (cavity-design project) ------------------------------------
 # Plot toggles passed to generate_lens_position_dependencies_output(); the
@@ -130,14 +129,45 @@ def psdata_to_csv(psdata_path):
         [PICOSCOPE_EXE, 'BatchConvert', str(in_dir), str(out_dir), '.csv'],
         capture_output=True, text=True,
     )
-    csv_path = out_dir / (psdata_path.stem + '.csv')
-    if result.returncode != 0 or not csv_path.is_file():
+    # A single-waveform file becomes '<stem>.csv' directly in out_dir; a file
+    # with multiple waveform buffers becomes a '<stem>' subfolder holding
+    # '<stem>_1.csv' ... '<stem>_N.csv', so search recursively and sort by the
+    # numeric buffer suffix (plain name-sorting would put _10 before _2).
+    def buffer_index(p):
+        suffix = p.stem.rsplit('_', 1)[-1]
+        return int(suffix) if suffix.isdigit() else 0
+
+    csv_files = sorted(out_dir.rglob('*.csv'), key=buffer_index)
+    if result.returncode != 0 or not csv_files:
         raise RuntimeError(
             f"psdata -> CSV conversion failed (exit code {result.returncode}).\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
     print("Conversion succeeded.")
-    return str(csv_path)
+
+    if len(csv_files) == 1:
+        return str(csv_files[0])
+
+    print(f"The psdata file contains {len(csv_files)} waveform buffers:")
+    for i, p in enumerate(csv_files, start=1):
+        print(f"  [{i}] {p.name}")
+    while True:
+        raw_in = input(
+            f"Which waveform to use? 1-{len(csv_files)} "
+            f"[default {len(csv_files)} - the most recent]: "
+        ).strip()
+        if raw_in == '':
+            choice = len(csv_files)
+        else:
+            try:
+                choice = int(raw_in)
+            except ValueError:
+                choice = 0
+        if 1 <= choice <= len(csv_files):
+            break
+        print(f"  Please enter a number between 1 and {len(csv_files)}.")
+    print(f"Using waveform: {csv_files[choice - 1].name}")
+    return str(csv_files[choice - 1])
 
 
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
