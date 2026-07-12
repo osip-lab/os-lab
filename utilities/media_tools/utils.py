@@ -8,10 +8,14 @@ from send2trash import send2trash
 from typing import Optional
 from local_config import PATH_OBSIDIAN_ATTACHMENTS_FOLDER
 
-def get_obsidian_save_path(filename: Optional[str] = None) -> str:
+def get_obsidian_save_path(filename: Optional[str] = None, overwrite: bool = False) -> str:
     attachment_path = Path(PATH_OBSIDIAN_ATTACHMENTS_FOLDER)
-    if filename:
-        attachment_path = attachment_path / filename
+
+    if filename is not None:
+        attachments_path = attachment_path / filename
+        if attachments_path.exists() and not overwrite:
+            raise FileExistsError(f"{attachments_path} already exists")
+
     return str(attachment_path)
 
 def delete_redundant_avi_files(directory):
