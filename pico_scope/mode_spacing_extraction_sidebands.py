@@ -62,9 +62,9 @@ from utilities.utils import (append_numerical_result_line,
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
 SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
 MAX_PLOT_POINTS = 500            # decimate plots/fit to at most this many points
-DEFAULT_SIDEBAND_FREQ_MHZ = 20.0  # single-side EOM modulation frequency [MHz]
+DEFAULT_SIDEBAND_FREQ_MHZ = 25.0  # single-side EOM modulation frequency [MHz]
 SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
-LONG_ARM_LENGTH = 31e-2
+LONG_ARM_LENGTH = 34.4e-2
 MID_ARM_LENGTH = 1.5e-2
 
 # --- NA mapping (cavity-design project) ------------------------------------

@@ -15,7 +15,7 @@ PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
 # an NA estimate via NA_x = NA_TO_SPOT_SIZE_RATIO * w_x (and likewise for y),
 # with w in METERS - so the ratio has units of 1/m. The NAs are then shown in
 # the fit plot title and recorded in numerical-results.txt.
-NA_TO_SPOT_SIZE_RATIO = None
+NA_TO_SPOT_SIZE_RATIO = 0.0545 * 1000
 # If True, the user clicks the Gaussian center and a point ~1 sigma away on the
 # selected frame to seed the fit. If False, the initial guess is estimated
 # automatically (as before).
