@@ -136,6 +136,15 @@ async def check_close_notification(device_id):
         except websockets.exceptions.ConnectionClosed as closed:
             code = closed.rcvd.code if closed.rcvd else None
             assert code == 4004, f'expected close code 4004, got {code}'
+    # connecting to a device that does not exist must also yield a clean
+    # 4004 (accept-then-close), not a bare handshake rejection
+    async with websockets.connect(uri) as socket:
+        try:
+            await asyncio.wait_for(socket.recv(), timeout=5)
+            raise AssertionError('expected immediate close for missing device')
+        except websockets.exceptions.ConnectionClosed as closed:
+            code = closed.rcvd.code if closed.rcvd else None
+            assert code == 4004, f'expected close code 4004, got {code}'
 
 
 def main():

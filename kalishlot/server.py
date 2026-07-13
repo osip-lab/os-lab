@@ -148,7 +148,10 @@ async def device_stream(websocket: WebSocket, device_id: str):
     with devices_lock:
         adapter = devices.get(device_id)
     if adapter is None:
-        await websocket.close(code=4004)
+        # accept first, then close: a pre-accept close surfaces as a bare
+        # 403 handshake rejection and the client never sees the 4004 code
+        await websocket.accept()
+        await websocket.close(code=4004, reason='no such device')
         return
     await websocket.accept()
     listener = adapter.add_listener()

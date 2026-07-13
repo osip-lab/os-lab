@@ -24,12 +24,12 @@ export function connectDeviceStream(options) {
   let everConnected = false;
 
   async function fetchDescribe() {
+    // returns the device's fresh describe(), null if the device is gone,
+    // and throws when the server itself is unreachable
     const response = await fetch('/api/devices');
     if (!response.ok) throw new Error(response.statusText);
     const open = await response.json();
-    const device = open.find((d) => d.device_id === deviceId);
-    if (!device) throw new Error('device is no longer open on the server');
-    return device;
+    return open.find((d) => d.device_id === deviceId) ?? null;
   }
 
   function connect() {
@@ -40,7 +40,10 @@ export function connectDeviceStream(options) {
       retryMs = RETRY_START_MS;
       if (everConnected && onReattach) {
         // pick up state changes that happened while we were disconnected
-        try { onReattach(await fetchDescribe()); } catch { /* box may be stale */ }
+        try {
+          const describe = await fetchDescribe();
+          if (describe) onReattach(describe);
+        } catch { /* box may be stale until the next event */ }
       }
       if (everConnected && status) status.textContent = '';
       everConnected = true;
@@ -58,9 +61,30 @@ export function connectDeviceStream(options) {
         return;
       }
       if (status) status.textContent = 'connection lost — reconnecting…';
-      retryTimer = setTimeout(connect, retryMs);
+      retryTimer = setTimeout(retry, retryMs);
       retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
     };
+  }
+
+  async function retry() {
+    // before reconnecting, ask whether the device still exists — after a
+    // server restart it won't, and retrying a nonexistent device forever
+    // would only hammer the server with rejected handshakes
+    let describe;
+    try {
+      describe = await fetchDescribe();
+    } catch {
+      // the server itself is unreachable: back off and try again later
+      retryTimer = setTimeout(retry, retryMs);
+      retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
+      return;
+    }
+    if (describe === null) {
+      if (status) status.textContent =
+        'device is no longer open on the server — close this box and re-add it';
+      return;
+    }
+    connect();
   }
   connect();
 
