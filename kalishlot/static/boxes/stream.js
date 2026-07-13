@@ -49,8 +49,14 @@ export function connectDeviceStream(options) {
       if (typeof message.data === 'string') onEvent(JSON.parse(message.data));
       else if (onFrame) onFrame(message.data);
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (closedByUs) return;
+      if (event.code === 4004) {
+        // the device was closed on the server (e.g. by another viewer):
+        // nothing to reconnect to
+        if (status) status.textContent = 'device was closed on the server';
+        return;
+      }
       if (status) status.textContent = 'connection lost — reconnecting…';
       retryTimer = setTimeout(connect, retryMs);
       retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);

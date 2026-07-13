@@ -126,6 +126,18 @@ async def check_stream(device_id):
         print('fit_off ok')
 
 
+async def check_close_notification(device_id):
+    uri = f'ws://{HOST}:{PORT}/ws/devices/{device_id}'
+    async with websockets.connect(uri) as socket:
+        api(f'/api/devices/{device_id}', 'DELETE')
+        try:
+            while True:
+                await asyncio.wait_for(socket.recv(), timeout=5)
+        except websockets.exceptions.ConnectionClosed as closed:
+            code = closed.rcvd.code if closed.rcvd else None
+            assert code == 4004, f'expected close code 4004, got {code}'
+
+
 def main():
     server = start_server()
     try:
@@ -151,9 +163,11 @@ def main():
         asyncio.run(check_stream(device_id))
 
         assert len(api('/api/devices')) == 1
-        api(f'/api/devices/{device_id}', 'DELETE')
+        # a viewer still attached when the device is closed must be told
+        # (close code 4004), not left listening to a dead adapter
+        asyncio.run(check_close_notification(device_id))
         assert len(api('/api/devices')) == 0
-        print('close ok')
+        print('close ok (attached viewer notified with 4004)')
 
         page = urllib.request.urlopen(f'{BASE}/').read().decode()
         assert 'OS Lab Dashboard' in page

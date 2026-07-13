@@ -172,6 +172,12 @@ async def device_stream(websocket: WebSocket, device_id: str):
                 await websocket.send_text(json.dumps(event))
             if newest_data is not None:
                 await websocket.send_text(json.dumps(newest_data))
+            # if the device was closed (by any viewer), tell this one and
+            # end the stream instead of lingering on a dead adapter
+            with devices_lock:
+                if devices.get(device_id) is not adapter:
+                    await websocket.close(code=4004, reason='device closed')
+                    break
             # send the newest frame if it changed
             frame_id, frame = adapter.latest_display_frame()
             if frame is not None and frame_id != last_frame_id:
