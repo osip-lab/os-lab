@@ -119,6 +119,32 @@ async def check_stream(device_id):
         assert event['success'], event
         print('guess + refit ok')
 
+        # blink trigger: with an absurdly high threshold no frame qualifies —
+        # brightness readouts keep flowing but fit results stop
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'set_fit_threshold', 'args': {'value': 1e6}})
+        event = await wait_event(socket, 'fit_threshold')
+        assert event['value'] == 1e6
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'play', 'args': {}})  # resume frames (we paused earlier)
+        await wait_event(socket, 'brightness')
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            message = await asyncio.wait_for(socket.recv(), timeout=5)
+            if isinstance(message, str):
+                event = json.loads(message)
+                assert event.get('type') != 'fit', \
+                    'fit ran on a frame below the trigger threshold'
+        print('trigger blocks dim frames ok (brightness events still flowing)')
+
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'set_fit_threshold', 'args': {'value': 0}})
+        event = await wait_event(socket, 'fit_threshold')
+        assert event['value'] == 0
+        event = await wait_event(socket, 'fit')
+        assert event['success'], event
+        print('trigger off -> fit resumes ok')
+
         api(f'/api/devices/{device_id}/command', 'POST',
             {'name': 'fit_off', 'args': {}})
         event = await wait_event(socket, 'fit_status')

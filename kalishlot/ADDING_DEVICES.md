@@ -108,11 +108,22 @@ Conventions the existing frontend already understands:
   `_store_fit_frame(frame)` from the frame thread with the full-resolution
   frame, `_stop_fit()` in `close()`, merge `fit_describe()` into `describe()`
   and delegate to `fit_command(name, args)` first in `command()`. That adds
-  commands `fit_on` / `fit_off` / `set_guess` / `clear_guess` and events
-  `fit_status`, `fit` (params + row/column cuts), `guess`. All fit
-  coordinates are full-resolution sensor pixels; the frontend scales them
-  using `describe()['sensor_shape']` (add it next to the possibly-downsampled
+  commands `fit_on` / `fit_off` / `set_guess` / `clear_guess` /
+  `set_fit_threshold` and events `fit_status`, `fit` (params + row/column
+  cuts), `guess`, `fit_threshold`, `brightness`. All fit coordinates are
+  full-resolution sensor pixels; the frontend scales them using
+  `describe()['sensor_shape']` (add it next to the possibly-downsampled
   `frame_shape`).
+  The **fit trigger** handles blinking beams (e.g. resonator transmission
+  during a scan): frames whose brightness — mean inside the guess circle's
+  bounding square, else a 99th-percentile measure, both in counts above
+  background (`gaussian_fit.beam_brightness`) — is below the threshold are
+  never submitted to the fit. The check runs in the frame thread *before*
+  `FitLoop.submit()` on purpose: the loop keeps only the newest frame, so a
+  dark frame arriving right after a bright one would otherwise overwrite it
+  before the fit thread wakes. The throttled `brightness` events feed the
+  live readout next to the threshold input (it is in `COALESCE_EVENT_TYPES`,
+  like `scope_data`).
 - **Frames** (optional — control-only devices simply never call this): from
   the device thread call `self._store_display_frame(img)` with a display-ready
   `uint8` grayscale numpy array (12-bit data: `(frame >> 4).astype(np.uint8)`;

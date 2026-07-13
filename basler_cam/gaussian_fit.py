@@ -27,6 +27,30 @@ def gaussian2d(xy, ampl, xo, yo, sigma_x, sigma_y, theta, offset):
     return np.ravel(g)
 
 
+def beam_brightness(frame, guess=None):
+    """Beam brightness in counts above background, for fit triggering.
+
+    With a `guess` circle ({'x_0', 'y_0', 'sigma'} in full-resolution pixels)
+    the metric is the mean over the circle's bounding square — it measures the
+    beam itself and costs microseconds. Without one it falls back to the 99th
+    percentile of a 4x-strided subsample (~1 ms on a 2.3 Mpx frame; the beam
+    is far wider than 4 px, so subsampling loses nothing). Both are reported
+    minus the frame's median, so a threshold on this value does not drift
+    with the background level.
+    """
+    subsample = frame[::4, ::4]
+    background = np.median(subsample)
+    if guess is not None:
+        height, width = frame.shape
+        radius = max(guess['sigma'], 1.0)
+        top = int(np.clip(round(guess['y_0'] - radius), 0, height - 1))
+        bottom = int(np.clip(round(guess['y_0'] + radius), top + 1, height))
+        left = int(np.clip(round(guess['x_0'] - radius), 0, width - 1))
+        right = int(np.clip(round(guess['x_0'] + radius), left + 1, width))
+        return float(frame[top:bottom, left:right].mean() - background)
+    return float(np.percentile(subsample, 99) - background)
+
+
 def rebin_image(img, factor):
     h, w = img.shape
     h_crop = (h // factor) * factor

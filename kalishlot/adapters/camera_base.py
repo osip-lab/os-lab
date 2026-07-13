@@ -19,7 +19,8 @@ from .base import DeviceAdapter
 from .camera_fit import CameraFitMixin
 
 CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
-                   'fit_on', 'fit_off', 'set_guess', 'clear_guess']
+                   'fit_on', 'fit_off', 'set_guess', 'clear_guess',
+                   'set_fit_threshold']
 
 
 class CameraAdapterBase(CameraFitMixin, DeviceAdapter):

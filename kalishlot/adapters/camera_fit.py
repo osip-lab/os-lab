@@ -11,14 +11,16 @@ display stream using describe()['sensor_shape'].
 """
 
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'basler_cam'))
-from gaussian_fit import FitLoop  # noqa: E402
+from gaussian_fit import FitLoop, beam_brightness  # noqa: E402
 
 CROSS_SECTION_STEP = 4  # send every 4th pixel of the row/column cuts
+BRIGHTNESS_EMIT_INTERVAL_S = 0.2  # live readout rate for the trigger control
 
 
 class CameraFitMixin:
@@ -31,18 +33,36 @@ class CameraFitMixin:
         self._fit_loop = None
         self._fitting = False
         self._fit_guess = None  # {'x_0', 'y_0', 'sigma'} in sensor px, or None
+        self._fit_threshold = 0.0  # counts above background; 0 = fit every frame
         self._last_frame = None  # newest full-resolution frame
+        self._last_brightness_emit = 0.0
 
     def _store_fit_frame(self, frame):
-        """Call from the frame-producing thread with each full-res frame."""
+        """Call from the frame-producing thread with each full-res frame.
+
+        The trigger threshold is checked HERE, not in the fit loop: the loop
+        keeps only the newest submitted frame, so with a blinking beam a
+        below-threshold frame arriving right after a bright one would
+        overwrite it before the fit thread wakes. Gating at submit time lets
+        the bright frame sit in the loop until fitted, no matter how many
+        dark frames follow.
+        """
         self._last_frame = frame
-        if self._fitting and self._fit_loop is not None:
+        if not self._fitting or self._fit_loop is None:
+            return
+        brightness = beam_brightness(frame, self._fit_guess)
+        now = time.monotonic()
+        if now - self._last_brightness_emit >= BRIGHTNESS_EMIT_INTERVAL_S:
+            self._last_brightness_emit = now
+            self.emit({'type': 'brightness', 'value': round(brightness, 1)})
+        if self._fit_threshold <= 0 or brightness >= self._fit_threshold:
             self._fit_loop.submit(frame)
 
     def fit_describe(self):
         """Merge into describe() so re-attaching viewers restore fit state."""
         return {'fitting': self._fitting,
                 'guess': self._fit_guess,
+                'fit_threshold': self._fit_threshold,
                 'pixel_size_mm': self.PIXEL_SIZE_MM}
 
     def _stop_fit(self):
@@ -90,6 +110,10 @@ class CameraFitMixin:
                 self._fit_loop.guess = None
             self._refit_now()
             self.emit({'type': 'guess', 'guess': None})
+            return {'ok': True}
+        if name == 'set_fit_threshold':
+            self._fit_threshold = max(float(args['value']), 0.0)
+            self.emit({'type': 'fit_threshold', 'value': self._fit_threshold})
             return {'ok': True}
         return None
 

@@ -33,6 +33,11 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="cam-settings" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"></span>
       <label style="display:flex; gap:4px; align-items:center; font-size:12px;">
         <input type="checkbox" class="cam-fit"> fit</label>
+      <label style="display:flex; gap:4px; align-items:center; font-size:12px;"
+             title="fit only frames at least this bright (counts above background); empty or 0 = fit every frame">
+        trigger <input type="number" class="cam-trigger" min="0" placeholder="off" style="width:60px;"></label>
+      <span class="cam-brightness" style="font-size:12px; min-width:3.5em;"
+            title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set"></span>
       <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
       <button class="cam-mark-clear" title="clear the marker circle">✕</button>
       <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
@@ -286,10 +291,50 @@ export function createCameraBox(device, container, sendCommand) {
     fitParams = null;
     fitCross = null;
     fitReason = '';
+    lastBrightness = null;
+    paintBrightness();
     redrawOverlay();
     drawStrips();
     updateInfo();
   }
+
+  // --------------------------------------------- fit trigger (blinking beam)
+  // Frames dimmer than the threshold are not fitted (the last fit result
+  // stays on screen). The live readout blinks with the beam — watch it and
+  // set the threshold between the dark and bright values.
+  const triggerInput = container.querySelector('.cam-trigger');
+  const brightnessSpan = container.querySelector('.cam-brightness');
+  let fitThreshold = 0;
+  let lastBrightness = null; // newest 'brightness' event value, or null
+
+  function paintBrightness() {
+    if (lastBrightness === null) {
+      brightnessSpan.textContent = '';
+      return;
+    }
+    brightnessSpan.textContent = lastBrightness.toFixed(0);
+    const above = fitThreshold <= 0 || lastBrightness >= fitThreshold;
+    brightnessSpan.style.color = above ? 'rgb(110, 255, 110)' : 'rgba(255, 120, 120, 0.9)';
+  }
+
+  function showThreshold(value) {
+    fitThreshold = value;
+    triggerInput.value = value > 0 ? value : '';
+    triggerInput.dataset.committed = triggerInput.value;
+    paintBrightness();
+  }
+  showThreshold(device.fit_threshold ?? 0);
+
+  const commitTrigger = () => {
+    if (triggerInput.value === triggerInput.dataset.committed) return;
+    const value = triggerInput.value === '' ? 0 : parseFloat(triggerInput.value);
+    if (!isFinite(value) || value < 0) return;
+    triggerInput.dataset.committed = triggerInput.value;
+    sendCommand(device.device_id, 'set_fit_threshold', { value })
+      .catch((e) => { status.textContent = e.message; });
+  };
+  triggerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitTrigger(); });
+  triggerInput.addEventListener('blur', commitTrigger);
 
   // -------------------------------------------------------------- circles
   const markButton = container.querySelector('.cam-mark');
@@ -450,6 +495,11 @@ export function createCameraBox(device, container, sendCommand) {
           ? { x: event.guess.x_0, y: event.guess.y_0, r: event.guess.sigma } : null;
         redrawOverlay();
         updateInfo();
+      } else if (event.type === 'brightness') {
+        lastBrightness = event.value;
+        paintBrightness();
+      } else if (event.type === 'fit_threshold') {
+        showThreshold(event.value);
       } else if (event.type === 'error') {
         status.textContent = `error: ${event.message}`;
       }
@@ -469,6 +519,7 @@ export function createCameraBox(device, container, sendCommand) {
       if (!fitCheck.checked) clearFitDisplay();
       guess = describe.guess
         ? { x: describe.guess.x_0, y: describe.guess.y_0, r: describe.guess.sigma } : null;
+      showThreshold(describe.fit_threshold ?? 0);
       for (const setting of describe.settings ?? []) {
         showAppliedSetting(setting.name, setting.value);
       }
