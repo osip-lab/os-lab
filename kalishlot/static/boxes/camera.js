@@ -37,6 +37,8 @@ export function createCameraBox(device, container, sendCommand) {
       <button class="cam-mark-clear" title="clear the marker circle">✕</button>
       <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
       <button class="cam-guess-clear" title="clear the guess circle">✕</button>
+      <button class="cam-copy-figure" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
+      <button class="cam-copy-fit" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
       <span class="cam-status" style="font-size:12px; opacity:0.8;"></span>
     </div>
     <div class="cam-info" style="font-size:12px; opacity:0.9; min-height:1.2em;"></div>
@@ -347,6 +349,77 @@ export function createCameraBox(device, container, sendCommand) {
         { x_0: guess.x, y_0: guess.y, sigma: Math.max(guess.r, 1) })
         .catch((e) => { status.textContent = e.message; });
     }
+  };
+
+  // ------------------------------------------------------ clipboard export
+  function composeFigure() {
+    // one PNG laid out like the box: title + info line, row cross-section
+    // strip, image with overlays, column strip — at on-screen resolution
+    const width = overlay.width, height = overlay.height;
+    const titleHeight = 40;
+    const figure = document.createElement('canvas');
+    figure.width = width + GAP + STRIP;
+    figure.height = titleHeight + STRIP + GAP + height;
+    const ctx = figure.getContext('2d');
+    ctx.fillStyle = '#1e1e22';
+    ctx.fillRect(0, 0, figure.width, figure.height);
+    ctx.fillStyle = '#e4e4e8';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.fillText(`${device.label} — ${new Date().toLocaleString()}`, 4, 16);
+    ctx.fillStyle = '#b8b8c0';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(info.textContent, 4, 32);
+    ctx.fillStyle = '#151515';
+    ctx.fillRect(0, titleHeight, width, STRIP);
+    ctx.fillRect(width + GAP, titleHeight + STRIP + GAP, STRIP, height);
+    ctx.drawImage(hCanvas, 0, titleHeight);
+    ctx.drawImage(videoCanvas, 0, titleHeight + STRIP + GAP, width, height);
+    ctx.drawImage(overlay, 0, titleHeight + STRIP + GAP);
+    ctx.drawImage(vCanvas, width + GAP, titleHeight + STRIP + GAP);
+    return figure;
+  }
+
+  function downloadBlob(blob) {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    link.download = `${device.device_id.replace(/[^\w-]+/g, '_')}_${stamp}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+  }
+
+  container.querySelector('.cam-copy-figure').onclick = async () => {
+    const blob = await new Promise((resolve) =>
+      composeFigure().toBlob(resolve, 'image/png'));
+    try {
+      // image clipboard needs a secure context (localhost or https)
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      status.textContent = 'figure copied to clipboard';
+    } catch {
+      downloadBlob(blob);
+      status.textContent = 'clipboard unavailable here — saved as PNG file instead';
+    }
+  };
+
+  container.querySelector('.cam-copy-fit').onclick = async () => {
+    if (!fitParams) {
+      status.textContent = 'no fit result to copy — enable the fit first';
+      return;
+    }
+    const text = `${(fitParams.w_x * pixelMm).toFixed(4)}\t`
+      + `${(fitParams.w_y * pixelMm).toFixed(4)}`;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // http from another computer: fall back to the legacy copy command
+      const scratch = document.createElement('textarea');
+      scratch.value = text;
+      document.body.appendChild(scratch);
+      scratch.select();
+      document.execCommand('copy');
+      scratch.remove();
+    }
+    status.textContent = `copied: w_x, w_y = ${text.replace('\t', ', ')} mm`;
   };
 
   // ----------------------------------------------------------- the stream
