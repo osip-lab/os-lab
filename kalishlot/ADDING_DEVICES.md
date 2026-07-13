@@ -92,6 +92,17 @@ Conventions the existing frontend already understands:
   (clamped/rounded), the GUI displays it back.
 - **Cameras**: commands `play` / `pause` / `snap`; emit
   `{'type': 'status', 'playing': bool}` on play/pause.
+- **Cameras from a NEW MANUFACTURER** (Ximea, ...): do NOT write commands or
+  describe() yourself — subclass `CameraAdapterBase` from
+  `adapters/camera_base.py` and implement only its hardware hooks
+  (`_open/_close/_play/_pause/_snap/_apply_setting/_settings_schema/
+  _sensor_shape`, plus `_store_camera_frame(frame, display)` from the frame
+  thread; override `LEVELS_MAX`, `PIXEL_SIZE_MM`, `DISPLAY_DOWNSAMPLE`).
+  The frontend camera box is manufacturer-agnostic: register the new
+  type_name in server.py DEVICE_TYPES and point it at the existing
+  `createCameraBox` in app.js BOX_RENDERERS — no new JS needed.
+  `adapters/dummy_camera.py` is the minimal reference implementation;
+  `adapters/basler.py` shows the pattern for a thread-unsafe SDK.
 - **Gaussian fit** (cameras): mix in `CameraFitMixin` from
   `adapters/camera_fit.py` — call `_init_fit()` in `__init__`,
   `_store_fit_frame(frame)` from the frame thread with the full-resolution

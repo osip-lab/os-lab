@@ -1,8 +1,9 @@
-"""Basler camera adapter: wraps the pure device layer in basler_cam/.
+"""Basler camera adapter: only the Basler-specific hardware hooks.
 
-All hardware access goes through BaslerCamera + CameraStreamer
-(basler_cam/basler_cameras.py). The pylon camera object is not thread-safe,
-so setting changes are submitted to the streaming thread via
+Everything camera-generic (commands, describe, fit pipeline, frame plumbing)
+lives in CameraAdapterBase — this file wires it to the pure device layer in
+basler_cam/basler_cameras.py. The pylon camera object is not thread-safe, so
+setting changes are submitted to the streaming thread via
 CameraStreamer.submit() and the accepted (clamped) value comes back to the
 browser as a 'setting_applied' event.
 """
@@ -17,16 +18,17 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'basler_cam'))
 from basler_cameras import BaslerCamera, CameraStreamer  # noqa: E402
 
-from .base import DeviceAdapter  # noqa: E402
-from .camera_fit import CameraFitMixin  # noqa: E402
+from .camera_base import CameraAdapterBase  # noqa: E402
 
 
-class BaslerCameraAdapter(CameraFitMixin, DeviceAdapter):
+class BaslerCameraAdapter(CameraAdapterBase):
     type_name = 'basler_camera'
     display_name = 'Basler camera'
 
     MAX_LIVE = 2  # USB3 bandwidth: more cameras drop frames
-    DOWNSAMPLE = 2  # 2048x2048 sensor -> 1024x1024 display stream
+    DISPLAY_DOWNSAMPLE = 2  # 2048x2048 sensor -> 1024x1024 display stream
+    LEVELS_MAX = 4095  # Mono12
+    PIXEL_SIZE_MM = 5.5 / 1000.0  # acA2040 pixel pitch
 
     _open_serials = set()
     _open_lock = threading.Lock()
@@ -43,12 +45,13 @@ class BaslerCameraAdapter(CameraFitMixin, DeviceAdapter):
         self.streamer = None
         self._settings = {}
         self._limits = {}
-        self._playing = True
-        self._sensor_shape = [2048, 2048]  # actual value read at open()
-        self._init_fit()
+        self._shape = [2048, 2048]  # actual value read at _open()
 
-    # ------------------------------------------------------------ lifecycle
-    def open(self):
+    def _label(self):
+        return f'{self.display_name} — s/n {self.address}'
+
+    # ------------------------------------------------------ hardware hooks
+    def _open(self):
         with self._open_lock:
             if len(self._open_serials) >= self.MAX_LIVE:
                 raise RuntimeError(
@@ -69,15 +72,13 @@ class BaslerCameraAdapter(CameraFitMixin, DeviceAdapter):
                           'gain': self.camera.gain_db}
         self._limits = {'exposure': self.camera.exposure_limits_us,
                         'gain': self.camera.gain_limits_db}
-        self._sensor_shape = list(self.camera.frame_shape)
+        self._shape = list(self.camera.frame_shape)
         self.streamer = CameraStreamer(self.camera,
                                        on_frame=self._on_frame,
                                        on_error=self._on_error)
         self.streamer.start()
-        self._playing = True
 
-    def close(self):
-        self._stop_fit()
+    def _close(self):
         if self.streamer is not None:
             self.streamer.stop()
             self.streamer = None
@@ -85,70 +86,49 @@ class BaslerCameraAdapter(CameraFitMixin, DeviceAdapter):
         with self._open_lock:
             self._open_serials.discard(self.address)
 
-    def describe(self):
+    def _play(self):
+        self.streamer.resume()
+
+    def _pause(self):
+        self.streamer.pause()
+
+    def _snap(self):
+        self.streamer.snap()
+
+    def _sensor_shape(self):
+        return self._shape
+
+    def _settings_schema(self):
         exposure_min, exposure_max = self._limits.get('exposure', (28, 1e7))
         gain_min, gain_max = self._limits.get('gain', (0.0, 23.0))
-        return {'type': self.type_name,
-                'label': f'{self.display_name} — s/n {self.address}',
-                'frame_shape': [s // self.DOWNSAMPLE for s in self._sensor_shape],
-                'sensor_shape': list(self._sensor_shape),
-                'commands': ['play', 'pause', 'snap', 'set_setting',
-                             'fit_on', 'fit_off', 'set_guess', 'clear_guess'],
-                'playing': self._playing,
-                **self.fit_describe(),
-                'settings': [
-                    {'name': 'exposure', 'label': 'exposure', 'unit': 'μs',
-                     'min': exposure_min, 'max': exposure_max, 'decimals': 0,
-                     'value': self._settings.get('exposure', 0.0)},
-                    {'name': 'gain', 'label': 'gain', 'unit': 'dB',
-                     'min': gain_min, 'max': gain_max, 'decimals': 1,
-                     'value': self._settings.get('gain', 0.0)},
-                ]}
+        return [{'name': 'exposure', 'label': 'exposure', 'unit': 'μs',
+                 'min': exposure_min, 'max': exposure_max, 'decimals': 0,
+                 'value': self._settings.get('exposure', 0.0)},
+                {'name': 'gain', 'label': 'gain', 'unit': 'dB',
+                 'min': gain_min, 'max': gain_max, 'decimals': 1,
+                 'value': self._settings.get('gain', 0.0)}]
 
-    # ------------------------------------------------------------- commands
-    def command(self, name, args):
-        result = self.fit_command(name, args)
-        if result is not None:
-            return result
-        if name == 'play':
-            self.streamer.resume()
-            self._playing = True
-            self.emit({'type': 'status', 'playing': True})
-            return {'ok': True}
-        if name == 'pause':
-            self.streamer.pause()
-            self._playing = False
-            self.emit({'type': 'status', 'playing': False})
-            return {'ok': True}
-        if name == 'snap':
-            self.streamer.snap()
-            return {'ok': True}
-        if name == 'set_setting':
-            setting = args['name']
-            if setting not in ('exposure', 'gain'):
-                raise ValueError(f'unknown setting {setting!r}')
-            value = float(args['value'])
+    def _apply_setting(self, name, value):
+        if name not in ('exposure', 'gain'):
+            raise ValueError(f'unknown setting {name!r}')
 
-            def apply(camera):
-                if setting == 'exposure':
-                    camera.exposure_us = value
-                    accepted = camera.exposure_us
-                else:
-                    camera.gain_db = value
-                    accepted = camera.gain_db
-                self._settings[setting] = accepted
-                self.emit({'type': 'setting_applied', 'name': setting,
-                           'value': accepted})
+        def apply(camera):
+            if name == 'exposure':
+                camera.exposure_us = value
+                accepted = camera.exposure_us
+            else:
+                camera.gain_db = value
+                accepted = camera.gain_db
+            self._settings[name] = accepted
+            self.emit({'type': 'setting_applied', 'name': name,
+                       'value': accepted})
 
-            self.streamer.submit(apply)
-            return {'ok': True}  # accepted value arrives as an event
-        raise ValueError(f'unknown command {name!r}')
+        self.streamer.submit(apply)
 
     # ---------------------------------------------- streaming-thread callbacks
     def _on_frame(self, frame):
-        small = frame[::self.DOWNSAMPLE, ::self.DOWNSAMPLE]
-        self._store_display_frame((small >> 4).astype(np.uint8))
-        self._store_fit_frame(frame)
+        small = frame[::self.DISPLAY_DOWNSAMPLE, ::self.DISPLAY_DOWNSAMPLE]
+        self._store_camera_frame(frame, (small >> 4).astype(np.uint8))
 
     def _on_error(self, error):
         self.emit({'type': 'error', 'message': str(error)})

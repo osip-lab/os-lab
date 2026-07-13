@@ -9,7 +9,6 @@
 
 import { connectDeviceStream } from './stream.js';
 
-const LEVELS_MAX = 4095; // 12-bit sensor data
 const STRIP = 70;        // cross-section strip thickness, px
 const GAP = 4;
 
@@ -24,6 +23,7 @@ export function createCameraBox(device, container, sendCommand) {
   // be downsampled, so all drawing is scaled from sensor_shape
   const [sensorH, sensorW] = device.sensor_shape ?? device.frame_shape;
   const pixelMm = device.pixel_size_mm ?? 0;
+  const levelsMax = device.levels_max ?? 4095; // raw-data full scale
 
   container.innerHTML = `
     <div class="cam-controls" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
@@ -225,9 +225,9 @@ export function createCameraBox(device, container, sendCommand) {
     // data: the image row/column through the fit center
     polyline(hCtx, fitCross.row.map((value, i) =>
       [i * step * hCanvas.width / sensorW,
-       hCanvas.height * (1 - value / LEVELS_MAX)]), COLOR_DATA);
+       hCanvas.height * (1 - value / levelsMax)]), COLOR_DATA);
     polyline(vCtx, fitCross.col.map((value, i) =>
-      [vCanvas.width * value / LEVELS_MAX,
+      [vCanvas.width * value / levelsMax,
        i * step * vCanvas.height / sensorH]), COLOR_DATA);
     // analytic cuts of the fitted 2D Gaussian along y = y0 and x = x0
     const sin2 = Math.sin(p.angle) ** 2, cos2 = Math.cos(p.angle) ** 2;
@@ -239,10 +239,10 @@ export function createCameraBox(device, container, sendCommand) {
       const x = i / n * sensorW;
       const hValue = p.offset + p.amplitude * Math.exp(-a * (x - p.x_0) ** 2);
       hPoints.push([x * hCanvas.width / sensorW,
-                    hCanvas.height * (1 - hValue / LEVELS_MAX)]);
+                    hCanvas.height * (1 - hValue / levelsMax)]);
       const y = i / n * sensorH;
       const vValue = p.offset + p.amplitude * Math.exp(-c * (y - p.y_0) ** 2);
-      vPoints.push([vCanvas.width * vValue / LEVELS_MAX,
+      vPoints.push([vCanvas.width * vValue / levelsMax,
                     y * vCanvas.height / sensorH]);
     }
     polyline(hCtx, hPoints, COLOR_FIT_CURVE);

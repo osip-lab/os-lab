@@ -23,7 +23,9 @@ CROSS_SECTION_STEP = 4  # send every 4th pixel of the row/column cuts
 
 class CameraFitMixin:
     FIT_REBINNING = 4
-    PIXEL_SIZE_MM = 5.5 / 1000.0  # acA2040 pixel pitch; override if needed
+    # physical pixel pitch for the mm readouts in the box; every camera
+    # adapter overrides this with its sensor's value
+    PIXEL_SIZE_MM = 1.0 / 1000.0
 
     def _init_fit(self):
         self._fit_loop = None
