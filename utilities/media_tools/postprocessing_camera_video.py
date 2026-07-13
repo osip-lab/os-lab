@@ -185,7 +185,7 @@ w_y_mm = w_y_m * 1e3
 
 title = f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm"
 results_text = (f"frame_time = {selected_frame_time:.2f} s, "
-                f"w_x = {w_x_mm:.4f} mm, w_y = {w_y_mm:.4f} mm")
+                f"(w_x, w_y) = ({w_x_mm:.4f} mm, {w_y_mm:.4f} mm)")
 if NA_TO_SPOT_SIZE_RATIO is not None:
     NA_x = NA_TO_SPOT_SIZE_RATIO * w_x_m
     NA_y = NA_TO_SPOT_SIZE_RATIO * w_y_m

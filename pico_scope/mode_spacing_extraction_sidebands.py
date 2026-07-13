@@ -48,18 +48,15 @@ import matplotlib
 
 matplotlib.use('Qt5Agg')
 
-import shutil
-import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
 from scipy.optimize import curve_fit
-from utilities.utils import append_numerical_result_line, wait_for_path_from_clipboard
+from utilities.utils import (append_numerical_result_line,
+                             get_picoscope_trace_path_from_clipboard)
 
 # --- configuration the user may want to tweak ------------------------------
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
@@ -69,8 +66,6 @@ DEFAULT_SIDEBAND_FREQ_MHZ = 20.0  # single-side EOM modulation frequency [MHz]
 SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
 LONG_ARM_LENGTH = 31e-2
 MID_ARM_LENGTH = 1.5e-2
-from local_config import PICOSCOPE_EXE
-# PicoScope 7 executable, used to convert .psdata files to CSV on the fly.
 
 # --- NA mapping (cavity-design project) ------------------------------------
 # Plot toggles passed to generate_lens_position_dependencies_output(); the
@@ -78,7 +73,7 @@ from local_config import PICOSCOPE_EXE
 # report prints without waiting for the windows to be closed.
 SIM_PLOT_CAVITY = False
 SIM_PLOT_SPECTRUM = False
-SIM_PLOT_DEPENDENCIES = True
+SIM_PLOT_DEPENDENCIES = False
 
 
 def decimate(x_arr, y_arr, max_points=MAX_PLOT_POINTS):
@@ -92,90 +87,8 @@ def decimate(x_arr, y_arr, max_points=MAX_PLOT_POINTS):
     return x_arr[::step], y_arr[::step]
 
 
-def psdata_to_csv(psdata_path):
-    """Convert a PicoScope .psdata file to CSV; return the CSV path.
-
-    Uses PicoScope 7's command-line `BatchConvert` mode, which produces a CSV
-    identical to the GUI's "Save as CSV". BatchConvert operates on folders,
-    so the single file is copied to a temporary folder and converted there.
-
-    If an up-to-date CSV with the same name already sits next to the .psdata
-    file (e.g. from an earlier manual export or an earlier run), it is used
-    directly and no conversion is performed.
-    """
-    psdata_path = Path(psdata_path)
-    sibling_csv = psdata_path.with_suffix('.csv')
-    if sibling_csv.is_file() and sibling_csv.stat().st_mtime >= psdata_path.stat().st_mtime:
-        print(f"Using existing up-to-date CSV: {sibling_csv}")
-        return str(sibling_csv)
-
-    if not Path(PICOSCOPE_EXE).is_file():
-        raise FileNotFoundError(
-            f"PicoScope executable not found at {PICOSCOPE_EXE!r} - "
-            "update PICOSCOPE_EXE, or save the trace as CSV manually."
-        )
-
-    tmp_dir = Path(tempfile.mkdtemp(prefix='psdata_to_csv_'))
-    in_dir = tmp_dir / 'in'
-    out_dir = tmp_dir / 'out'
-    in_dir.mkdir()
-    out_dir.mkdir()
-    shutil.copy2(psdata_path, in_dir)
-
-    print(f"Converting '{psdata_path.name}' to CSV with PicoScope 7 ...")
-    # Note: BatchConvert fails on folder paths with a trailing backslash;
-    # str(Path) never produces one.
-    result = subprocess.run(
-        [PICOSCOPE_EXE, 'BatchConvert', str(in_dir), str(out_dir), '.csv'],
-        capture_output=True, text=True,
-    )
-    # A single-waveform file becomes '<stem>.csv' directly in out_dir; a file
-    # with multiple waveform buffers becomes a '<stem>' subfolder holding
-    # '<stem>_1.csv' ... '<stem>_N.csv', so search recursively and sort by the
-    # numeric buffer suffix (plain name-sorting would put _10 before _2).
-    def buffer_index(p):
-        suffix = p.stem.rsplit('_', 1)[-1]
-        return int(suffix) if suffix.isdigit() else 0
-
-    csv_files = sorted(out_dir.rglob('*.csv'), key=buffer_index)
-    if result.returncode != 0 or not csv_files:
-        raise RuntimeError(
-            f"psdata -> CSV conversion failed (exit code {result.returncode}).\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
-    print("Conversion succeeded.")
-
-    if len(csv_files) == 1:
-        return str(csv_files[0])
-
-    print(f"The psdata file contains {len(csv_files)} waveform buffers:")
-    for i, p in enumerate(csv_files, start=1):
-        print(f"  [{i}] {p.name}")
-    while True:
-        raw_in = input(
-            f"Which waveform to use? 1-{len(csv_files)} "
-            f"[default {len(csv_files)} - the most recent]: "
-        ).strip()
-        if raw_in == '':
-            choice = len(csv_files)
-        else:
-            try:
-                choice = int(raw_in)
-            except ValueError:
-                choice = 0
-        if 1 <= choice <= len(csv_files):
-            break
-        print(f"  Please enter a number between 1 and {len(csv_files)}.")
-    print(f"Using waveform: {csv_files[choice - 1].name}")
-    return str(csv_files[choice - 1])
-
-
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
-input_path = wait_for_path_from_clipboard(filetype=('csv', 'psdata'))
-if input_path.lower().endswith('.psdata'):
-    csv_path = psdata_to_csv(input_path)
-else:
-    csv_path = input_path
+csv_path, input_path = get_picoscope_trace_path_from_clipboard()
 print(f"Loading: {csv_path}")
 
 # Rows 1 and 2 of a PicoScope export are the unit / blank header rows.

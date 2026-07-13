@@ -115,6 +115,7 @@ def input_with_default(prompt, default):
 
 
 def main():
+    print(os.getcwd())
     folder_path = wait_for_path_from_clipboard('directory')
     compression_rate = int(input_with_default(
         "Compression rate (a number in range [18, 28]. lower = better quality, larger file), use 23 for default", "23"))

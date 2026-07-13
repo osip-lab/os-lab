@@ -1,7 +1,9 @@
 import pandas as pd
 import matplotlib
+
 matplotlib.use('Qt5Agg')
-from utilities.utils import wait_for_path_from_clipboard
+from utilities.utils import (append_numerical_result_line,
+                             get_picoscope_trace_path_from_clipboard)
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
@@ -9,12 +11,20 @@ from matplotlib.widgets import SpanSelector
 import itertools
 
 import simple_analysis_scripts.mode_spacing_to_NA as simulation
+
+LONG_ARM_LENGTH = 34.4e-2
+MID_ARM_LENGTH = 1.5e-2
+
 # Requires to map the cavity-design project to this project via PyCharm's settings -> Project Structure
-mode_spacing_interp, mode_spacing_over_fsr_interp = simulation.generate_lens_position_dependencies_output(plot_cavity=False,
-                                                                                                 plot_spectrum=False,
-                                                                                                 plot_dependencies=False)
-# %%
-specific_file_path = wait_for_path_from_clipboard(filetype='csv')
+mode_spacing_interp, mode_spacing_over_fsr_interp = simulation.generate_lens_position_dependencies_output(
+    short_arm_lengths=4e-4,
+    long_arm_length=LONG_ARM_LENGTH,
+    mid_arm_length=MID_ARM_LENGTH,
+    plot_cavity=False,
+    plot_spectrum=False,
+    plot_dependencies=False)
+# %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
+specific_file_path, input_path = get_picoscope_trace_path_from_clipboard()
 
 df = pd.read_csv(specific_file_path, skiprows=[1, 2])
 df = df.loc[:, ['Time', 'Channel D']]
@@ -218,3 +228,15 @@ else:
     results_df["NA"] = mode_spacing_over_fsr_interp(results_df["df_over_fsr"])
 
     print(results_df)
+
+    # Record the extraction next to the original data file (one line per run).
+    df_over_fsr_mean = results_df["df_over_fsr"].mean()
+    na_mean = results_df["NA"].mean()
+    results_text = (f"long_arm_length = {LONG_ARM_LENGTH:.4g} m, "
+                    f"n_mode_pairs = {len(results_df)}, "
+                    f"df_over_fsr = {df_over_fsr_mean:.4f}, "
+                    f"NA = {na_mean:.4f}")
+    if len(results_df) > 1:
+        results_text += (f" (std over pairs: df_over_fsr {results_df['df_over_fsr'].std():.4f}, "
+                         f"NA {results_df['NA'].std():.4f})")
+    append_numerical_result_line(input_path, results_text)
