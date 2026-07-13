@@ -150,6 +150,16 @@ Conventions the existing frontend already understands:
   that reason. Register the bulky periodic event type in
   `COALESCE_EVENT_TYPES` in `server.py`: a stalled viewer then receives
   only the newest one instead of a backlog burst.
+- **Analysis on a snapshot** (fits on the streamed data): pause captures the
+  visible window at FULL resolution into the adapter (`self._snapshot` in
+  `adapters/picoscope.py`) and broadcasts one chunk built from it, so every
+  viewer's chart shows exactly the frozen data. Marks (ROI, clicked peaks)
+  are collected client-side on the chart (uPlot draw hook for the overlay,
+  `posToVal` for clicks) and sent in one command; the fit runs SERVER-side
+  on the snapshot with the same math module the offline scripts use
+  (`pico_scope/mode_analysis.py` — never duplicate the math in JS), and the
+  result is broadcast as an `analysis_result` event and kept in `describe()`
+  for reattaching viewers. See `analyze_sidebands` end to end.
 - **Frontend sockets**: always connect through `connectDeviceStream` in
   `static/boxes/stream.js` (see any box for usage) — it reconnects
   automatically with backoff and calls your `onReattach(describe)` with a

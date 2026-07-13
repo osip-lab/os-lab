@@ -48,24 +48,25 @@ import matplotlib
 
 matplotlib.use('Qt5Agg')
 
-import sys
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
-from scipy.optimize import curve_fit
 from utilities.utils import (append_numerical_result_line,
                              get_picoscope_trace_path_from_clipboard)
+# All the math (models, fit, scaling, NA mapping) lives in mode_analysis so
+# the kalishlot web GUI runs the identical computation on the live stream.
+from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
+                                      LONG_ARM_LENGTH, MID_ARM_LENGTH,
+                                      SIDEBAND_AMP_RATIO_GUESS,
+                                      SIX_LORENTZIAN_PARAMS, decimate,
+                                      fit_six_lorentzians,
+                                      get_na_interpolators, lorentzian,
+                                      sideband_results, six_lorentzian_model)
 
 # --- configuration the user may want to tweak ------------------------------
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
 SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
-MAX_PLOT_POINTS = 500            # decimate plots/fit to at most this many points
-DEFAULT_SIDEBAND_FREQ_MHZ = 25.0  # single-side EOM modulation frequency [MHz]
-SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
-LONG_ARM_LENGTH = 34.4e-2
-MID_ARM_LENGTH = 1.5e-2
 
 # --- NA mapping (cavity-design project) ------------------------------------
 # Plot toggles passed to generate_lens_position_dependencies_output(); the
@@ -74,17 +75,6 @@ MID_ARM_LENGTH = 1.5e-2
 SIM_PLOT_CAVITY = False
 SIM_PLOT_SPECTRUM = False
 SIM_PLOT_DEPENDENCIES = False
-
-
-def decimate(x_arr, y_arr, max_points=MAX_PLOT_POINTS):
-    """Keep every n-th sample so that at most `max_points` points remain.
-
-    PicoScope exports can hold ~100k points, which is far denser than the fit
-    needs and makes interactive plotting sluggish. A simple stride keeps the
-    spectrum shape intact while staying responsive.
-    """
-    step = max(1, int(np.ceil(len(x_arr) / max_points)))
-    return x_arr[::step], y_arr[::step]
 
 
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
@@ -215,59 +205,19 @@ f_sb_mhz = DEFAULT_SIDEBAND_FREQ_MHZ  # ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_
 print(f"Using sideband frequency f_sb = {f_sb_mhz} MHz (per side).")
 
 
-# %% [Step 8] Build the 6-Lorentzian model and fit --------------------------
-def lorentzian(x, A, s, x0):
-    """Peak value A, half-width-at-half-maximum s, centre x0."""
-    return A / (1.0 + ((x - x0) / s) ** 2)
-
-
-def six_lorentzian_model(x, A0, s0, x0, A1, s1, x1, d, r, y0):
-    return (
-        lorentzian(x, A0, s0, x0)
-        + lorentzian(x, A0 / r, s0, x0 - d)
-        + lorentzian(x, A0 / r, s0, x0 + d)
-        + lorentzian(x, A1, s1, x1)
-        + lorentzian(x, A1 / r, s1, x1 - d)
-        + lorentzian(x, A1 / r, s1, x1 + d)
-        + y0
-    )
-
-
-def nearest_value(xs, ys, x0):
-    return ys[int(np.argmin(np.abs(xs - x0)))]
-
-
+# %% [Step 8] Fit the 6-Lorentzian model (shared with the web GUI) ----------
 if analysis_mode == 'fit':
-    # --- initial guesses ----------------------------------------------------
-    y0_init = float(np.min(y_fit))
-    A0_init = max(nearest_value(x_fit, y_fit, x0_guess) - y0_init, 1e-9)
-    A1_init = max(nearest_value(x_fit, y_fit, x1_guess) - y0_init, 1e-9)
-    s_init = max(d_guess / 6.0, region_width / 200.0)
-
-    p0 = [A0_init, s_init, x0_guess,
-          A1_init, s_init, x1_guess,
-          d_guess, SIDEBAND_AMP_RATIO_GUESS, y0_init]
-
-    # --- bounds (peaks => positive amplitudes; widths/distance positive) ---
-    eps = region_width / 1e6
-    lower = [0.0,    eps,          region_min,
-             0.0,    eps,          region_min,
-             eps,    1.0,          -np.inf]
-    upper = [np.inf, region_width, region_max,
-             np.inf, region_width, region_max,
-             region_width, np.inf, np.inf]
-
-    popt, pcov = curve_fit(
-        six_lorentzian_model, x_fit, y_fit,
-        p0=p0, bounds=(lower, upper), maxfev=50000,
-    )
-    perr = np.sqrt(np.diag(pcov))
-    A0, s0, x0, A1, s1, x1, d, r, y0 = popt
-    fit_params, fit_errors = popt, perr
+    fit_params, fit_errors = fit_six_lorentzians(
+        x_fit, y_fit, x0_guess=x0_guess, x1_guess=x1_guess, d_guess=d_guess,
+        r_guess=SIDEBAND_AMP_RATIO_GUESS, region=(region_min, region_max))
+    A0, s0, x0 = fit_params['A0'], fit_params['s0'], fit_params['x0']
+    A1, s1, x1 = fit_params['A1'], fit_params['s1'], fit_params['x1']
+    d, r, y0 = fit_params['d'], fit_params['r'], fit_params['y0']
 
     # --- overlay the fit and its components --------------------------------
     x_dense = np.linspace(region_min, region_max, 2000)
-    ax.plot(x_dense, six_lorentzian_model(x_dense, *popt),
+    ax.plot(x_dense, six_lorentzian_model(
+                x_dense, *(fit_params[name] for name in SIX_LORENTZIAN_PARAMS)),
             color='k', lw=1.6, label='Fit (6 Lorentzians + offset)')
     for centre, width, amp in [
         (x0, s0, A0), (x0 - d, s0, A0 / r), (x0 + d, s0, A0 / r),
@@ -305,12 +255,11 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
     """
     scale = f_sb_mhz / d  # MHz per x-unit (sidebands sit at +/- f_sb -> +/- d)
 
-    mode_spacing = abs(x1 - x0) / d * f_sb_mhz   # (x1 - x0)/d * f_sb
-    linewidth_1 = s1 / d * f_sb_mhz           # s1/d * f_sb (HWHM)
-    linewidth_0 = s0 / d * f_sb_mhz           # s0/d * f_sb (HWHM)
-
-    # The simulation interpolator is built on mode spacing in Hz, so convert.
-    na = float(na_interp(mode_spacing * 1e6)) if na_interp is not None else None
+    results = sideband_results(x0, x1, d, s0, s1, f_sb_mhz, na_interp=na_interp)
+    mode_spacing = results['mode_spacing_MHz']
+    linewidth_0 = results['linewidth_0_HWHM_MHz']
+    linewidth_1 = results['linewidth_1_HWHM_MHz']
+    na = results['NA']
 
     width = 64
     bar = '=' * width
@@ -337,41 +286,30 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
     print(bar)
 
     if fit_params is not None:
-        names = ['A0', 's0', 'x0', 'A1', 's1', 'x1', 'd', 'r', 'y0']
         print("  Fit parameters:")
-        errs = fit_errors if fit_errors is not None else [float('nan')] * len(names)
-        for name, val, err in zip(names, fit_params, errs):
-            print(f"    {name:<4}= {val:>14.6g}  +/- {err:.3g}")
+        for name in SIX_LORENTZIAN_PARAMS:
+            err = fit_errors[name] if fit_errors is not None else float('nan')
+            print(f"    {name:<4}= {fit_params[name]:>14.6g}  +/- {err:.3g}")
         print(bar)
     print()
 
-    return {
-        'mode_spacing_MHz': mode_spacing,
-        'linewidth_0_HWHM_MHz': linewidth_0,
-        'linewidth_1_HWHM_MHz': linewidth_1,
-        'NA': na,
-    }
+    return results
 
 
 # %% [Step 10] Map the mode spacing to numerical aperture (NA) ---------------
-# The NA<->mode-spacing relation comes from the cavity-design project, which is
-# added to sys.path at runtime (the IDE resolves it via local_config).
-from local_config import PATH_CAVITY_DESIGN_PROJECT
-
-if PATH_CAVITY_DESIGN_PROJECT not in sys.path:
-    sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
-import simple_analysis_scripts.mode_spacing_to_NA as simulation
-
+# The NA<->mode-spacing relation comes from the cavity-design project (path in
+# local_config.py); mode_analysis builds and caches the interpolators.
 # mode_spacing_interp: mode spacing [Hz] -> NA
-mode_spacing_interp, mode_spacing_over_fsr_interp = \
-    simulation.generate_lens_position_dependencies_output(
-        short_arm_lengths=4e-4,
-        long_arm_length=LONG_ARM_LENGTH,
-        mid_arm_length=MID_ARM_LENGTH,
+mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = \
+    get_na_interpolators(
+        long_arm=LONG_ARM_LENGTH,
+        mid_arm=MID_ARM_LENGTH,
         plot_cavity=SIM_PLOT_CAVITY,
         plot_spectrum=SIM_PLOT_SPECTRUM,
         plot_dependencies=SIM_PLOT_DEPENDENCIES,
     )
+if na_error is not None:
+    print(f"NA mapping unavailable: {na_error}")
 
 
 # %% [Step 11] Final report (mode spacing, linewidths, NA) -------------------

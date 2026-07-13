@@ -32,6 +32,26 @@ export function createPicoScopeBox(device, container, sendCommand) {
       <span class="scope-status" style="font-size:12px; opacity:0.8;"></span>
     </div>
     <div class="scope-channels" style="display:flex; gap:10px; flex-wrap:wrap;"></div>
+    <div class="scope-analysis" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:12px;">
+      <label style="display:flex; gap:4px; align-items:center;">analysis
+        <select class="an-mode">
+          <option value="off">off</option>
+          <option value="sidebands">sidebands (NA)</option>
+        </select></label>
+      <span class="an-controls" style="display:none; gap:6px; align-items:center; flex-wrap:wrap;">
+        <label style="display:flex; gap:4px; align-items:center;">ch <select class="an-channel"></select></label>
+        <label style="display:flex; gap:4px; align-items:center;">f_sb
+          <input type="number" class="an-fsb" min="0" style="width:60px;"> MHz</label>
+        <button class="an-mark" data-mark="roi" title="drag a horizontal window over the region of interest">ROI</button>
+        <button class="an-mark" data-mark="x0" title="click the 0th-order mode">0th</button>
+        <button class="an-mark" data-mark="xsb" title="click one sideband of the 0th-order mode">sideband</button>
+        <button class="an-mark" data-mark="x1" title="click the 1st-order mode">1st</button>
+        <button class="an-fit" disabled>fit</button>
+        <button class="an-clear" title="clear the marks and the fit overlay">✕</button>
+        <button class="an-copy" disabled title="copy mode spacing, linewidths and NA (tab-separated)">copy</button>
+      </span>
+      <span class="an-result"></span>
+    </div>
     <div class="scope-chart" style="flex:1; min-height:0; position:relative;"></div>`;
 
   const status = container.querySelector('.scope-status');
@@ -39,6 +59,18 @@ export function createPicoScopeBox(device, container, sendCommand) {
   const send = (name, args) => sendCommand(device.device_id, name, args)
     .then(() => { status.textContent = ''; })
     .catch(fail);
+
+  // ---------------------------------------- analysis state (used by the
+  // chart draw hook, so it must exist before the chart is constructed)
+  const MARK_COLORS = { x0: '#52c46a', xsb: '#9a9aa2', x1: '#e05555' };
+  const CURVE_COLOR = '#f0a030';
+  let chart = null; // the uPlot instance, created after the channel controls
+  let isPlaying = device.playing ?? true;
+  let analysisMarks = { roi: null, x0: null, xsb: null, x1: null };
+  let analysisResult = device.analysis ?? null; // last 'analysis_result' event
+  let armedMark = null;      // 'roi' | 'x0' | 'xsb' | 'x1'
+  let roiDragStart = null;
+  let analysisUiSync = null; // assigned once the analysis controls are wired
 
   // ------------------------------------------------------- play and pause
   const buttons = {
@@ -48,7 +80,16 @@ export function createPicoScopeBox(device, container, sendCommand) {
   function setPlaying(playing) {
     buttons.play.disabled = playing;
     buttons.pause.disabled = !playing;
-    status.textContent = playing ? '' : 'display frozen (still acquiring)';
+    status.textContent = playing ? '' : 'data frozen (still acquiring)';
+    isPlaying = playing;
+    if (playing) {
+      // the marks and the fit overlay belong to the discarded snapshot
+      analysisMarks = { roi: null, x0: null, xsb: null, x1: null };
+      analysisResult = null;
+      roiDragStart = null;
+      if (chart) chart.redraw();
+    }
+    if (analysisUiSync) analysisUiSync();
   }
   setPlaying(device.playing ?? true);
   buttons.play.onclick = () => send('play').then(() => setPlaying(true));
@@ -89,7 +130,6 @@ export function createPicoScopeBox(device, container, sendCommand) {
     { name: 'sample_rate_hz', value: parseFloat(rateSelect.value) });
 
   // ------------------------------------------------------ channel controls
-  let chart = null; // created below, after the channel controls
   const channelsDiv = container.querySelector('.scope-channels');
   const channelControls = {}; // name -> { enable, range, coupling }
 
@@ -171,7 +211,190 @@ export function createPicoScopeBox(device, container, sendCommand) {
     ],
     axes: [axisStyle, { ...axisStyle, label: 'V' }],
     cursor: { drag: { x: false, y: false } },
+    hooks: { draw: [drawAnalysis] },
   }, [[0], [null], [null], [null], [null]], chartDiv);
+
+  // --------------------------------------------- analysis overlay drawing
+  // ROI shading, mark lines and the fitted curve are painted straight onto
+  // the uPlot canvas after each redraw; the fit curve has its own dense time
+  // axis, so it cannot live in the shared-x data arrays as a series.
+  function drawAnalysis(u) {
+    const hasMarks = analysisMarks.roi || analysisMarks.x0 != null
+      || analysisMarks.xsb != null || analysisMarks.x1 != null;
+    if (!hasMarks && !analysisResult) return;
+    const ctx = u.ctx;
+    const { top, height } = u.bbox;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(u.bbox.left, top, u.bbox.width, height);
+    ctx.clip();
+    const xPx = (t) => u.valToPos(t, 'x', true);
+    if (analysisMarks.roi) {
+      const [t0, t1] = analysisMarks.roi;
+      ctx.fillStyle = 'rgba(217, 161, 60, 0.13)';
+      ctx.fillRect(xPx(t0), top, xPx(t1) - xPx(t0), height);
+    }
+    ctx.lineWidth = devicePixelRatio;
+    ctx.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
+    for (const name of ['x0', 'xsb', 'x1']) {
+      if (analysisMarks[name] == null) continue;
+      ctx.strokeStyle = MARK_COLORS[name];
+      ctx.beginPath();
+      ctx.moveTo(xPx(analysisMarks[name]), top);
+      ctx.lineTo(xPx(analysisMarks[name]), top + height);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    const curve = analysisResult?.curve;
+    if (curve && curve.t.length) {
+      ctx.strokeStyle = CURVE_COLOR;
+      ctx.lineWidth = 1.6 * devicePixelRatio;
+      ctx.beginPath();
+      ctx.moveTo(xPx(curve.t[0]), u.valToPos(curve.v[0], 'y', true));
+      for (let i = 1; i < curve.t.length; i++) {
+        ctx.lineTo(xPx(curve.t[i]), u.valToPos(curve.v[i], 'y', true));
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ------------------------------------------------- analysis interaction
+  const modeSelect = container.querySelector('.an-mode');
+  const anControls = container.querySelector('.an-controls');
+  const anChannel = container.querySelector('.an-channel');
+  const fsbInput = container.querySelector('.an-fsb');
+  const fitButton = container.querySelector('.an-fit');
+  const copyButton = container.querySelector('.an-copy');
+  const resultSpan = container.querySelector('.an-result');
+  const markButtons = {};
+  for (const button of container.querySelectorAll('.an-mark')) {
+    markButtons[button.dataset.mark] = button;
+  }
+
+  for (const name of CHANNEL_ORDER) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    anChannel.appendChild(option);
+  }
+  fsbInput.value = device.sideband_freq_default_mhz ?? 25;
+
+  modeSelect.onchange = () => {
+    anControls.style.display = modeSelect.value === 'off' ? 'none' : 'flex';
+    setArm(null);
+    updateAnalysisUi();
+  };
+
+  function setArm(which) {
+    armedMark = which;
+    for (const [name, button] of Object.entries(markButtons)) {
+      button.style.outline =
+        name === which ? `1px solid ${MARK_COLORS[name] ?? '#d9a13c'}` : '';
+    }
+    chart.over.style.cursor = which ? 'crosshair' : '';
+  }
+  for (const [name, button] of Object.entries(markButtons)) {
+    button.onclick = () => setArm(armedMark === name ? null : name);
+  }
+
+  function updateAnalysisUi() {
+    const active = modeSelect.value !== 'off';
+    const ready = active && !isPlaying;
+    for (const button of Object.values(markButtons)) button.disabled = !ready;
+    fitButton.disabled = !(ready && analysisMarks.roi
+      && analysisMarks.x0 != null && analysisMarks.xsb != null
+      && analysisMarks.x1 != null);
+    copyButton.disabled = !analysisResult?.results;
+    if (active && isPlaying) resultSpan.textContent = 'pause the stream to analyze';
+    else showAnalysisResult();
+  }
+  analysisUiSync = updateAnalysisUi;
+  updateAnalysisUi();
+
+  function showAnalysisResult() {
+    if (!analysisResult?.results) { resultSpan.textContent = ''; return; }
+    const r = analysisResult.results;
+    const na = r.NA != null ? r.NA.toFixed(4)
+      : `unavailable${r.na_error ? ` (${r.na_error})` : ''}`;
+    resultSpan.textContent =
+      `mode spacing = ${r.mode_spacing_MHz.toFixed(3)} MHz | `
+      + `HWHM₀ = ${r.linewidth_0_HWHM_MHz.toFixed(3)} MHz | `
+      + `HWHM₁ = ${r.linewidth_1_HWHM_MHz.toFixed(3)} MHz | NA = ${na}`;
+  }
+
+  // marking on the chart: ROI is a horizontal drag, the three mode marks are
+  // single clicks — same arm-a-button-then-act pattern as the camera circles
+  chart.over.addEventListener('pointerdown', (event) => {
+    if (!armedMark || isPlaying) return;
+    chart.over.setPointerCapture(event.pointerId);
+    if (armedMark === 'roi') {
+      roiDragStart = chart.posToVal(event.offsetX, 'x');
+    }
+    event.preventDefault();
+  });
+  chart.over.addEventListener('pointermove', (event) => {
+    if (roiDragStart == null) return;
+    const t = chart.posToVal(event.offsetX, 'x');
+    analysisMarks.roi = [Math.min(roiDragStart, t), Math.max(roiDragStart, t)];
+    chart.redraw();
+  });
+  chart.over.addEventListener('pointerup', (event) => {
+    if (!armedMark) return;
+    if (armedMark === 'roi') {
+      roiDragStart = null;
+      if (!analysisMarks.roi || analysisMarks.roi[1] - analysisMarks.roi[0] <= 0) {
+        analysisMarks.roi = null; // a click without a drag is not a region
+      }
+    } else {
+      analysisMarks[armedMark] = chart.posToVal(event.offsetX, 'x');
+    }
+    setArm(null);
+    chart.redraw();
+    updateAnalysisUi();
+  });
+
+  fitButton.onclick = () => {
+    resultSpan.textContent = 'fitting…';
+    sendCommand(device.device_id, 'analyze_sidebands', {
+      channel: anChannel.value,
+      t_min: analysisMarks.roi[0],
+      t_max: analysisMarks.roi[1],
+      x0: analysisMarks.x0,
+      x_sb: analysisMarks.xsb,
+      x1: analysisMarks.x1,
+      f_sb_mhz: parseFloat(fsbInput.value) || null,
+    }).catch((error) => { resultSpan.textContent = error.message; });
+  };
+
+  container.querySelector('.an-clear').onclick = () => {
+    analysisMarks = { roi: null, x0: null, xsb: null, x1: null };
+    analysisResult = null;
+    setArm(null);
+    chart.redraw();
+    updateAnalysisUi();
+  };
+
+  copyButton.onclick = async () => {
+    const r = analysisResult?.results;
+    if (!r) return;
+    const text = `${r.mode_spacing_MHz.toFixed(4)}\t`
+      + `${r.linewidth_0_HWHM_MHz.toFixed(4)}\t`
+      + `${r.linewidth_1_HWHM_MHz.toFixed(4)}\t`
+      + `${r.NA != null ? r.NA.toFixed(4) : 'N/A'}`;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // http from another computer: fall back to the legacy copy command
+      const scratch = document.createElement('textarea');
+      scratch.value = text;
+      document.body.appendChild(scratch);
+      scratch.select();
+      document.execCommand('copy');
+      scratch.remove();
+    }
+    status.textContent = 'copied: mode spacing, HWHM₀, HWHM₁, NA';
+  };
 
   // size the chart with the box (leave room for the legend row)
   const resizeObserver = new ResizeObserver(() => {
@@ -213,7 +436,11 @@ export function createPicoScopeBox(device, container, sendCommand) {
     onEvent(event) {
       if (event.type === 'scope_data') showData(event);
       else if (event.type === 'status') setPlaying(event.playing);
-      else if (event.type === 'channel') showChannel(event.channel, event.state);
+      else if (event.type === 'analysis_result') {
+        analysisResult = event;
+        chart.redraw();
+        updateAnalysisUi();
+      } else if (event.type === 'channel') showChannel(event.channel, event.state);
       else if (event.type === 'setting_applied') {
         if (event.name === 'window_s') selectClosest(windowSelect, event.value);
         if (event.name === 'sample_rate_hz') selectClosest(rateSelect, event.value);
@@ -223,6 +450,9 @@ export function createPicoScopeBox(device, container, sendCommand) {
     },
     onReattach(describe) {
       setPlaying(describe.playing ?? true);
+      analysisResult = describe.analysis ?? null;
+      chart.redraw();
+      updateAnalysisUi();
       for (const [name, state] of Object.entries(describe.channels ?? {})) {
         showChannel(name, state);
       }
