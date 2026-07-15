@@ -14,6 +14,11 @@ import simple_analysis_scripts.mode_spacing_to_NA as simulation
 
 LONG_ARM_LENGTH = 34.4e-2
 MID_ARM_LENGTH = 1.5e-2
+SHORT_ARM_LENGTH = 0.7e-2
+
+SPEED_OF_LIGHT = 299792458.0  # m / s
+L = LONG_ARM_LENGTH + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
+FSR_MHZ = SPEED_OF_LIGHT / (2 * L) / 1e6
 
 # Requires to map the cavity-design project to this project via PyCharm's settings -> Project Structure
 mode_spacing_interp, mode_spacing_over_fsr_interp = simulation.generate_lens_position_dependencies_output(
@@ -67,6 +72,20 @@ def add_position(x0):
         global current_color
         print("Changing color")
         current_color = next(fit_colors)
+
+
+def print_latest_pair_na():
+    # Needs two consecutive completed pairs: the FSR is the spacing between their first peaks.
+    pairs = [pos for pos in lorentzian_positions if len(pos) == 2]
+    if len(pairs) < 2:
+        return
+    fsr = np.abs(pairs[-1][0] - pairs[-2][0])
+    df_pair = np.abs(pairs[-1][1] - pairs[-1][0])
+    df_over_fsr = df_pair / fsr
+    na = float(mode_spacing_over_fsr_interp(df_over_fsr))
+    df_mhz = df_over_fsr * FSR_MHZ
+    print(f"df/FSR = {df_over_fsr:.4f}, NA = {na:.4f}, "
+          f"df = {df_mhz:.2f} MHz (FSR = {FSR_MHZ:.1f} MHz for L = {L:.4g} m)")
 
 
 def onselect(xmin, xmax):
@@ -135,6 +154,8 @@ def onselect(xmin, xmax):
                 fit_y = double_lorentzian(fit_x, *popt)
                 fit_line, = ax.plot(fit_x, fit_y, color=current_color, linestyle="--")
                 fit_lines.append(fit_line)
+
+                print_latest_pair_na()
 
                 current_color = next(fit_colors)
                 double_span_stage = 0
@@ -226,6 +247,7 @@ else:
 
     results_df = pd.DataFrame(results)
     results_df["NA"] = mode_spacing_over_fsr_interp(results_df["df_over_fsr"])
+    results_df["df_MHz"] = results_df["df_over_fsr"] * FSR_MHZ
 
     print(results_df)
 

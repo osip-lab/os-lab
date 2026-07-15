@@ -85,13 +85,45 @@ def wait_for_path_from_clipboard(filetype: Optional[Union[str, Sequence[str]]] =
             I += 1
         time.sleep(poll_interval)
 
+# BatchConvert first shipped in PicoScope 7.1.32. Older versions do not know
+# the argument: they start up normally instead, and on a computer with a scope
+# attached they silently connect to it and begin measuring - so the version
+# must be checked *before* launching the exe.
+PICOSCOPE_MIN_BATCHCONVERT_VERSION = (7, 1, 32)
+PSDATA_CONVERT_TIMEOUT_S = 120
+
+
+def _windows_exe_version(path):
+    """Return the file version of a Windows exe as a tuple of 4 ints, or None."""
+    import ctypes
+
+    path = str(path)
+    size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not ctypes.windll.version.GetFileVersionInfoW(path, 0, size, data):
+        return None
+    buf = ctypes.c_void_p()
+    length = ctypes.c_uint()
+    if not ctypes.windll.version.VerQueryValueW(
+            data, '\\', ctypes.byref(buf), ctypes.byref(length)):
+        return None
+    # VS_FIXEDFILEINFO: dwFileVersionMS / dwFileVersionLS are the 3rd and 4th
+    # DWORDs of the structure.
+    fixed = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint32 * 4)).contents
+    ms, ls = fixed[2], fixed[3]
+    return (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+
+
 def psdata_to_csv(psdata_path):
     """Convert a PicoScope .psdata file to CSV; return the CSV path.
 
     Uses PicoScope 7's command-line `BatchConvert` mode, which produces a CSV
     identical to the GUI's "Save as CSV". BatchConvert operates on folders,
     so the single file is copied to a temporary folder and converted there.
-    Requires PICOSCOPE_EXE (the path of PicoScope.exe) in local_config.py.
+    Requires PICOSCOPE_EXE (the path of PicoScope.exe) in local_config.py,
+    and PicoScope >= 7.1.32 (checked before launching).
 
     If an up-to-date CSV with the same name already sits next to the .psdata
     file (e.g. from an earlier manual export or an earlier run), it is used
@@ -118,6 +150,19 @@ def psdata_to_csv(psdata_path):
             "update PICOSCOPE_EXE in local_config.py, or save the trace as CSV manually."
         )
 
+    version = _windows_exe_version(PICOSCOPE_EXE)
+    if version is not None and version[:3] < PICOSCOPE_MIN_BATCHCONVERT_VERSION:
+        min_ver = '.'.join(map(str, PICOSCOPE_MIN_BATCHCONVERT_VERSION))
+        raise RuntimeError(
+            f"PicoScope 7 at {PICOSCOPE_EXE!r} is version "
+            f"{'.'.join(map(str, version[:3]))}, but command-line conversion "
+            f"(BatchConvert) was only added in {min_ver}. Older versions ignore "
+            "the arguments and just open the PicoScope GUI (grabbing any "
+            "attached scope). Update PicoScope 7 from "
+            "https://www.picotech.com/downloads, or save the trace as CSV "
+            "manually."
+        )
+
     tmp_dir = Path(tempfile.mkdtemp(prefix='psdata_to_csv_'))
     in_dir = tmp_dir / 'in'
     out_dir = tmp_dir / 'out'
@@ -128,10 +173,22 @@ def psdata_to_csv(psdata_path):
     print(f"Converting '{psdata_path.name}' to CSV with PicoScope 7 ...")
     # Note: BatchConvert fails on folder paths with a trailing backslash;
     # str(Path) never produces one.
-    result = subprocess.run(
-        [PICOSCOPE_EXE, 'BatchConvert', str(in_dir), str(out_dir), '.csv'],
-        capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            [PICOSCOPE_EXE, 'BatchConvert', str(in_dir), str(out_dir), '.csv'],
+            capture_output=True, text=True, timeout=PSDATA_CONVERT_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        # subprocess.run kills the child before raising, so the stray
+        # PicoScope window is closed rather than left grabbing the scope.
+        raise RuntimeError(
+            f"PicoScope did not finish converting within "
+            f"{PSDATA_CONVERT_TIMEOUT_S} s and was closed. This usually means "
+            "it opened as a normal GUI session instead of converting (e.g. it "
+            "connected to an attached scope, or popped a device-selection "
+            "dialog). Close any open PicoScope window and retry, or save the "
+            "trace as CSV manually."
+        )
 
     # A single-waveform file becomes '<stem>.csv' directly in out_dir; a file
     # with multiple waveform buffers becomes a '<stem>' subfolder holding
