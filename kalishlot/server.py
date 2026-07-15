@@ -14,8 +14,14 @@ is viewing. Boxes in the browser re-attach to already-open devices on reload.
 
 import asyncio
 import json
+import os
 import threading
 from pathlib import Path
+
+# analysis code (e.g. the cavity-design NA simulation) may import matplotlib
+# and even call plt.show(); the server must never open GUI windows, and doing
+# so from a worker thread crashes on some backends
+os.environ.setdefault('MPLBACKEND', 'Agg')
 
 import cv2
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect

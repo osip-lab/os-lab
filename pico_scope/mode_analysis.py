@@ -109,6 +109,10 @@ def sideband_results(x0, x1, d, s0, s1, f_sb_mhz, na_interp=None):
     linewidth_0 = s0 / d * f_sb_mhz              # [MHz] (HWHM)
     linewidth_1 = s1 / d * f_sb_mhz              # [MHz] (HWHM)
     na = float(na_interp(mode_spacing * 1e6)) if na_interp is not None else None
+    if na is not None and not np.isfinite(na):
+        # the interpolator returns NaN outside the simulated range; NaN is
+        # not JSON-compliant and not a meaningful NA either
+        na = None
     return {
         'mode_spacing_MHz': mode_spacing,
         'linewidth_0_HWHM_MHz': linewidth_0,

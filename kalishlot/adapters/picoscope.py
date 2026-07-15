@@ -233,14 +233,21 @@ class PicoScopeAdapter(DeviceAdapter):
         results = sideband_results(params['x0'], params['x1'], params['d'],
                                    params['s0'], params['s1'], f_sb_mhz,
                                    na_interp=na_interp)
+        if na_interp is not None and results['NA'] is None:
+            na_error = (f"mode spacing {results['mode_spacing_MHz']:.1f} MHz "
+                        f"is outside the simulated NA range")
         t_dense = np.linspace(t_min, t_max, 500)
         curve = six_lorentzian_model(
             t_dense, *(params[name] for name in SIX_LORENTZIAN_PARAMS))
+        # fit errors can be inf/NaN when the covariance is singular; neither
+        # survives JSON, so send them as null
+        finite = lambda d: {key: (value if np.isfinite(value) else None)
+                            for key, value in d.items()}
         event = {'type': 'analysis_result',
                  'channel': channel,
                  'f_sb_mhz': f_sb_mhz,
-                 'params': params,
-                 'errors': errors,
+                 'params': finite(params),
+                 'errors': finite(errors),
                  'results': {**{key: (None if value is None else float(value))
                                 for key, value in results.items()},
                              'na_error': na_error},
