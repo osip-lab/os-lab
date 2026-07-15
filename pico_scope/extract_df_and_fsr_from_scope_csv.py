@@ -10,24 +10,26 @@ from scipy.optimize import curve_fit
 from matplotlib.widgets import SpanSelector
 import itertools
 
-import simple_analysis_scripts.mode_spacing_to_NA as simulation
+# All the math (models, pair fit, df/FSR extraction, NA interpolators) lives
+# in pico_scope.mode_analysis so the kalishlot web GUI runs the exact same
+# operations live on the streaming scope.
+from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,
+                                      LONG_ARM_LENGTH, MID_ARM_LENGTH,
+                                      SHORT_ARM_LENGTH,
+                                      area_lorentzian as lorentzian,
+                                      cavity_fsr_mhz, double_lorentzian,
+                                      fit_lorentzian_pair,
+                                      get_na_interpolators,
+                                      pair_positions_results, pair_summary)
 
-LONG_ARM_LENGTH = 34.4e-2
-MID_ARM_LENGTH = 1.5e-2
-SHORT_ARM_LENGTH = 0.7e-2
-
-SPEED_OF_LIGHT = 299792458.0  # m / s
 L = LONG_ARM_LENGTH + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
-FSR_MHZ = SPEED_OF_LIGHT / (2 * L) / 1e6
+FSR_MHZ = cavity_fsr_mhz()
 
-# Requires to map the cavity-design project to this project via PyCharm's settings -> Project Structure
-mode_spacing_interp, mode_spacing_over_fsr_interp = simulation.generate_lens_position_dependencies_output(
-    short_arm_lengths=4e-4,
-    long_arm_length=LONG_ARM_LENGTH,
-    mid_arm_length=MID_ARM_LENGTH,
-    plot_cavity=False,
-    plot_spectrum=False,
-    plot_dependencies=False)
+# Built by the cavity-design project (path in local_config.py); cached, so a
+# second analysis in the same session is instant.
+mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = get_na_interpolators()
+if mode_spacing_over_fsr_interp is None:
+    raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
 # %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
 specific_file_path, input_path = get_picoscope_trace_path_from_clipboard()
 
@@ -37,14 +39,6 @@ data_numpy = df.to_numpy()
 
 x = data_numpy[:, 0]  # Time column
 y = data_numpy[:, 1]  # Channel B column
-
-
-def lorentzian(x, x0, gamma, A, y0):
-    return A * gamma / (np.pi * ((x - x0) ** 2 + gamma ** 2)) + y0
-
-
-def double_lorentzian(x, x01, gamma1, A1, x02, gamma2, A2, y0):
-    return (lorentzian(x, x01, gamma1, A1, 0) + lorentzian(x, x02, gamma2, A2, 0) + y0)
 
 
 lorentzian_positions = [[]]
@@ -138,20 +132,17 @@ def onselect(xmin, xmax):
             xmin = double_fit_data['xmin']
             xmax = double_fit_data['xmax']
 
-            y0_init = np.min(y_range)
-            gamma1_init = gamma2_init = (xmax - xmin) / 6
-            A1_init = np.pi * gamma1_init * y_range[np.argmin(np.abs(x_range - xmin))]
-            A2_init = np.pi * gamma2_init * y_range[np.argmin(np.abs(x_range - xmax))]
-
-            p0 = [x01_init, gamma1_init, A1_init, x02_init, gamma2_init, A2_init, y0_init]
-
             try:
-                popt, _ = curve_fit(double_lorentzian, x_range, y_range, p0=p0)
-                x01_fitted, x02_fitted = popt[0], popt[3]
+                popt, _ = fit_lorentzian_pair(x_range, y_range,
+                                              x1_guess=x01_init,
+                                              x2_guess=x02_init,
+                                              region=(xmin, xmax))
+                x01_fitted, x02_fitted = popt['x01'], popt['x02']
                 lorentzian_positions.append([x01_fitted, x02_fitted])
 
                 fit_x = np.linspace(xmin, xmax, 300)
-                fit_y = double_lorentzian(fit_x, *popt)
+                fit_y = double_lorentzian(
+                    fit_x, *(popt[name] for name in DOUBLE_LORENTZIAN_PARAMS))
                 fit_line, = ax.plot(fit_x, fit_y, color=current_color, linestyle="--")
                 fit_lines.append(fit_line)
 
@@ -230,35 +221,22 @@ print("after cleaning:", lorentzian_positions)
 if len(lorentzian_positions) < 2:
     print("Not enough data to calculate FSR and df.")
 else:
-    results = {"fsr": [], "df": [], "df_over_fsr": []}
-    for i in range(len(lorentzian_positions) - 1):
-        if i == 0:
-            fsr = lorentzian_positions[i + 1][0] - lorentzian_positions[i][0]
-        elif i == len(lorentzian_positions) - 2:
-            fsr = lorentzian_positions[i][0] - lorentzian_positions[i - 1][0]
-        else:
-            fsr = (lorentzian_positions[i + 1][0] - lorentzian_positions[i - 1][0]) / 2
-        df = np.abs(lorentzian_positions[i][1] - lorentzian_positions[i][0])
-        df_over_fsr = df / fsr
-
-        results["fsr"].append(fsr)
-        results["df"].append(df)
-        results["df_over_fsr"].append(df_over_fsr)
-
-    results_df = pd.DataFrame(results)
-    results_df["NA"] = mode_spacing_over_fsr_interp(results_df["df_over_fsr"])
-    results_df["df_MHz"] = results_df["df_over_fsr"] * FSR_MHZ
-
+    rows = pair_positions_results(lorentzian_positions, fsr_mhz=FSR_MHZ,
+                                  na_over_fsr_interp=mode_spacing_over_fsr_interp)
+    results_df = pd.DataFrame(rows)
     print(results_df)
 
     # Record the extraction next to the original data file (one line per run).
-    df_over_fsr_mean = results_df["df_over_fsr"].mean()
-    na_mean = results_df["NA"].mean()
+    summary = pair_summary(rows)
+    na_text = (f"{summary['NA_mean']:.4f}" if summary["NA_mean"] is not None
+               else "unavailable (df/FSR outside the simulated range)")
     results_text = (f"long_arm_length = {LONG_ARM_LENGTH:.4g} m, "
-                    f"n_mode_pairs = {len(results_df)}, "
-                    f"df_over_fsr = {df_over_fsr_mean:.4f}, "
-                    f"NA = {na_mean:.4f}")
-    if len(results_df) > 1:
-        results_text += (f" (std over pairs: df_over_fsr {results_df['df_over_fsr'].std():.4f}, "
-                         f"NA {results_df['NA'].std():.4f})")
+                    f"n_mode_pairs = {summary['n_pairs']}, "
+                    f"df_over_fsr = {summary['df_over_fsr_mean']:.4f}, "
+                    f"NA = {na_text}")
+    if summary["df_over_fsr_std"] is not None:
+        results_text += f" (std over pairs: df_over_fsr {summary['df_over_fsr_std']:.4f}"
+        if summary["NA_std"] is not None:
+            results_text += f", NA {summary['NA_std']:.4f}"
+        results_text += ")"
     append_numerical_result_line(input_path, results_text)

@@ -169,7 +169,12 @@ Conventions the existing frontend already understands:
   on the snapshot with the same math module the offline scripts use
   (`pico_scope/mode_analysis.py` — never duplicate the math in JS), and the
   result is broadcast as an `analysis_result` event and kept in `describe()`
-  for reattaching viewers. See `analyze_sidebands` end to end.
+  for reattaching viewers. See `analyze_sidebands` end to end. For
+  accumulating analyses (the pairs df/FSR mode: one `fit_pair` per marked
+  pair, plus `undo_pair`/`clear_pairs`), the adapter owns the growing list
+  and re-broadcasts the FULL state (`analysis_pairs`) after every change —
+  viewers render whatever the last event holds, nothing is client-local
+  except unsent marks.
 - **Frontend sockets**: always connect through `connectDeviceStream` in
   `static/boxes/stream.js` (see any box for usage) — it reconnects
   automatically with backoff and calls your `onReattach(describe)` with a
