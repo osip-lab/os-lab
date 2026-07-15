@@ -26,28 +26,36 @@ export function createCameraBox(device, container, sendCommand) {
   const levelsMax = device.levels_max ?? 4095; // raw-data full scale
 
   container.innerHTML = `
-    <div class="cam-controls" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-      <button data-command="play">play</button>
-      <button data-command="pause">pause</button>
+    <div class="toolbar cam-controls">
+      <span class="transport">
+        <button data-command="play">play</button>
+        <button data-command="pause">pause</button>
+      </span>
       <button data-command="snap">single frame</button>
-      <span class="cam-settings" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"></span>
-      <label style="display:flex; gap:4px; align-items:center; font-size:12px;">
-        <input type="checkbox" class="cam-fit"> fit</label>
-      <label style="display:flex; gap:4px; align-items:center; font-size:12px;"
-             title="fit only frames at least this bright (counts above background); empty or 0 = fit every frame">
-        trigger <input type="number" class="cam-trigger" min="0" placeholder="off" style="width:60px;"></label>
-      <span class="cam-brightness" style="font-size:12px; min-width:3.5em;"
-            title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set"></span>
-      <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
-      <button class="cam-mark-clear" title="clear the marker circle">✕</button>
-      <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
-      <button class="cam-guess-clear" title="clear the guess circle">✕</button>
-      <button class="cam-copy-figure" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
-      <button class="cam-copy-fit" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
-      <span class="cam-status" style="font-size:12px; opacity:0.8;"></span>
+      <span class="subgroup cam-settings"></span>
+      <span class="subgroup">
+        <label class="field">
+          <input type="checkbox" class="cam-fit"> fit</label>
+        <label class="field"
+               title="fit only frames at least this bright (counts above background); empty or 0 = fit every frame">
+          trigger <input type="number" class="cam-trigger" min="0" placeholder="off"></label>
+        <span class="cam-brightness readout"
+              title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set"></span>
+      </span>
+      <span class="subgroup">
+        <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
+        <button class="cam-mark-clear" title="clear the marker circle">✕</button>
+        <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
+        <button class="cam-guess-clear" title="clear the guess circle">✕</button>
+      </span>
+      <span class="subgroup">
+        <button class="cam-copy-figure" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
+        <button class="cam-copy-fit" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
+      </span>
+      <span class="cam-status status-line"></span>
     </div>
-    <div class="cam-info" style="font-size:12px; opacity:0.9; min-height:1.2em;"></div>
-    <div class="cam-view" style="flex:1; min-height:0; position:relative; overflow:hidden;"></div>`;
+    <div class="cam-info"></div>
+    <div class="cam-view"></div>`;
 
   const status = container.querySelector('.cam-status');
   const info = container.querySelector('.cam-info');
@@ -83,7 +91,7 @@ export function createCameraBox(device, container, sendCommand) {
   const settingInputs = {}; // name -> { input, decimals }
   for (const setting of device.settings ?? []) {
     const label = document.createElement('label');
-    label.style.cssText = 'display:flex; gap:4px; align-items:center; font-size:12px;';
+    label.className = 'field';
     label.textContent = `${setting.label}`;
     const input = document.createElement('input');
     input.type = 'number';
@@ -92,10 +100,9 @@ export function createCameraBox(device, container, sendCommand) {
     input.step = setting.decimals ? Math.pow(10, -setting.decimals) : 1;
     input.value = setting.value.toFixed(setting.decimals);
     input.dataset.committed = input.value;
-    input.style.cssText = 'width:80px;';
     const unit = document.createElement('span');
     unit.textContent = setting.unit;
-    unit.style.opacity = '0.7';
+    unit.className = 'unit';
     label.appendChild(input);
     label.appendChild(unit);
     settingsSpan.appendChild(label);
@@ -131,9 +138,9 @@ export function createCameraBox(device, container, sendCommand) {
     view.appendChild(canvas);
     return canvas;
   }
-  const hCanvas = makeCanvas('#151515');       // row cut, above the image
-  const vCanvas = makeCanvas('#151515');       // column cut, right of image
-  const videoCanvas = makeCanvas('#111');
+  const hCanvas = makeCanvas('#14161d');       // row cut, above the image
+  const vCanvas = makeCanvas('#14161d');       // column cut, right of image
+  const videoCanvas = makeCanvas('#0e1015');
   const overlay = makeCanvas(null);            // ellipses + circles, on top
   overlay.style.touchAction = 'none';
 
@@ -314,7 +321,7 @@ export function createCameraBox(device, container, sendCommand) {
     }
     brightnessSpan.textContent = lastBrightness.toFixed(0);
     const above = fitThreshold <= 0 || lastBrightness >= fitThreshold;
-    brightnessSpan.style.color = above ? 'rgb(110, 255, 110)' : 'rgba(255, 120, 120, 0.9)';
+    brightnessSpan.style.color = above ? '#52c46a' : 'rgba(224, 85, 85, 0.9)';
   }
 
   function showThreshold(value) {
@@ -342,10 +349,13 @@ export function createCameraBox(device, container, sendCommand) {
   let armed = null;      // 'marker' | 'guess' — next drag draws this circle
   let dragCenter = null;
 
+  // the armed glow (button.armed in CSS) lights up in each circle's color
+  markButton.style.setProperty('--mark', COLOR_MARKER);
+  guessButton.style.setProperty('--mark', COLOR_GUESS);
   function setArmed(which) {
     armed = which;
-    markButton.style.outline = armed === 'marker' ? `1px solid ${COLOR_MARKER}` : '';
-    guessButton.style.outline = armed === 'guess' ? `1px solid ${COLOR_GUESS}` : '';
+    markButton.classList.toggle('armed', armed === 'marker');
+    guessButton.classList.toggle('armed', armed === 'guess');
     overlay.style.cursor = armed ? 'crosshair' : '';
   }
   markButton.onclick = () => setArmed(armed === 'marker' ? null : 'marker');
@@ -406,15 +416,15 @@ export function createCameraBox(device, container, sendCommand) {
     figure.width = width + GAP + STRIP;
     figure.height = titleHeight + STRIP + GAP + height;
     const ctx = figure.getContext('2d');
-    ctx.fillStyle = '#1e1e22';
+    ctx.fillStyle = '#1a1d26';
     ctx.fillRect(0, 0, figure.width, figure.height);
-    ctx.fillStyle = '#e4e4e8';
+    ctx.fillStyle = '#e6e8ef';
     ctx.font = 'bold 13px system-ui, sans-serif';
     ctx.fillText(`${device.label} — ${new Date().toLocaleString()}`, 4, 16);
-    ctx.fillStyle = '#b8b8c0';
-    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillStyle = '#939aae';
+    ctx.font = '11px Consolas, monospace';
     ctx.fillText(info.textContent, 4, 32);
-    ctx.fillStyle = '#151515';
+    ctx.fillStyle = '#14161d';
     ctx.fillRect(0, titleHeight, width, STRIP);
     ctx.fillRect(width + GAP, titleHeight + STRIP + GAP, STRIP, height);
     ctx.drawImage(hCanvas, 0, titleHeight);

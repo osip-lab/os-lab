@@ -23,12 +23,11 @@ const WAVEFORM_LABELS = {
 
 export function createRigolDGBox(device, container, sendCommand) {
   container.innerHTML = `
-    <div class="rigol-channels"
-         style="flex:1; min-height:0; display:flex; gap:10px; flex-wrap:wrap; align-content:flex-start; overflow:auto;"></div>
-    <div style="display:flex; gap:6px; align-items:center;">
+    <div class="rigol-channels"></div>
+    <div class="toolbar">
       <button class="rigol-refresh" title="re-read the instrument (e.g. after front-panel changes)">refresh</button>
       <button class="rigol-local" title="give the front panel back to whoever stands at the instrument">release front panel</button>
-      <span class="rigol-status" style="font-size:12px; opacity:0.8;"></span>
+      <span class="rigol-status status-line"></span>
     </div>`;
 
   const channelsDiv = container.querySelector('.rigol-channels');
@@ -45,13 +44,12 @@ export function createRigolDGBox(device, container, sendCommand) {
 
   function numberRow(labelText, unitContent) {
     const row = document.createElement('label');
-    row.style.cssText = 'display:flex; gap:5px; align-items:center; font-size:12px; justify-content:space-between;';
+    row.className = 'rigol-row';
     const span = document.createElement('span');
     span.textContent = labelText;
     const input = document.createElement('input');
     input.type = 'number';
     input.step = 'any';
-    input.style.cssText = 'width:90px;';
     row.appendChild(span);
     row.appendChild(input);
     if (unitContent) row.appendChild(unitContent);
@@ -60,19 +58,19 @@ export function createRigolDGBox(device, container, sendCommand) {
 
   function makeSection(channel) {
     const box = document.createElement('fieldset');
-    box.style.cssText = 'border:1px solid #444; border-radius:6px; padding:6px 10px; min-width:230px; '
-      + 'display:flex; flex-direction:column; gap:6px; flex:1;';
+    box.className = 'rigol-channel';
     const legend = document.createElement('legend');
-    legend.style.cssText = 'font-size:12px; padding:0 4px;';
+    legend.className = 'rigol-legend';
     legend.textContent = `CH${channel}`;
     box.appendChild(legend);
 
     // output on/off — this switches a live output, keep it prominent
     const onRow = document.createElement('label');
-    onRow.style.cssText = 'display:flex; gap:6px; align-items:center; font-weight:bold;';
+    onRow.className = 'rigol-output';
     const onCheck = document.createElement('input');
     onCheck.type = 'checkbox';
     const onText = document.createElement('span');
+    onText.className = 'output-state';
     onRow.appendChild(onCheck);
     onRow.appendChild(onText);
     box.appendChild(onRow);
@@ -81,7 +79,7 @@ export function createRigolDGBox(device, container, sendCommand) {
 
     // waveform
     const waveRow = document.createElement('label');
-    waveRow.style.cssText = 'display:flex; gap:5px; align-items:center; font-size:12px; justify-content:space-between;';
+    waveRow.className = 'rigol-row';
     waveRow.appendChild(Object.assign(document.createElement('span'), { textContent: 'waveform' }));
     const waveSelect = document.createElement('select');
     for (const name of device.waveforms ?? Object.keys(WAVEFORM_LABELS)) {
@@ -109,12 +107,12 @@ export function createRigolDGBox(device, container, sendCommand) {
 
     const ampl = numberRow('amplitude');
     ampl.row.insertBefore(Object.assign(document.createElement('span'),
-      { textContent: 'Vpp', style: 'opacity:0.7;' }), null);
+      { textContent: 'Vpp', className: 'unit' }), null);
     box.appendChild(ampl.row);
 
     const offset = numberRow('offset');
     offset.row.insertBefore(Object.assign(document.createElement('span'),
-      { textContent: 'V', style: 'opacity:0.7;' }), null);
+      { textContent: 'V', className: 'unit' }), null);
     box.appendChild(offset.row);
 
     const factor = () => FREQ_UNITS.find((u) => u.label === unitSelect.value).factor;
@@ -158,7 +156,7 @@ export function createRigolDGBox(device, container, sendCommand) {
     function show(state) {
       onCheck.checked = state.on;
       onText.textContent = state.on ? 'output ON' : 'output off';
-      onText.style.color = state.on ? '#6f6' : '';
+      onText.classList.toggle('lit', state.on);
       waveSelect.value = state.waveform;
       showFrequency(state.frequency_hz);
       ampl.input.value = parseFloat(state.amplitude_vpp.toPrecision(6));

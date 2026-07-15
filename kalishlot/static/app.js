@@ -15,7 +15,7 @@ const BOX_RENDERERS = {
 
 const grid = GridStack.init({
   cellHeight: 90,
-  margin: 6,
+  margin: 8,
   float: true,
   handle: '.box-header',
 });

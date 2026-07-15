@@ -22,28 +22,28 @@ function formatRate(hertz) {
 
 export function createPicoScopeBox(device, container, sendCommand) {
   container.innerHTML = `
-    <div class="scope-controls" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-      <button data-command="play">play</button>
-      <button data-command="pause">pause</button>
-      <label style="display:flex; gap:4px; align-items:center; font-size:12px;">
-        window <select class="scope-window"></select></label>
-      <label style="display:flex; gap:4px; align-items:center; font-size:12px;">
-        rate <select class="scope-rate"></select></label>
-      <span class="scope-status" style="font-size:12px; opacity:0.8;"></span>
+    <div class="toolbar scope-controls">
+      <span class="transport">
+        <button data-command="play">play</button>
+        <button data-command="pause">pause</button>
+      </span>
+      <label class="field">window <select class="scope-window"></select></label>
+      <label class="field">rate <select class="scope-rate"></select></label>
+      <span class="scope-status status-line"></span>
     </div>
-    <div class="scope-channels" style="display:flex; gap:10px; flex-wrap:wrap;"></div>
-    <div class="scope-analysis" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:12px;">
-      <label style="display:flex; gap:4px; align-items:center;">analysis
+    <div class="toolbar scope-channels"></div>
+    <div class="toolbar scope-analysis">
+      <label class="field">analysis
         <select class="an-mode">
           <option value="off">off</option>
           <option value="sidebands">sidebands (NA)</option>
           <option value="pairs">pairs (df/FSR)</option>
         </select></label>
-      <label class="an-common" style="display:none; gap:4px; align-items:center;">ch
+      <label class="field an-common" style="display:none;">ch
         <select class="an-channel"></select></label>
-      <span class="an-controls" style="display:none; gap:6px; align-items:center; flex-wrap:wrap;">
-        <label style="display:flex; gap:4px; align-items:center;">f_sb
-          <input type="number" class="an-fsb" min="0" style="width:60px;"> MHz</label>
+      <span class="subgroup an-controls" style="display:none;">
+        <label class="field">f_sb
+          <input type="number" class="an-fsb" min="0"> <span class="unit">MHz</span></label>
         <button class="an-mark" data-mark="roi" title="drag a horizontal window over the region of interest">ROI</button>
         <button class="an-mark" data-mark="x0" title="click the 0th-order mode">0th</button>
         <button class="an-mark" data-mark="xsb" title="click one sideband of the 0th-order mode">sideband</button>
@@ -51,7 +51,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
         <button class="an-fit" disabled>fit</button>
         <button class="an-clear" title="clear the marks and the fit overlay">✕</button>
       </span>
-      <span class="an-pairs" style="display:none; gap:6px; align-items:center; flex-wrap:wrap;">
+      <span class="subgroup an-pairs" style="display:none;">
         <button class="an-mark" data-mark="proi" title="drag a horizontal window over one pair (both its peaks)">pair ROI</button>
         <button class="an-mark" data-mark="p1" title="click the pair's first peak (the fundamental mode)">peak 1</button>
         <button class="an-mark" data-mark="p2" title="click the pair's second peak (the higher-order mode)">peak 2</button>
@@ -60,9 +60,9 @@ export function createPicoScopeBox(device, container, sendCommand) {
         <button class="an-pair-clear" title="remove all fitted pairs">✕</button>
       </span>
       <button class="an-copy" disabled style="display:none;" title="copy the results (tab-separated)">copy</button>
-      <span class="an-result"></span>
+      <span class="an-result readout"></span>
     </div>
-    <div class="scope-chart" style="flex:1; min-height:0; position:relative;"></div>`;
+    <div class="scope-chart"></div>`;
 
   const status = container.querySelector('.scope-status');
   const fail = (error) => { status.textContent = error.message; };
@@ -158,14 +158,14 @@ export function createPicoScopeBox(device, container, sendCommand) {
     const state = (device.channels ?? {})[name]
       ?? { enabled: name === 'A', coupling: 'DC', range_v: 5 };
     const group = document.createElement('span');
-    group.style.cssText = 'display:flex; gap:4px; align-items:center; font-size:12px;';
+    group.className = 'field';
 
     const enable = document.createElement('input');
     enable.type = 'checkbox';
     const label = document.createElement('span');
     label.textContent = name;
-    label.style.cssText =
-      `color:${CHANNEL_COLORS[name]}; font-weight:bold; min-width:1em;`;
+    label.className = 'chan-name';
+    label.style.color = CHANNEL_COLORS[name];
 
     const range = document.createElement('select');
     for (const volts of device.ranges_v ?? [5]) {
@@ -211,9 +211,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
   // ---------------------------------------------------------------- chart
   const chartDiv = container.querySelector('.scope-chart');
   const axisStyle = {
-    stroke: '#b8b8c0',
-    grid: { stroke: '#3a3a42' },
-    ticks: { stroke: '#3a3a42' },
+    stroke: '#9aa1b5',
+    font: '11px Consolas, monospace',
+    grid: { stroke: '#252a38' },
+    ticks: { stroke: '#2e3342' },
   };
   chart = new uPlot({
     width: 400,
@@ -315,6 +316,9 @@ export function createPicoScopeBox(device, container, sendCommand) {
   const markButtons = {};
   for (const button of container.querySelectorAll('.an-mark')) {
     markButtons[button.dataset.mark] = button;
+    // the armed glow (button.armed in CSS) lights up in this mark's color
+    button.style.setProperty('--mark',
+      MARK_COLORS[button.dataset.mark] ?? '#d9a13c');
   }
 
   for (const name of CHANNEL_ORDER) {
@@ -337,8 +341,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
   function setArm(which) {
     armedMark = which;
     for (const [name, button] of Object.entries(markButtons)) {
-      button.style.outline =
-        name === which ? `1px solid ${MARK_COLORS[name] ?? '#d9a13c'}` : '';
+      button.classList.toggle('armed', name === which);
     }
     chart.over.style.cursor = which ? 'crosshair' : '';
   }

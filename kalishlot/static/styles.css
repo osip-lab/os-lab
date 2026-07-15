@@ -1,0 +1,400 @@
+/* kalishlot dashboard — instrument-faceplate theme.
+   Every color and type decision lives in the tokens below; the boxes' JS
+   only toggles state (inline display, .armed, .lit) and never styles. */
+
+:root {
+  color-scheme: dark;             /* native selects/spinners/scrollbars go dark */
+  --ink: #12141b;                 /* page ground */
+  --panel: #1a1d26;               /* box faceplate */
+  --raised: #232836;              /* headers and controls */
+  --well: #14161d;                /* inset wells: chart, inputs */
+  --line: #2e3342;                /* hairline borders */
+  --line-soft: #262b38;           /* inner dividers */
+  --text: #e6e8ef;
+  --muted: #939aae;
+  --amber: #e8a63e;               /* the accent: primary action, armed, hold */
+  --run: #52c46a;                 /* live / output-on lamp */
+  --alert: #e05555;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-data: "Cascadia Mono", Consolas, monospace;
+  --ease: 0.14s ease;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(1100px 500px at 50% -120px, #1b1f2b, var(--ink)) fixed;
+  color: var(--text);
+  font: 13px/1.45 var(--font-ui);
+}
+
+[hidden] { display: none !important; }
+
+/* ----------------------------------------------------------- header rail */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 44px;
+  padding: 0 16px;
+  background: linear-gradient(var(--raised), var(--panel));
+  border-bottom: 1px solid var(--line);
+}
+header h1 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+header h1::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 10px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(232, 166, 62, 0.8);
+}
+#server-status { margin-left: auto; }
+
+/* -------------------------------------------------------------- controls */
+button {
+  font: 500 12px/1.3 var(--font-ui);
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: border-color var(--ease), background var(--ease),
+              color var(--ease), box-shadow var(--ease);
+}
+button:hover:not(:disabled) { border-color: #4a5165; background: #2a3040; }
+button:active:not(:disabled) { transform: translateY(0.5px); }
+button:disabled { opacity: 0.4; cursor: default; }
+
+#add-device {
+  color: var(--amber);
+  border-color: rgba(232, 166, 62, 0.45);
+  background: rgba(232, 166, 62, 0.08);
+}
+#add-device:hover:not(:disabled) {
+  border-color: var(--amber);
+  background: rgba(232, 166, 62, 0.16);
+}
+
+/* the transport pair: the disabled segment names the CURRENT state and is
+   lit like an instrument lamp — play glows green while running, pause
+   glows amber while the data is frozen */
+.transport { display: inline-flex; }
+.transport button { border-radius: 0; margin-left: -1px; }
+.transport button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.transport button:last-child { border-radius: 0 6px 6px 0; }
+.transport button:disabled {
+  opacity: 1;
+  color: var(--run);
+  background: rgba(82, 196, 106, 0.10);
+  box-shadow: inset 0 0 8px rgba(82, 196, 106, 0.16);
+}
+.transport [data-command="pause"]:disabled {
+  color: var(--amber);
+  background: rgba(232, 166, 62, 0.10);
+  box-shadow: inset 0 0 8px rgba(232, 166, 62, 0.16);
+}
+
+/* an armed mark button glows in its mark color until the chart is clicked */
+button.armed {
+  color: var(--mark, var(--amber));
+  border-color: var(--mark, var(--amber));
+  box-shadow: 0 0 0 1px var(--mark, var(--amber)),
+              0 0 12px -3px var(--mark, var(--amber));
+}
+
+/* a fit that has all its marks is the one thing ready to press */
+.an-fit:not(:disabled), .an-pair-fit:not(:disabled) {
+  color: var(--amber);
+  border-color: rgba(232, 166, 62, 0.55);
+}
+
+input[type="number"] {
+  font: 12px var(--font-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 6px;
+  transition: border-color var(--ease);
+}
+select {
+  font: 12px var(--font-ui);
+  color: var(--text);
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 4px;
+  transition: border-color var(--ease);
+}
+input[type="number"]:hover, select:hover { border-color: #4a5165; }
+input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; }
+
+:is(button, input, select):focus-visible {
+  outline: 2px solid rgba(232, 166, 62, 0.6);
+  outline-offset: 1px;
+}
+
+.an-fsb, .cam-trigger { width: 64px; }
+.cam-settings input { width: 78px; }
+.rigol-row input { width: 96px; }
+
+/* ------------------------------------------------------- shared patterns */
+.toolbar {
+  display: flex;
+  gap: 8px;
+  row-gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+/* a subgroup hangs off its toolbar behind a hairline divider; boxes toggle
+   its inline display, the class only shapes it */
+.subgroup {
+  display: inline-flex;
+  gap: 6px;
+  row-gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-soft);
+}
+.subgroup:empty { display: none; }
+.field {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.unit { color: var(--muted); font-size: 11px; }
+.status-line { font: 11px var(--font-data); color: var(--muted); }
+.readout {
+  font-family: var(--font-data);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------ the canvas */
+.grid-stack { padding: 10px; }
+.grid-stack:not(:has(.grid-stack-item))::after {
+  content: 'the bench is empty — press “+ add device” to open an instrument';
+  display: block;
+  padding-top: 64px;
+  text-align: center;
+  font: 12px var(--font-data);
+  color: var(--muted);
+}
+.grid-stack-placeholder > .placeholder-content {
+  border: 1px dashed rgba(232, 166, 62, 0.5) !important;
+  border-radius: 10px;
+  background: rgba(232, 166, 62, 0.05);
+}
+
+.grid-stack-item-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35),
+              inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  animation: rise-in 0.2s ease;
+}
+.box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 5px;
+  background: linear-gradient(var(--raised), rgba(35, 40, 54, 0.55));
+  border-bottom: 1px solid var(--line);
+  cursor: move;
+  user-select: none;
+}
+.box-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.box-header .box-close {
+  border-color: transparent;
+  background: none;
+  padding: 0 5px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+.box-header .box-close:hover:not(:disabled) {
+  color: var(--alert);
+  background: rgba(224, 85, 85, 0.12);
+  border-color: transparent;
+}
+.box-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px;
+  gap: 8px;
+}
+
+/* --------------------------------------------------------- PicoScope box */
+.scope-chart {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--well);
+  border-radius: 6px;
+}
+.chan-name {
+  min-width: 1em;
+  font-family: var(--font-data);
+  font-weight: 700;
+}
+.u-legend { font-family: var(--font-data); font-size: 11px; color: var(--muted); }
+.u-legend .u-value { font-variant-numeric: tabular-nums; }
+.an-result { color: var(--text); }
+
+/* ------------------------------------------------------------ camera box */
+.cam-info {
+  min-height: 1.2em;
+  font: 11.5px var(--font-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  opacity: 0.92;
+}
+.cam-view {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+.cam-brightness { min-width: 3.5em; }
+
+/* ------------------------------------------------------------- Rigol box */
+.rigol-channels {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  overflow: auto;
+}
+.rigol-channel {
+  flex: 1;
+  min-width: 230px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 12px 10px;
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.rigol-legend {
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rigol-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+.rigol-output {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.output-state { color: var(--muted); transition: color var(--ease); }
+.output-state.lit {
+  color: var(--run);
+  text-shadow: 0 0 10px rgba(82, 196, 106, 0.55);
+}
+
+/* ----------------------------------------------------------------- modal */
+#modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 15, 0.6);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.15s ease;
+}
+#modal {
+  min-width: 340px;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  animation: rise-in 0.18s ease;
+}
+#modal h2 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#modal .choice {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  padding: 9px 12px;
+  text-align: left;
+}
+#modal .choice:hover:not(:disabled) {
+  border-color: rgba(232, 166, 62, 0.55);
+  color: var(--amber);
+}
+#modal .modal-cancel { margin-top: 12px; float: right; }
+#modal p { color: var(--muted); font-size: 12px; }
+
+/* ---------------------------------------------------------------- motion */
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(6px) scale(0.985); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
