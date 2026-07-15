@@ -55,6 +55,21 @@ class DeviceAdapter:
         JSON-able result dict. Raise ValueError for unknown commands."""
         raise NotImplementedError
 
+    # -------------------------------------------------- settings persistence
+    # The server keeps a per-device record of these snapshots on disk and
+    # calls restore_settings() right after open() when the device was used
+    # before, so a re-opened device comes back with its last-used settings.
+    def settings_snapshot(self):
+        """JSON-able dict of the settings worth persisting across opens, or
+        None when the device keeps its own state (e.g. a bench instrument
+        that remembers its configuration — restoring would overwrite it)."""
+        return None
+
+    def restore_settings(self, snapshot):
+        """Apply a snapshot produced by settings_snapshot(); called after
+        open(), before the first describe(). Must tolerate stale/partial
+        snapshots (settings may have changed between versions)."""
+
     # --------------------------------------------------------------- frames
     def _store_display_frame(self, display_frame):
         """Called by the adapter's producing thread with a display-ready

@@ -29,6 +29,7 @@ class BaslerCameraAdapter(CameraAdapterBase):
     DISPLAY_DOWNSAMPLE = 2  # 2048x2048 sensor -> 1024x1024 display stream
     LEVELS_MAX = 4095  # Mono12
     PIXEL_SIZE_MM = 5.5 / 1000.0  # acA2040 pixel pitch
+    RESTORE_SETTLE_S = 0.5  # settings apply on the streamer thread
 
     _open_serials = set()
     _open_lock = threading.Lock()

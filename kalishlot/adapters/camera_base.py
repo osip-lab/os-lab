@@ -15,6 +15,8 @@ Nothing else — the box, the fit pipeline and the command plumbing are
 inherited. See ADDING_DEVICES.md.
 """
 
+import time
+
 from .base import DeviceAdapter
 from .camera_fit import CameraFitMixin
 
@@ -49,6 +51,10 @@ class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
 
     LEVELS_MAX = 4095
     DISPLAY_DOWNSAMPLE = 1
+    # how long restore_settings() waits for asynchronously-applied settings
+    # to land, so the describe() right after open() shows the restored values
+    # (override where _apply_setting hands off to a device thread)
+    RESTORE_SETTLE_S = 0.0
 
     def __init__(self, address):
         super().__init__(address)
@@ -96,6 +102,21 @@ class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
         """Call per frame from the producing thread."""
         self._store_display_frame(display)
         self._store_fit_frame(frame)
+
+    def settings_snapshot(self):
+        return {'settings': {setting['name']: setting['value']
+                             for setting in self._settings_schema()}}
+
+    def restore_settings(self, snapshot):
+        applied = False
+        for name, value in (snapshot.get('settings') or {}).items():
+            try:
+                self._apply_setting(name, float(value))
+                applied = True
+            except Exception:
+                pass  # setting no longer exists / out of range: skip it
+        if applied and self.RESTORE_SETTLE_S:
+            time.sleep(self.RESTORE_SETTLE_S)
 
     def describe(self):
         sensor = list(self._sensor_shape())

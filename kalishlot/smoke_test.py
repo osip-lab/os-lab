@@ -204,6 +204,16 @@ def main():
         assert len(api('/api/devices')) == 0
         print('close ok (attached viewer notified with 4004)')
 
+        # settings persistence: the exposure set earlier (5000) must come
+        # back when the device is re-opened after having been closed
+        device = api('/api/devices', 'POST',
+                     {'type': 'dummy_camera', 'address': available[0]['address']})
+        exposure = next(s['value'] for s in device['settings']
+                        if s['name'] == 'exposure')
+        assert exposure == 5000, f'expected persisted exposure 5000, got {exposure}'
+        api(f'/api/devices/{device_id}', 'DELETE')
+        print('re-open restores persisted settings ok (exposure 5000)')
+
         page = urllib.request.urlopen(f'{BASE}/').read().decode()
         assert 'OS Lab Dashboard' in page
         print('static page ok')

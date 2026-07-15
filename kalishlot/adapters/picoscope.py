@@ -112,6 +112,31 @@ class PicoScopeAdapter(DeviceAdapter):
                      'value': self.window_s},
                 ]}
 
+    def settings_snapshot(self):
+        return {'sample_rate_hz': self.scope.sample_rate_hz,
+                'window_s': self.window_s,
+                'channels': {name: dict(config) for name, config
+                             in self.scope.channels.items()}}
+
+    def restore_settings(self, snapshot):
+        # only touch what actually differs: every channel/rate change is a
+        # stop-reconfigure-restart of the streaming (audible relay clicks)
+        for name, saved in (snapshot.get('channels') or {}).items():
+            current = self.scope.channels.get(name)
+            if current is None or all(saved.get(key) == current.get(key)
+                                      for key in current):
+                continue
+            self.scope.configure_channel(name,
+                                         enabled=saved.get('enabled'),
+                                         coupling=saved.get('coupling'),
+                                         range_v=saved.get('range_v'))
+        rate = snapshot.get('sample_rate_hz')
+        if rate and rate != self.scope.sample_rate_hz:
+            self.scope.set_sample_rate(float(rate))
+        window = snapshot.get('window_s')
+        if window:
+            self.window_s = float(np.clip(window, 0.01, 60.0))
+
     # ------------------------------------------------------------- commands
     def command(self, name, args):
         if name == 'play':

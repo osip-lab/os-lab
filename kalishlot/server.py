@@ -48,6 +48,34 @@ app = FastAPI(title='OS Lab dashboard')
 devices = {}  # device_id -> adapter instance
 devices_lock = threading.Lock()
 
+# ------------------------------------------------- settings persistence
+# Last-used settings per device, kept on disk so a re-opened device (even
+# after a server restart) comes back configured the way it was left.
+STATE_PATH = Path(__file__).parent / 'device_state.json'
+settings_lock = threading.Lock()
+try:
+    saved_settings = json.loads(STATE_PATH.read_text())
+except Exception:
+    saved_settings = {}
+
+
+def record_settings(device_id, adapter):
+    """Snapshot the adapter's settings and persist them when they changed."""
+    try:
+        snapshot = adapter.settings_snapshot()
+    except Exception:
+        return
+    if snapshot is None:  # device keeps its own state (e.g. Rigol)
+        return
+    with settings_lock:
+        if saved_settings.get(device_id) == snapshot:
+            return
+        saved_settings[device_id] = snapshot
+        try:
+            STATE_PATH.write_text(json.dumps(saved_settings, indent=1))
+        except Exception:
+            pass  # persistence must never break device control
+
 
 def device_or_404(device_id):
     with devices_lock:
@@ -99,6 +127,12 @@ def open_device(request: OpenRequest):
             raise HTTPException(
                 status_code=409,
                 detail=f'could not connect to {request.address}: {error}')
+        snapshot = saved_settings.get(device_id)
+        if snapshot is not None:
+            try:
+                adapter.restore_settings(snapshot)
+            except Exception:
+                pass  # a stale snapshot must never block opening the device
         devices[device_id] = adapter
     return {'device_id': device_id, 'existing': False, **adapter.describe()}
 
@@ -116,6 +150,7 @@ def close_device(device_id: str):
         adapter = devices.pop(device_id, None)
     if adapter is None:
         raise HTTPException(status_code=404, detail=f'no open device {device_id!r}')
+    record_settings(device_id, adapter)
     adapter.close()
     return {'ok': True}
 
@@ -129,11 +164,16 @@ class CommandRequest(BaseModel):
 def device_command(device_id: str, request: CommandRequest):
     adapter = device_or_404(device_id)
     try:
-        return adapter.command(request.name, request.args)
+        result = adapter.command(request.name, request.args)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
+    # persist the settings this command may have changed; the delayed pass
+    # catches values that devices apply asynchronously on their own thread
+    record_settings(device_id, adapter)
+    threading.Timer(1.5, record_settings, args=(device_id, adapter)).start()
+    return result
 
 
 # ----------------------------------------------------------------- streaming

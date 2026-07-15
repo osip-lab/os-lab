@@ -131,6 +131,16 @@ Conventions the existing frontend already understands:
   JPEG and streams it; only the newest frame is ever sent (slow viewers skip
   frames, they never lag).
 - **Errors** during operation: `self.emit({'type': 'error', 'message': ...})`.
+- **Settings persistence**: implement `settings_snapshot()` (JSON dict) and
+  `restore_settings(snapshot)` — the server records the snapshot after every
+  command and on close (`kalishlot/device_state.json`, gitignored) and
+  restores it right after `open()`, so a re-opened device comes back with
+  its last-used settings even across server restarts. `CameraAdapterBase`
+  implements both generically from the settings schema (set
+  `RESTORE_SETTLE_S` if `_apply_setting` is asynchronous); the PicoScope
+  restores only what differs (each change restarts streaming). Return None
+  from `settings_snapshot()` (the default) for instruments that keep their
+  own state, like the Rigol — restoring would overwrite the hardware.
 - **Control-only devices** (no frames): see `adapters/rigol_dg.py` +
   `static/boxes/rigol_dg.js` — the reference for instruments that are pure
   settings/state (function generators, power supplies, ...). Broadcast every
