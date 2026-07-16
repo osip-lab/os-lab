@@ -163,18 +163,13 @@ Conventions the existing frontend already understands:
 - **Analysis on a snapshot** (fits on the streamed data): pause captures the
   visible window at FULL resolution into the adapter (`self._snapshot` in
   `adapters/picoscope.py`) and broadcasts one chunk built from it, so every
-  viewer's chart shows exactly the frozen data. Marks (ROI, clicked peaks)
-  are collected client-side on the chart (uPlot draw hook for the overlay,
-  `posToVal` for clicks) and sent in one command; the fit runs SERVER-side
-  on the snapshot with the same math module the offline scripts use
-  (`pico_scope/mode_analysis.py` — never duplicate the math in JS), and the
-  result is broadcast as an `analysis_result` event and kept in `describe()`
-  for reattaching viewers. See `analyze_sidebands` end to end. For
-  accumulating analyses (the pairs df/FSR mode: one `fit_pair` per marked
-  pair, plus `undo_pair`/`clear_pairs`), the adapter owns the growing list
-  and re-broadcasts the FULL state (`analysis_pairs`) after every change —
-  viewers render whatever the last event holds, nothing is client-local
-  except unsent marks.
+  viewer's chart shows exactly the frozen data. The analyses themselves are
+  pluggable extensions — never written into the device module: server
+  classes in `adapters/analyses/`, client modules in
+  `static/boxes/extensions/`. **See `ADDING_ANALYSES.md`** for the recipe
+  (and for the litmus test deciding whether a feature is an extension at
+  all — the camera's live Gaussian fit, woven into the frame pipeline, is
+  the canonical non-extension).
 - **Frontend sockets**: always connect through `connectDeviceStream` in
   `static/boxes/stream.js` (see any box for usage) — it reconnects
   automatically with backoff and calls your `onReattach(describe)` with a

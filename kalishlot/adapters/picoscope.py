@@ -23,16 +23,10 @@ sys.path.insert(0, str(_REPO_ROOT / 'picoscope'))
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))  # for the pico_scope analysis package
 from ps4000a_scope import CHANNEL_NAMES, RANGES, PicoScope4000A  # noqa: E402
-from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,  # noqa: E402
-                                      DOUBLE_LORENTZIAN_PARAMS,
-                                      SIX_LORENTZIAN_PARAMS, cavity_fsr_mhz,
-                                      decimate, double_lorentzian,
-                                      fit_lorentzian_pair,
-                                      fit_six_lorentzians,
-                                      get_na_interpolators,
-                                      pair_positions_results, pair_summary,
-                                      sideband_results, six_lorentzian_model)
+from pico_scope.mode_analysis import decimate  # noqa: E402
 
+from .analyses.scope_pairs import PairsAnalysis  # noqa: E402
+from .analyses.scope_sidebands import SidebandsAnalysis  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
 
 EMIT_INTERVAL_S = 0.05  # ~20 chunks/s to the browsers
@@ -57,13 +51,6 @@ def envelope(samples, max_points):
     return out, per_bucket / 2  # each output point spans half a bucket
 
 
-def finite_or_none(values):
-    """Fit params/errors can be inf/NaN (singular covariance); neither
-    survives JSON, so send them as null."""
-    return {key: (value if np.isfinite(value) else None)
-            for key, value in values.items()}
-
-
 class PicoScopeAdapter(DeviceAdapter):
     type_name = 'picoscope'
     display_name = 'PicoScope'
@@ -83,9 +70,10 @@ class PicoScopeAdapter(DeviceAdapter):
         self._stopping = threading.Event()
         self._emitter = None
         self._snapshot = None  # full-res data frozen at pause: {'dt', 'channels'}
-        self._last_analysis = None  # last 'analysis_result' event, for reattach
-        self._pairs = []  # fitted Lorentzian pairs on the current snapshot
-        self._last_pairs = None  # last 'analysis_pairs' event, for reattach
+        # analysis extensions: each owns its commands and reattach state and
+        # uses this adapter as its host (snapshot_region + emit). See
+        # kalishlot/ADDING_ANALYSES.md for the recipe.
+        self.analyses = [SidebandsAnalysis(self), PairsAnalysis(self)]
 
     # ------------------------------------------------------------ lifecycle
     def open(self):
@@ -105,27 +93,28 @@ class PicoScopeAdapter(DeviceAdapter):
         self.scope.close()
 
     def describe(self):
-        return {'type': self.type_name,
-                'label': f'PicoScope {self.scope.variant or ""} — '
-                         f's/n {self.address}',
-                'commands': ['play', 'pause', 'set_setting', 'set_channel',
-                             'analyze_sidebands', 'fit_pair', 'undo_pair',
-                             'clear_pairs'],
-                'playing': self._playing.is_set(),
-                'analysis': self._last_analysis,
-                'analysis_pairs': self._last_pairs,
-                'sideband_freq_default_mhz': DEFAULT_SIDEBAND_FREQ_MHZ,
-                'channels': {name: dict(config) for name, config
-                             in self.scope.channels.items()},
-                'ranges_v': sorted(RANGES.values()),
-                'window_choices_s': list(WINDOW_CHOICES_S),
-                'rate_choices_hz': list(RATE_CHOICES_HZ),
-                'settings': [
-                    {'name': 'sample_rate_hz', 'label': 'sample rate',
-                     'unit': 'S/s', 'value': self.scope.sample_rate_hz},
-                    {'name': 'window_s', 'label': 'window', 'unit': 's',
-                     'value': self.window_s},
-                ]}
+        description = {
+            'type': self.type_name,
+            'label': f'PicoScope {self.scope.variant or ""} — '
+                     f's/n {self.address}',
+            'commands': ['play', 'pause', 'set_setting', 'set_channel']
+                        + [name for analysis in self.analyses
+                           for name in analysis.COMMANDS],
+            'playing': self._playing.is_set(),
+            'channels': {name: dict(config) for name, config
+                         in self.scope.channels.items()},
+            'ranges_v': sorted(RANGES.values()),
+            'window_choices_s': list(WINDOW_CHOICES_S),
+            'rate_choices_hz': list(RATE_CHOICES_HZ),
+            'settings': [
+                {'name': 'sample_rate_hz', 'label': 'sample rate',
+                 'unit': 'S/s', 'value': self.scope.sample_rate_hz},
+                {'name': 'window_s', 'label': 'window', 'unit': 's',
+                 'value': self.window_s},
+            ]}
+        for analysis in self.analyses:  # e.g. 'analysis', 'analysis_pairs'
+            description.update(analysis.describe_state())
+        return description
 
     def settings_snapshot(self):
         return {'sample_rate_hz': self.scope.sample_rate_hz,
@@ -154,12 +143,15 @@ class PicoScopeAdapter(DeviceAdapter):
 
     # ------------------------------------------------------------- commands
     def command(self, name, args):
+        for analysis in self.analyses:
+            result = analysis.command(name, args)
+            if result is not None:
+                return result
         if name == 'play':
             self._playing.set()
             self._snapshot = None
-            self._last_analysis = None  # overlays belong to the frozen data
-            self._pairs = []
-            self._last_pairs = None
+            for analysis in self.analyses:
+                analysis.reset()  # overlays belong to the frozen data
             self.emit({'type': 'status', 'playing': True})
             return {'ok': True}
         if name == 'pause':
@@ -176,17 +168,6 @@ class PicoScopeAdapter(DeviceAdapter):
                 self.emit({'type': 'error', 'message': str(error)})
             self.emit({'type': 'status', 'playing': False})
             return {'ok': True}
-        if name == 'analyze_sidebands':
-            return self._analyze_sidebands(args)
-        if name == 'fit_pair':
-            return self._fit_pair(args)
-        if name == 'undo_pair':
-            if self._pairs:
-                self._pairs.pop()
-            return self._broadcast_pairs()
-        if name == 'clear_pairs':
-            self._pairs = []
-            return self._broadcast_pairs()
         if name == 'set_setting':
             setting = args['name']
             value = float(args['value'])
@@ -246,11 +227,12 @@ class PicoScopeAdapter(DeviceAdapter):
                    'channels': channels})
 
     # -------------------------------------------- analysis on the snapshot
-    def _snapshot_region(self, args):
-        """Guard-check the paused snapshot and return the fit input: the
-        selected region decimated to fit density as (t, volts, t_min, t_max).
-        Times are on the chart's axis: newest sample at 0, past negative.
-        ValueErrors surface as HTTP 400 with the message in the box."""
+    def snapshot_region(self, args):
+        """Host service for the analysis extensions: guard-check the paused
+        snapshot and return the fit input — the selected region decimated to
+        fit density as (t, volts, t_min, t_max). Times are on the chart's
+        axis: newest sample at 0, past negative. ValueErrors surface as
+        HTTP 400 with the message in the box."""
         if self._playing.is_set() or self._snapshot is None:
             raise ValueError('pause the stream first — '
                              'analysis runs on the frozen snapshot')
@@ -267,104 +249,3 @@ class PicoScopeAdapter(DeviceAdapter):
         x_fit, y_fit = decimate(t[mask], self.scope.to_volts(channel, adc[mask]))
         return x_fit, y_fit, t_min, t_max
 
-    def _analyze_sidebands(self, args):
-        """6-Lorentzian sideband fit on the paused snapshot -> mode spacing,
-        linewidths and NA. Same math as the offline script
-        (pico_scope/mode_spacing_extraction_sidebands.py) via mode_analysis."""
-        channel = args['channel']
-        x_fit, y_fit, t_min, t_max = self._snapshot_region(args)
-        x0_guess, x1_guess = float(args['x0']), float(args['x1'])
-        d_guess = abs(float(args['x_sb']) - x0_guess)
-        if d_guess <= 0:
-            raise ValueError('the sideband mark coincides with the 0th-order mark')
-        f_sb_mhz = float(args.get('f_sb_mhz') or DEFAULT_SIDEBAND_FREQ_MHZ)
-
-        try:
-            params, errors = fit_six_lorentzians(
-                x_fit, y_fit, x0_guess=x0_guess, x1_guess=x1_guess,
-                d_guess=d_guess, region=(t_min, t_max))
-        except RuntimeError as error:
-            raise ValueError(f'fit did not converge: {error}')
-        # NA interpolators: built by the (slow) cavity-design simulation on
-        # the first call, cached after; unavailable -> MHz results only
-        na_interp, _, na_error = get_na_interpolators()
-        results = sideband_results(params['x0'], params['x1'], params['d'],
-                                   params['s0'], params['s1'], f_sb_mhz,
-                                   na_interp=na_interp)
-        if na_interp is not None and results['NA'] is None:
-            na_error = (f"mode spacing {results['mode_spacing_MHz']:.1f} MHz "
-                        f"is outside the simulated NA range")
-        t_dense = np.linspace(t_min, t_max, 500)
-        curve = six_lorentzian_model(
-            t_dense, *(params[name] for name in SIX_LORENTZIAN_PARAMS))
-        event = {'type': 'analysis_result',
-                 'channel': channel,
-                 'f_sb_mhz': f_sb_mhz,
-                 'params': finite_or_none(params),
-                 'errors': finite_or_none(errors),
-                 'results': {**{key: (None if value is None else float(value))
-                                for key, value in results.items()},
-                             'na_error': na_error},
-                 'curve': {'t': [round(float(v), 9) for v in t_dense],
-                           'v': [round(float(v), 5) for v in curve]}}
-        self._last_analysis = event
-        self.emit(event)
-        return {'ok': True, 'results': event['results']}
-
-    def _fit_pair(self, args):
-        """One double-Lorentzian pair fit on the paused snapshot; the fitted
-        pair joins the running list and the df/FSR results (needing >= 2
-        pairs) are re-broadcast. Same math as the offline script
-        (pico_scope/extract_df_and_fsr_from_scope_csv.py) via mode_analysis."""
-        channel = args['channel']
-        x_fit, y_fit, t_min, t_max = self._snapshot_region(args)
-        x1_guess, x2_guess = float(args['x1']), float(args['x2'])
-        if x1_guess == x2_guess:
-            raise ValueError('the two peak marks coincide')
-        try:
-            params, errors = fit_lorentzian_pair(
-                x_fit, y_fit, x1_guess=x1_guess, x2_guess=x2_guess,
-                region=(t_min, t_max))
-        except RuntimeError as error:
-            raise ValueError(f'fit did not converge: {error}')
-        t_dense = np.linspace(t_min, t_max, 300)
-        curve = double_lorentzian(
-            t_dense, *(params[name] for name in DOUBLE_LORENTZIAN_PARAMS))
-        self._pairs.append(
-            {'channel': channel,
-             'x01': float(params['x01']), 'x02': float(params['x02']),
-             'params': finite_or_none(params),
-             'errors': finite_or_none(errors),
-             'curve': {'t': [round(float(v), 9) for v in t_dense],
-                       'v': [round(float(v), 5) for v in curve]}})
-        return self._broadcast_pairs()
-
-    def _broadcast_pairs(self):
-        """Recompute the df/FSR results from all fitted pairs and broadcast
-        the full pairs state (every viewer draws the same overlay)."""
-        results = None
-        if len(self._pairs) >= 2:
-            # normalized scan order: pairs sorted left to right, each pair's
-            # first peak the leftmost — the pair-to-pair spacing (the FSR)
-            # then always relates like peaks
-            positions = sorted((min(pair['x01'], pair['x02']),
-                                max(pair['x01'], pair['x02']))
-                               for pair in self._pairs)
-            _, na_over_fsr_interp, na_error = get_na_interpolators()
-            try:
-                rows = pair_positions_results(
-                    positions, fsr_mhz=cavity_fsr_mhz(),
-                    na_over_fsr_interp=na_over_fsr_interp)
-                summary = pair_summary(rows)
-                if na_over_fsr_interp is not None and summary['NA_mean'] is None:
-                    na_error = ('the fitted df/FSR is outside the simulated '
-                                'NA range')
-                results = {'rows': rows, **summary,
-                           'fsr_mhz': cavity_fsr_mhz(), 'na_error': na_error}
-            except ValueError as error:  # e.g. two pairs at the same position
-                results = {'error': str(error)}
-        event = {'type': 'analysis_pairs', 'pairs': self._pairs,
-                 'results': results}
-        self._last_pairs = event
-        self.emit(event)
-        return {'ok': True, 'n_pairs': len(self._pairs), 'results': results}
