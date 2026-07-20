@@ -257,5 +257,14 @@ app.mount('/', StaticFiles(directory=Path(__file__).parent / 'static', html=True
 
 
 if __name__ == '__main__':
+    import webbrowser
+
     import uvicorn
+    # pop the dashboard in the local browser once the server is up (other
+    # computers browse to this PC's address themselves). Timer, not a startup
+    # hook: importing the app (smoke test, scripts) must never open a browser.
+    # NOT 0.0.0.0 (the address uvicorn logs): that is the bind-to-all-
+    # interfaces address, browsers cannot open it.
+    threading.Timer(1.0, webbrowser.open, ['http://127.0.0.1:8090']).start()
     uvicorn.run(app, host='0.0.0.0', port=8090)
+
