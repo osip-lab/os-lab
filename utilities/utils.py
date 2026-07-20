@@ -244,6 +244,33 @@ def get_picoscope_trace_path_from_clipboard():
     return input_path, input_path
 
 
+def convert_path_to_obsidian_embedding_converter(verbose=True):
+    """Rewrite a Windows path on the clipboard as an Obsidian embed link.
+
+    Drops everything before "Labs Dropbox" and renames it to "Dropbox Files"
+    (e.g. "C:\\Users\\me\\...\\OS Labs Dropbox\\a\\b.png" ->
+    "Dropbox Files\\a\\b.png"), then converts all "\\" to "/". If
+    "Labs Dropbox" is not found, that first step is skipped and only the
+    slash conversion runs. Either way, the result is then wrapped as an
+    Obsidian image embed at 500px: "![[<path>|500]]". Writes the result back
+    to the clipboard and returns it.
+    """
+    text = pyperclip.paste().strip()
+    # "Copy as path" in Windows Explorer wraps the path in double quotes
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    marker = "Labs Dropbox"
+    index = text.find(marker)
+    if index != -1:
+        text = "Dropbox Files" + text[index + len(marker):]
+    text = text.replace("\\", "/")
+    text = "![[" + text + "|500]]"
+    pyperclip.copy(text)
+    if verbose:
+        print(text)
+    return text
+
+
 def append_numerical_result_line(data_file_path, results_text,
                                  results_filename='numerical-results.txt'):
     """Append a one-line analysis record next to the data file it came from.
