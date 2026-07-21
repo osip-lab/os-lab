@@ -16,6 +16,8 @@ import asyncio
 import json
 import os
 import threading
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 # analysis code (e.g. the cavity-design NA simulation) may import matplotlib
@@ -43,7 +45,25 @@ FRAME_POLL_S = 1 / 30  # how often each websocket checks for a newer frame
 # stalled browser tab can never build a backlog (same rule as video frames)
 COALESCE_EVENT_TYPES = {'scope_data', 'brightness'}
 
-app = FastAPI(title='OS Lab dashboard')
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # a device left open at process exit (Ctrl+C, terminal closed) never gets
+    # its close() called otherwise — for hardware like the Basler camera that
+    # leaves the driver's exclusive-open lock stuck until the device is
+    # physically unplugged/replugged, even for other programs (e.g. pylon
+    # Viewer). Closing here on a clean shutdown avoids that.
+    with devices_lock:
+        open_devices = list(devices.items())
+    for device_id, adapter in open_devices:
+        record_settings(device_id, adapter)
+        try:
+            adapter.close()
+        except Exception:
+            pass
+
+
+app = FastAPI(title='OS Lab dashboard', lifespan=lifespan)
 
 devices = {}  # device_id -> adapter instance
 devices_lock = threading.Lock()
@@ -83,6 +103,72 @@ def device_or_404(device_id):
     if adapter is None:
         raise HTTPException(status_code=404, detail=f'no open device {device_id!r}')
     return adapter
+
+
+# --------------------------------------------------------------- shared log
+# One text log shared by every box (e.g. camera "record fit values"), newest
+# entry first, persisted so it survives a reload/restart and is the same for
+# every viewer. Not a device, so it lives here rather than in adapters/.
+LOG_STATE_PATH = Path(__file__).parent / 'log_state.json'
+MAX_LOG_ENTRIES = 500
+log_lock = threading.Lock()
+log_listeners = set()  # asyncio.Queue, one per connected /ws/log viewer
+try:
+    log_entries = json.loads(LOG_STATE_PATH.read_text())
+except Exception:
+    log_entries = []
+_next_log_id = (max((e['id'] for e in log_entries), default=0) + 1)
+
+
+class LogRequest(BaseModel):
+    text: str
+
+
+@app.get('/api/log')
+def get_log():
+    with log_lock:
+        return list(log_entries)
+
+
+@app.post('/api/log')
+def post_log(request: LogRequest):
+    global _next_log_id
+    entry = {'id': _next_log_id, 'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+             'text': request.text}
+    _next_log_id += 1
+    with log_lock:
+        log_entries.insert(0, entry)
+        del log_entries[MAX_LOG_ENTRIES:]
+        try:
+            LOG_STATE_PATH.write_text(json.dumps(log_entries, indent=1))
+        except Exception:
+            pass  # persistence must never break logging
+        listeners = list(log_listeners)
+    for listener in listeners:
+        try:
+            listener.put_nowait(entry)
+        except asyncio.QueueFull:
+            pass
+    return entry
+
+
+@app.websocket('/ws/log')
+async def log_stream(websocket: WebSocket):
+    await websocket.accept()
+    listener = asyncio.Queue(maxsize=100)
+    with log_lock:
+        log_listeners.add(listener)
+    try:
+        while True:
+            entry = await listener.get()
+            await websocket.send_text(json.dumps({'type': 'entry', 'entry': entry}))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        with log_lock:
+            log_listeners.discard(listener)
 
 
 # ------------------------------------------------------------------ REST API

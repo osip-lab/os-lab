@@ -5,6 +5,7 @@
 import { createCameraBox } from './boxes/camera.js';
 import { createPicoScopeBox } from './boxes/picoscope.js';
 import { createRigolDGBox } from './boxes/rigol_dg.js';
+import { initLogger, openLogger } from './boxes/logger.js';
 
 const BOX_RENDERERS = {
   dummy_camera: createCameraBox,
@@ -19,6 +20,8 @@ const grid = GridStack.init({
   float: true,
   handle: '.box-header',
 });
+
+initLogger();
 
 const openBoxes = new Map(); // device_id -> { element, cleanup }
 
@@ -111,11 +114,13 @@ function addBox(device) {
     <div class="grid-stack-item-content">
       <div class="box-header">
         <span class="box-title"></span>
+        <button class="box-log" title="open log">log</button>
         <button class="box-close" title="close device and remove box">✕</button>
       </div>
       <div class="box-body"></div>
     </div>`;
   element.querySelector('.box-title').textContent = device.label;
+  element.querySelector('.box-log').onclick = () => openLogger();
 
   document.querySelector('.grid-stack').appendChild(element);
   grid.makeWidget(element, { w: 5, h: 6 });

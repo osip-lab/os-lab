@@ -8,6 +8,7 @@
 // Returns a cleanup function that closes the socket.
 
 import { connectDeviceStream } from './stream.js';
+import { logEntry } from './logger.js';
 
 const STRIP = 70;        // cross-section strip thickness, px
 const GAP = 4;
@@ -55,6 +56,7 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="subgroup">
         <button class="cam-copy-figure" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
         <button class="cam-copy-fit" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
+        <button class="cam-record-fit" title="append the current fit values to the log">record fit values</button>
       </span>
       <span class="cam-status status-line"></span>
     </div>
@@ -503,6 +505,19 @@ export function createCameraBox(device, container, sendCommand) {
       scratch.remove();
     }
     status.textContent = `copied: w_x, w_y = ${text.replace('\t', ', ')} mm`;
+  };
+
+  container.querySelector('.cam-record-fit').onclick = () => {
+    if (!fitParams) {
+      status.textContent = 'no fit result to record — enable the fit first';
+      return;
+    }
+    const p = fitParams;
+    const text = `${device.label}: x0=${p.x_0.toFixed(1)} px, y0=${p.y_0.toFixed(1)} px, `
+      + `w_x=${(p.w_x * pixelMm).toFixed(3)} mm, w_y=${(p.w_y * pixelMm).toFixed(3)} mm, `
+      + `theta=${p.angle.toFixed(2)} rad`;
+    logEntry(text);
+    status.textContent = 'recorded fit values to the log';
   };
 
   // ----------------------------------------------------------- the stream

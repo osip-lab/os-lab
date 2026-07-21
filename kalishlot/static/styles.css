@@ -239,7 +239,8 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
   text-transform: uppercase;
   color: var(--muted);
 }
-.box-header .box-close {
+.box-header .box-close,
+.box-header .box-log {
   border-color: transparent;
   background: none;
   padding: 0 5px;
@@ -250,6 +251,16 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
 .box-header .box-close:hover:not(:disabled) {
   color: var(--alert);
   background: rgba(224, 85, 85, 0.12);
+  border-color: transparent;
+}
+.box-header .box-log {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.box-header .box-log:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
   border-color: transparent;
 }
 .box-body {
@@ -345,6 +356,39 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
   color: var(--run);
   text-shadow: 0 0 10px rgba(82, 196, 106, 0.55);
 }
+
+/* ------------------------------------------------------------ log panel */
+.log-panel {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: 320px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  transform: translateX(calc(100% + 16px));
+  transition: transform 0.2s ease;
+}
+.log-panel.open { transform: translateX(0); }
+.log-entries {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 10px;
+}
+.log-entry {
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  font: 11.5px var(--font-data);
+}
+.log-entry:first-child { border-top: none; }
+.log-time { color: var(--muted); margin-right: 8px; }
+.log-text { color: var(--text); white-space: pre-wrap; word-break: break-word; }
 
 /* ----------------------------------------------------------------- modal */
 #modal-backdrop {
