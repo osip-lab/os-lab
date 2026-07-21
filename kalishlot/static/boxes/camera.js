@@ -17,6 +17,8 @@ const COLOR_FIT_CURVE = 'rgb(255, 165, 40)';   // cross-section fit curve
 const COLOR_ELLIPSE = 'rgba(255, 90, 90, 0.67)';
 const COLOR_MARKER = 'rgba(0, 220, 220, 0.86)';
 const COLOR_GUESS = 'rgba(110, 255, 110, 0.86)';
+const COLOR_GRID = 'rgba(255, 255, 255, 0.28)';
+const GRID_SPACING_MM = 1;
 
 export function createCameraBox(device, container, sendCommand) {
   // fit coordinates are full-resolution sensor pixels; the video stream may
@@ -36,6 +38,8 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="subgroup">
         <label class="field">
           <input type="checkbox" class="cam-fit"> fit</label>
+        <label class="field" title="1 mm grid, centered on the image">
+          <input type="checkbox" class="cam-grid"> grid</label>
         <label class="field"
                title="fit only frames at least this bright (counts above background); empty or 0 = fit every frame">
           trigger <input type="number" class="cam-trigger" min="0" placeholder="off"></label>
@@ -197,10 +201,29 @@ export function createCameraBox(device, container, sendCommand) {
     drawCross(ctx, toCss(circle.x), toCss(circle.y), 5);
   }
 
+  function drawGrid(ctx) {
+    // spacing in sensor px for GRID_SPACING_MM, centered on the image so an
+    // intersection falls at (sensorW/2, sensorH/2) — a one-pixel offset from
+    // dropping the fractional half-cell at either edge doesn't matter here.
+    if (!pixelMm) return;
+    const stepPx = GRID_SPACING_MM / pixelMm;
+    ctx.strokeStyle = COLOR_GRID;
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1;
+    const cx = sensorW / 2, cy = sensorH / 2;
+    ctx.beginPath();
+    for (let x = cx; x >= 0; x -= stepPx) { ctx.moveTo(toCss(x), 0); ctx.lineTo(toCss(x), overlay.height); }
+    for (let x = cx + stepPx; x <= sensorW; x += stepPx) { ctx.moveTo(toCss(x), 0); ctx.lineTo(toCss(x), overlay.height); }
+    for (let y = cy; y >= 0; y -= stepPx) { ctx.moveTo(0, toCss(y)); ctx.lineTo(overlay.width, toCss(y)); }
+    for (let y = cy + stepPx; y <= sensorH; y += stepPx) { ctx.moveTo(0, toCss(y)); ctx.lineTo(overlay.width, toCss(y)); }
+    ctx.stroke();
+  }
+
   function redrawOverlay() {
     const ctx = overlay.getContext('2d');
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     ctx.lineWidth = 1;
+    if (gridCheck.checked) drawGrid(ctx);
     if (fitParams) {
       // thin translucent ellipses at 1 sigma and at the beam radius w = 2 sigma
       ctx.strokeStyle = COLOR_ELLIPSE;
@@ -293,6 +316,11 @@ export function createCameraBox(device, container, sendCommand) {
     sendCommand(device.device_id, fitCheck.checked ? 'fit_on' : 'fit_off')
       .catch((e) => { status.textContent = e.message; });
   };
+
+  // grid is a local display preference only (like the marker circle) — not
+  // sent to the server, not shared across viewers.
+  const gridCheck = container.querySelector('.cam-grid');
+  gridCheck.onchange = () => redrawOverlay();
 
   function clearFitDisplay() {
     fitParams = null;
