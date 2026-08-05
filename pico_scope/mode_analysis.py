@@ -18,7 +18,7 @@ from scipy.optimize import curve_fit
 MAX_FIT_POINTS = 500              # decimate fits to at most this many points
 DEFAULT_SIDEBAND_FREQ_MHZ = 25.0  # single-side EOM modulation frequency [MHz]
 SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
-LONG_ARM_LENGTH = 34.4e-2
+LONG_ARM_LENGTH = 40e-2
 MID_ARM_LENGTH = 1.5e-2
 SHORT_ARM_LENGTHS = 4e-4          # the simulation's lens-scan parameter
 SHORT_ARM_LENGTH = 0.7e-2         # the physical short arm: sets the cavity

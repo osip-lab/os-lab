@@ -39,8 +39,12 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="subgroup">
         <label class="field">
           <input type="checkbox" class="cam-fit"> fit</label>
+      </span>
+      <span class="subgroup">
         <label class="field" title="1 mm grid, centered on the image">
           <input type="checkbox" class="cam-grid"> grid</label>
+      </span>
+      <span class="subgroup">
         <label class="field"
                title="fit only frames at least this bright (counts above background); empty or 0 = fit every frame">
           trigger <input type="number" class="cam-trigger" min="0" placeholder="off"></label>
@@ -289,14 +293,28 @@ export function createCameraBox(device, container, sendCommand) {
   }
 
   // -------------------------------------------------------- the info line
+  // The fitted beam radii are the number people read across the room, so they
+  // get their own oversized span; everything else stays at the usual size.
+  const fitReadout = document.createElement('span');
+  fitReadout.className = 'cam-fit-readout';
+  const infoAux = document.createElement('span');
+  infoAux.className = 'cam-info-aux';
+  info.append(fitReadout, infoAux);
+
   function updateInfo() {
+    if (fitParams && !fitReason) {
+      const p = fitParams;
+      fitReadout.textContent = `w_x = ${(p.w_x * pixelMm).toFixed(3)} mm, `
+        + `w_y = ${(p.w_y * pixelMm).toFixed(3)} mm`;
+    } else {
+      fitReadout.textContent = '';
+    }
+
     const parts = [];
     if (fitReason) parts.push(fitReason);
     else if (fitParams) {
       const p = fitParams;
       parts.push(`x₀ = ${p.x_0.toFixed(1)} px, y₀ = ${p.y_0.toFixed(1)} px, `
-        + `w_x = ${(p.w_x * pixelMm).toFixed(3)} mm, `
-        + `w_y = ${(p.w_y * pixelMm).toFixed(3)} mm, `
         + `θ = ${p.angle >= 0 ? '+' : ''}${p.angle.toFixed(2)} rad `
         + `(fit ${p.time.toFixed(2)} s)`);
     }
@@ -308,7 +326,10 @@ export function createCameraBox(device, container, sendCommand) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
         + `σ = ${guess.r.toFixed(1)} px`);
     }
-    info.textContent = parts.join('   |   ');
+    // the leading separator also keeps the copied-figure title readable, since
+    // that is built from info.textContent (both spans concatenated)
+    const aux = parts.join('   |   ');
+    infoAux.textContent = fitReadout.textContent && aux ? `   |   ${aux}` : aux;
   }
 
   // ------------------------------------------------------------------ fit

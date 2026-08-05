@@ -243,8 +243,22 @@ must allow inbound Python — it prompts once).
 | `DELETE /api/devices/{id}` | close device |
 | `POST /api/devices/{id}/command {name, args}` | adapter's `command()` |
 | `WS /ws/devices/{id}` | per-viewer stream: binary = JPEG frame, text = JSON event |
+| `GET /api/idle` | idle-watchdog config + any warning already counting down |
+| `POST /api/idle/dismiss` | dismiss the warning / restart the countdown |
+| `WS /ws/idle` | watchdog broadcasts: `idle_warning`, `idle_clear`, `idle_disconnected` |
 
 `device_id` is always `f'{type_name}:{address}'`.
+
+### Idle watchdog
+
+`server.py -t SECONDS` (default 3600, `0` disables) closes **every** device
+after that long without user activity, so hardware is not left running
+overnight. Activity means a deliberate user action reaching the server —
+`POST /api/devices`, a device command, a log write, or a dismissal — not the
+frames/data a running device produces on its own. A warning goes to every
+viewer `IDLE_GRACE_S` (10 s) before the disconnect; dismissing it restarts the
+countdown. Nothing device-specific: a new adapter needs no work here, it just
+has to survive `close()` being called at any time.
 
 ## Roadmap context
 

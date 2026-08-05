@@ -173,6 +173,45 @@ async def check_close_notification(device_id):
             assert code == 4004, f'expected close code 4004, got {code}'
 
 
+async def check_idle_watchdog(address):
+    """Idle timeout: warning -> dismissal restarts the countdown -> a second
+    warning left alone closes every device. Runs with the timeouts shrunk to
+    fractions of a second (the watchdog reads both globals every tick)."""
+    import server
+
+    async def next_event(socket, expected):
+        message = await asyncio.wait_for(socket.recv(), timeout=10)
+        event = json.loads(message)
+        assert event['type'] == expected, f'expected {expected}, got {event}'
+        return event
+
+    server.IDLE_TIMEOUT_S, server.IDLE_GRACE_S = 1.0, 3.0
+    try:
+        uri = f'ws://{HOST}:{PORT}/ws/idle'
+        async with websockets.connect(uri) as socket:
+            device = api('/api/devices', 'POST',
+                         {'type': 'dummy_camera', 'address': address})
+            event = await next_event(socket, 'idle_warning')
+            assert event['grace_s'] == 3.0, event
+            state = api('/api/idle')
+            assert state['warning_active'] and state['grace_left_s'] <= 3.0, state
+            print('idle warning ok (also reported by GET /api/idle)')
+
+            api('/api/idle/dismiss', 'POST')
+            await next_event(socket, 'idle_clear')
+            assert len(api('/api/devices')) == 1, 'dismissal must keep devices open'
+            print('dismissal restarts the countdown ok')
+
+            # ignore this one: the devices must go down
+            await next_event(socket, 'idle_warning')
+            event = await next_event(socket, 'idle_disconnected')
+            assert event['devices'] == [device['device_id']], event
+            assert len(api('/api/devices')) == 0
+            print('ignored warning disconnects all devices ok')
+    finally:
+        server.IDLE_TIMEOUT_S, server.IDLE_GRACE_S = 3600.0, 10.0
+
+
 def main():
     server = start_server()
     try:
@@ -213,6 +252,8 @@ def main():
         assert exposure == 5000, f'expected persisted exposure 5000, got {exposure}'
         api(f'/api/devices/{device_id}', 'DELETE')
         print('re-open restores persisted settings ok (exposure 5000)')
+
+        asyncio.run(check_idle_watchdog(available[0]['address']))
 
         page = urllib.request.urlopen(f'{BASE}/').read().decode()
         assert 'OS Lab Dashboard' in page

@@ -292,12 +292,23 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
 
 /* ------------------------------------------------------------ camera box */
 .cam-info {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 10px;
   min-height: 1.2em;
   font: 11.5px var(--font-data);
   font-variant-numeric: tabular-nums;
   color: var(--text);
   opacity: 0.92;
 }
+/* the fitted beam radii are meant to be read from across the room */
+.cam-fit-readout {
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 600;
+}
+.cam-fit-readout:empty { display: none; }
 .cam-view {
   flex: 1;
   min-height: 0;
@@ -432,6 +443,59 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
 }
 #modal .modal-cancel { margin-top: 12px; float: right; }
 #modal p { color: var(--muted); font-size: 12px; }
+
+/* ------------------------------------------------- idle shutdown warning */
+/* deliberately louder than the choice modal: this one has to be noticed from
+   across the room, and it is the last chance before the devices go down */
+.idle-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 15, 0.72);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.15s ease;
+}
+.idle-modal {
+  min-width: 380px;
+  padding: 22px 26px 20px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--alert);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 4px rgba(224, 85, 85, 0.12);
+  animation: rise-in 0.18s ease, idle-pulse 1s ease-in-out infinite;
+}
+.idle-modal h2 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--alert);
+}
+.idle-note { margin: 0; color: var(--muted); font-size: 12px; }
+.idle-countdown {
+  margin: 6px 0 14px;
+  font: 600 44px/1.1 var(--font-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--alert);
+}
+.idle-keep {
+  padding: 9px 18px;
+  color: var(--amber);
+  border-color: rgba(232, 166, 62, 0.55);
+  background: rgba(232, 166, 62, 0.10);
+}
+.idle-keep:hover:not(:disabled) {
+  border-color: var(--amber);
+  background: rgba(232, 166, 62, 0.18);
+}
+@keyframes idle-pulse {
+  50% { box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 9px rgba(224, 85, 85, 0.16); }
+}
 
 /* ---------------------------------------------------------------- motion */
 @keyframes fade-in { from { opacity: 0; } }

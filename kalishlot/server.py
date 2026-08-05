@@ -3,6 +3,7 @@
 Run:
     python server.py              (from the kalishlot folder)
     python kalishlot/server.py    (from the repo root)
+    python server.py -t 7200      (idle timeout in seconds, 0 disables it)
 
 Then open http://localhost:8090 — or http://<this-pc>:8090 from any computer
 on the lab network (allow Python through the Windows Firewall when prompted).
@@ -10,12 +11,19 @@ on the lab network (allow Python through the Windows Firewall when prompted).
 
 The server owns the devices: they stay connected and running when no browser
 is viewing. Boxes in the browser re-attach to already-open devices on reload.
+
+Because the devices keep running unattended, an idle watchdog closes them all
+after IDLE_TIMEOUT_S without user activity — so a camera forgotten at the end
+of the day is not left exposing all night. It warns in the browser first (with
+a sound) and the warning can be dismissed to restart the countdown.
 """
 
+import argparse
 import asyncio
 import json
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -45,22 +53,26 @@ FRAME_POLL_S = 1 / 30  # how often each websocket checks for a newer frame
 # stalled browser tab can never build a backlog (same rule as video frames)
 COALESCE_EVENT_TYPES = {'scope_data', 'brightness'}
 
+# ------------------------------------------------------------ idle watchdog
+# Seconds of inactivity before the browser gets a shutdown warning; the
+# command line (-t) and the __main__ block below both write this global.
+# 0 (or less) disables the watchdog entirely.
+IDLE_TIMEOUT_S = 3600.0
+IDLE_GRACE_S = 10.0    # how long the warning waits for a dismissal
+IDLE_TICK_S = 0.25
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    watchdog = asyncio.create_task(idle_watchdog())
     yield
+    watchdog.cancel()
     # a device left open at process exit (Ctrl+C, terminal closed) never gets
     # its close() called otherwise — for hardware like the Basler camera that
     # leaves the driver's exclusive-open lock stuck until the device is
     # physically unplugged/replugged, even for other programs (e.g. pylon
     # Viewer). Closing here on a clean shutdown avoids that.
-    with devices_lock:
-        open_devices = list(devices.items())
-    for device_id, adapter in open_devices:
-        record_settings(device_id, adapter)
-        try:
-            adapter.close()
-        except Exception:
-            pass
+    close_all_devices()
 
 
 app = FastAPI(title='OS Lab dashboard', lifespan=lifespan)
@@ -105,6 +117,132 @@ def device_or_404(device_id):
     return adapter
 
 
+def close_all_devices():
+    """Close and forget every open device. Returns the ids that were closed."""
+    with devices_lock:
+        open_devices = list(devices.items())
+        devices.clear()
+    for device_id, adapter in open_devices:
+        record_settings(device_id, adapter)
+        try:
+            adapter.close()
+        except Exception:
+            pass
+    return [device_id for device_id, _ in open_devices]
+
+
+# ------------------------------------------------------------ idle watchdog
+# Devices run unattended (the server owns them, no browser needed), so a
+# forgotten dashboard would leave e.g. a camera streaming all night. After
+# IDLE_TIMEOUT_S without user activity every viewer gets a warning; unless
+# somebody dismisses it within IDLE_GRACE_S, all devices are closed.
+#
+# "Activity" is any deliberate user action reaching the server — opening a
+# device, sending it a command, writing to the log, or dismissing the warning
+# — but NOT the video/data traffic a running device produces by itself.
+idle_lock = threading.Lock()
+idle_listeners = set()   # asyncio.Queue, one per connected /ws/idle viewer
+_last_activity = time.monotonic()
+_warned_at = None        # monotonic time the pending warning was raised
+
+
+def note_activity():
+    global _last_activity
+    with idle_lock:
+        _last_activity = time.monotonic()
+
+
+def broadcast_idle(message):
+    """Fan a watchdog message out to every viewer. Called from the event loop
+    only (asyncio.Queue is not thread-safe), which is why the HTTP endpoints
+    just call note_activity() and let the watchdog notice."""
+    with idle_lock:
+        listeners = list(idle_listeners)
+    for listener in listeners:
+        try:
+            listener.put_nowait(message)
+        except asyncio.QueueFull:
+            pass
+
+
+async def idle_watchdog():
+    global _warned_at
+    while True:
+        await asyncio.sleep(IDLE_TICK_S)
+        if IDLE_TIMEOUT_S <= 0:  # watchdog disabled
+            continue
+        now = time.monotonic()
+        with idle_lock:
+            last_activity, warned_at = _last_activity, _warned_at
+        with devices_lock:
+            any_open = bool(devices)
+
+        if warned_at is None:
+            # nothing to protect while no device is open, and the countdown
+            # then starts fresh from the moment one is opened
+            if not any_open:
+                note_activity()
+            elif now - last_activity >= IDLE_TIMEOUT_S:
+                with idle_lock:
+                    _warned_at = now
+                broadcast_idle({'type': 'idle_warning', 'grace_s': IDLE_GRACE_S,
+                                'timeout_s': IDLE_TIMEOUT_S})
+        elif last_activity > warned_at or not any_open:
+            with idle_lock:  # dismissed (or the devices went away meanwhile)
+                _warned_at = None
+            note_activity()
+            broadcast_idle({'type': 'idle_clear'})
+        elif now - warned_at >= IDLE_GRACE_S:
+            with idle_lock:
+                _warned_at = None
+            # closing can block for a second or two per device (hardware),
+            # and the event loop also serves every video stream
+            closed = await asyncio.get_running_loop().run_in_executor(
+                None, close_all_devices)
+            note_activity()
+            broadcast_idle({'type': 'idle_disconnected', 'devices': closed})
+
+
+@app.get('/api/idle')
+def get_idle_state():
+    """Config plus any warning already in flight, so a viewer that just
+    (re)connected joins the countdown instead of missing it."""
+    with idle_lock:
+        warned_at = _warned_at
+    return {
+        'timeout_s': IDLE_TIMEOUT_S,
+        'grace_s': IDLE_GRACE_S,
+        'warning_active': warned_at is not None,
+        'grace_left_s': (None if warned_at is None
+                         else max(0.0, IDLE_GRACE_S - (time.monotonic() - warned_at))),
+    }
+
+
+@app.post('/api/idle/dismiss')
+def dismiss_idle_warning():
+    """Dismiss the warning / restart the countdown."""
+    note_activity()
+    return {'ok': True, 'timeout_s': IDLE_TIMEOUT_S}
+
+
+@app.websocket('/ws/idle')
+async def idle_stream(websocket: WebSocket):
+    await websocket.accept()
+    listener = asyncio.Queue(maxsize=20)
+    with idle_lock:
+        idle_listeners.add(listener)
+    try:
+        while True:
+            await websocket.send_text(json.dumps(await listener.get()))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        with idle_lock:
+            idle_listeners.discard(listener)
+
+
 # --------------------------------------------------------------- shared log
 # One text log shared by every box (e.g. camera "record fit values"), newest
 # entry first, persisted so it survives a reload/restart and is the same for
@@ -133,6 +271,7 @@ def get_log():
 @app.post('/api/log')
 def post_log(request: LogRequest):
     global _next_log_id
+    note_activity()
     entry = {'id': _next_log_id, 'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
              'text': request.text}
     _next_log_id += 1
@@ -196,6 +335,7 @@ class OpenRequest(BaseModel):
 
 @app.post('/api/devices')
 def open_device(request: OpenRequest):
+    note_activity()
     cls = DEVICE_TYPES.get(request.type)
     if cls is None:
         raise HTTPException(status_code=404, detail=f'unknown device type {request.type!r}')
@@ -248,6 +388,7 @@ class CommandRequest(BaseModel):
 
 @app.post('/api/devices/{device_id:path}/command')
 def device_command(device_id: str, request: CommandRequest):
+    note_activity()
     adapter = device_or_404(device_id)
     try:
         result = adapter.command(request.name, request.args)
@@ -346,6 +487,24 @@ if __name__ == '__main__':
     import webbrowser
 
     import uvicorn
+
+    # ---------------------------------------------------------------------
+    # Running from an IDE (PyCharm's green arrow passes no arguments)? Edit
+    # this value — the command-line -t only overrides it when given.
+    IDLE_TIMEOUT_S = 3600      # seconds of inactivity before the warning
+    # ---------------------------------------------------------------------
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        '-t', '--timeout', type=float, default=IDLE_TIMEOUT_S, metavar='SECONDS',
+        help=f'close all devices after this many seconds without user activity '
+             f'(a dismissible warning appears {IDLE_GRACE_S:g} s earlier); '
+             f'0 disables it. Default: %(default)g')
+    args = parser.parse_args()
+    IDLE_TIMEOUT_S = args.timeout
+    print(f'idle watchdog: {IDLE_TIMEOUT_S:g} s' if IDLE_TIMEOUT_S > 0
+          else 'idle watchdog: disabled')
+
     # pop the dashboard in the local browser once the server is up (other
     # computers browse to this PC's address themselves). Timer, not a startup
     # hook: importing the app (smoke test, scripts) must never open a browser.

@@ -6,6 +6,7 @@ import { createCameraBox } from './boxes/camera.js';
 import { createPicoScopeBox } from './boxes/picoscope.js';
 import { createRigolDGBox } from './boxes/rigol_dg.js';
 import { initLogger, openLogger } from './boxes/logger.js';
+import { initIdle } from './boxes/idle.js';
 
 const BOX_RENDERERS = {
   dummy_camera: createCameraBox,
@@ -165,3 +166,13 @@ async function reattachOpenDevices() {
 }
 
 reattachOpenDevices();
+
+// the idle watchdog closes the devices server-side; drop their boxes too, so
+// the canvas is not left full of boxes pointing at nothing
+initIdle({
+  onDisconnected(deviceIds) {
+    for (const deviceId of deviceIds) removeBox(deviceId);
+    document.getElementById('server-status').textContent =
+      `idle timeout — disconnected ${deviceIds.length} device(s)`;
+  },
+});
