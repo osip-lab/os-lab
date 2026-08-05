@@ -1,4 +1,5 @@
 # general functions for the project
+import hashlib
 import shutil
 import subprocess
 import tempfile
@@ -92,6 +93,14 @@ def wait_for_path_from_clipboard(filetype: Optional[Union[str, Sequence[str]]] =
 PICOSCOPE_MIN_BATCHCONVERT_VERSION = (7, 1, 32)
 PSDATA_CONVERT_TIMEOUT_S = 120
 
+# Converted CSVs are kept in a per-source-file folder under the system temp
+# directory so that re-analysing the same .psdata (a common thing to do - the
+# buffer choice or the fit is often redone) reuses the earlier export instead
+# of launching PicoScope again. Entries are pruned by age; the cache lives in
+# temp precisely because losing it is harmless.
+PSDATA_CSV_CACHE_DIR = Path(tempfile.gettempdir()) / 'psdata_to_csv_cache'
+PSDATA_CSV_CACHE_MAX_AGE_DAYS = 14
+
 
 def _windows_exe_version(path):
     """Return the file version of a Windows exe as a tuple of 4 ints, or None."""
@@ -116,6 +125,88 @@ def _windows_exe_version(path):
     return (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
 
 
+def _psdata_cache_dir(psdata_path):
+    """Return the cache folder for one .psdata file.
+
+    The key is a hash of the full path (so that same-named files in different
+    folders - 'trace.psdata' in every measurement folder - never collide) plus
+    size and mtime (so that an overwritten or re-saved file simply misses the
+    cache instead of silently handing back the previous export). The stem is
+    kept as a readable prefix, since this folder is meant to be browsable.
+
+    The waveform buffer index is deliberately *not* part of the key: one
+    conversion produces every buffer at once, so a cache entry holds them all
+    and the choice is made afterwards from the CSVs inside it.
+    """
+    stat = psdata_path.stat()
+    path_hash = hashlib.sha1(
+        str(psdata_path.resolve()).lower().encode('utf-8')).hexdigest()[:10]
+    return (PSDATA_CSV_CACHE_DIR /
+            f"{psdata_path.stem}_{path_hash}_{stat.st_size}_{int(stat.st_mtime)}")
+
+
+def _sorted_buffer_csvs(out_dir):
+    """List the CSVs in a BatchConvert output folder, in buffer order.
+
+    A single-waveform file becomes '<stem>.csv' directly in out_dir; a file
+    with multiple waveform buffers becomes a '<stem>' subfolder holding
+    '<stem>_1.csv' ... '<stem>_N.csv', so search recursively and sort by the
+    numeric buffer suffix (plain name-sorting would put _10 before _2).
+    """
+    def buffer_index(p):
+        suffix = p.stem.rsplit('_', 1)[-1]
+        return int(suffix) if suffix.isdigit() else 0
+
+    if not out_dir.is_dir():
+        return []
+    return sorted(out_dir.rglob('*.csv'), key=buffer_index)
+
+
+def _choose_buffer_csv(csv_files):
+    """Return the CSV to analyse, asking the user when the file has several."""
+    if len(csv_files) == 1:
+        return str(csv_files[0])
+
+    print(f"The psdata file contains {len(csv_files)} waveform buffers:")
+    for i, p in enumerate(csv_files, start=1):
+        print(f"  [{i}] {p.name}")
+    while True:
+        raw_in = input(
+            f"Which waveform to use? 1-{len(csv_files)} "
+            f"[default {len(csv_files)} - the most recent]: "
+        ).strip()
+        if raw_in == '':
+            choice = len(csv_files)
+        else:
+            try:
+                choice = int(raw_in)
+            except ValueError:
+                choice = 0
+        if 1 <= choice <= len(csv_files):
+            break
+        print(f"  Please enter a number between 1 and {len(csv_files)}.")
+    print(f"Using waveform: {csv_files[choice - 1].name}")
+    return str(csv_files[choice - 1])
+
+
+def _prune_psdata_csv_cache(max_age_days=PSDATA_CSV_CACHE_MAX_AGE_DAYS):
+    """Delete conversion-cache entries older than `max_age_days`.
+
+    Age comes from the entry's own mtime, i.e. when it was converted; reuse
+    does not refresh it, so every entry expires a fixed time after creation
+    however often it is read.
+    """
+    if not PSDATA_CSV_CACHE_DIR.is_dir():
+        return
+    cutoff = time.time() - max_age_days * 24 * 3600
+    for entry in PSDATA_CSV_CACHE_DIR.iterdir():
+        try:
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass  # a cache we cannot tidy is no reason to fail the analysis
+
+
 def psdata_to_csv(psdata_path):
     """Convert a PicoScope .psdata file to CSV; return the CSV path.
 
@@ -127,15 +218,26 @@ def psdata_to_csv(psdata_path):
 
     If an up-to-date CSV with the same name already sits next to the .psdata
     file (e.g. from an earlier manual export or an earlier run), it is used
-    directly and no conversion is performed. If the .psdata file holds several
-    waveform buffers, the user is asked which one to use (default: the last,
-    i.e. most recent, capture).
+    directly and no conversion is performed. Failing that, an earlier
+    conversion of the same file cached under PSDATA_CSV_CACHE_DIR is reused -
+    which also means a cached file can be re-analysed without PicoScope
+    installed. If the .psdata file holds several waveform buffers, the user is
+    asked which one to use (default: the last, i.e. most recent, capture).
     """
     psdata_path = Path(psdata_path)
     sibling_csv = psdata_path.with_suffix('.csv')
     if sibling_csv.is_file() and sibling_csv.stat().st_mtime >= psdata_path.stat().st_mtime:
         print(f"Using existing up-to-date CSV: {sibling_csv}")
         return str(sibling_csv)
+
+    _prune_psdata_csv_cache()
+    cache_dir = _psdata_cache_dir(psdata_path)
+    out_dir = cache_dir / 'out'
+    cached_csvs = _sorted_buffer_csvs(out_dir)
+    if cached_csvs:
+        print(f"Using cached conversion of '{psdata_path.name}' "
+              f"({len(cached_csvs)} waveform buffer(s)) from {out_dir}")
+        return _choose_buffer_csv(cached_csvs)
 
     try:
         from local_config import PICOSCOPE_EXE
@@ -163,11 +265,9 @@ def psdata_to_csv(psdata_path):
             "manually."
         )
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix='psdata_to_csv_'))
-    in_dir = tmp_dir / 'in'
-    out_dir = tmp_dir / 'out'
-    in_dir.mkdir()
-    out_dir.mkdir()
+    in_dir = cache_dir / 'in'
+    in_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(psdata_path, in_dir)
 
     print(f"Converting '{psdata_path.name}' to CSV with PicoScope 7 ...")
@@ -181,6 +281,8 @@ def psdata_to_csv(psdata_path):
     except subprocess.TimeoutExpired:
         # subprocess.run kills the child before raising, so the stray
         # PicoScope window is closed rather than left grabbing the scope.
+        # Drop the half-written cache entry so the next run retries cleanly.
+        shutil.rmtree(cache_dir, ignore_errors=True)
         raise RuntimeError(
             f"PicoScope did not finish converting within "
             f"{PSDATA_CONVERT_TIMEOUT_S} s and was closed. This usually means "
@@ -190,45 +292,21 @@ def psdata_to_csv(psdata_path):
             "trace as CSV manually."
         )
 
-    # A single-waveform file becomes '<stem>.csv' directly in out_dir; a file
-    # with multiple waveform buffers becomes a '<stem>' subfolder holding
-    # '<stem>_1.csv' ... '<stem>_N.csv', so search recursively and sort by the
-    # numeric buffer suffix (plain name-sorting would put _10 before _2).
-    def buffer_index(p):
-        suffix = p.stem.rsplit('_', 1)[-1]
-        return int(suffix) if suffix.isdigit() else 0
-
-    csv_files = sorted(out_dir.rglob('*.csv'), key=buffer_index)
+    csv_files = _sorted_buffer_csvs(out_dir)
     if result.returncode != 0 or not csv_files:
+        # A partial output must not be left behind: the next run would take it
+        # for a good cache entry and never retry the conversion.
+        shutil.rmtree(cache_dir, ignore_errors=True)
         raise RuntimeError(
             f"psdata -> CSV conversion failed (exit code {result.returncode}).\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
     print("Conversion succeeded.")
+    # The copy BatchConvert worked from has done its job; only the CSVs are
+    # worth keeping in the cache.
+    shutil.rmtree(in_dir, ignore_errors=True)
 
-    if len(csv_files) == 1:
-        return str(csv_files[0])
-
-    print(f"The psdata file contains {len(csv_files)} waveform buffers:")
-    for i, p in enumerate(csv_files, start=1):
-        print(f"  [{i}] {p.name}")
-    while True:
-        raw_in = input(
-            f"Which waveform to use? 1-{len(csv_files)} "
-            f"[default {len(csv_files)} - the most recent]: "
-        ).strip()
-        if raw_in == '':
-            choice = len(csv_files)
-        else:
-            try:
-                choice = int(raw_in)
-            except ValueError:
-                choice = 0
-        if 1 <= choice <= len(csv_files):
-            break
-        print(f"  Please enter a number between 1 and {len(csv_files)}.")
-    print(f"Using waveform: {csv_files[choice - 1].name}")
-    return str(csv_files[choice - 1])
+    return _choose_buffer_csv(csv_files)
 
 
 def get_picoscope_trace_path_from_clipboard():

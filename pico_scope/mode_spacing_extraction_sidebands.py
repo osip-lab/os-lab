@@ -15,7 +15,7 @@ Pipeline
 4. Click the zeroth-order mode.
 5. Click one sideband of the central line (gives the sideband distance d).
 6. Click the first-order mode.
-7. Enter the (single-side) sideband modulation frequency [MHz] (default 20).
+7. Enter the (single-side) sideband modulation frequency [MHz] (default 25).
 8. Fit a sum of 6 Lorentzians + constant offset:
 
        f_total = f(A0,    s0, x0)
@@ -35,8 +35,8 @@ Pipeline
 10. Map the mode spacing to the numerical aperture (NA) using the cavity-design
     simulation (simple_analysis_scripts.mode_spacing_to_NA).
 11. Print mode spacing, linewidths and NA together.
-12. Append a one-line record (long arm length, mode spacing, NA) to
-    numerical-results.txt in the folder of the original data file.
+12. Append a one-line record (long arm length, mode spacing, NA, waveform
+    buffer) to numerical-results.txt in the folder of the original data file.
 
 Note for future development: steps 4-6 already produce raw coordinate guesses
 (x0_guess, x1_guess, d_guess). A future "coordinate-only" mode can skip the fit
@@ -47,6 +47,8 @@ Note for future development: steps 4-6 already produce raw coordinate guesses
 import matplotlib
 
 matplotlib.use('Qt5Agg')
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -80,6 +82,25 @@ SIM_PLOT_DEPENDENCIES = False
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
 csv_path, input_path = get_picoscope_trace_path_from_clipboard()
 print(f"Loading: {csv_path}")
+
+
+def waveform_buffer_label(csv_path, input_path):
+    """Name the waveform buffer held by `csv_path`, for the results log.
+
+    The buffer index itself never reaches this script - only the path of the
+    CSV the user picked in psdata_to_csv(). That is enough: BatchConvert
+    exports a multi-buffer .psdata as '<stem>_<N>.csv' and a single-buffer one
+    as plain '<stem>.csv', so the CSV name is what tells the buffers apart.
+    """
+    csv_stem = Path(csv_path).stem
+    input_stem = Path(input_path).stem
+    if csv_stem.startswith(input_stem):
+        return csv_stem[len(input_stem):].lstrip('_') or 'single'
+    return csv_stem
+
+
+waveform_buffer = waveform_buffer_label(csv_path, input_path)
+print(f"Waveform buffer: {waveform_buffer}")
 
 # Rows 1 and 2 of a PicoScope export are the unit / blank header rows.
 raw = pd.read_csv(csv_path, skiprows=[1, 2])
@@ -328,7 +349,8 @@ append_numerical_result_line(
     input_path,
     f"long_arm_length = {LONG_ARM_LENGTH:.4g} m, "
     f"mode_spacing = {results['mode_spacing_MHz']:.4f} MHz, "
-    f"NA = {na_text}",
+    f"NA = {na_text}, "
+    f"waveform_buffer = {waveform_buffer}",
 )
 
 # Keep all windows open (and responsive) after the report has been printed.
