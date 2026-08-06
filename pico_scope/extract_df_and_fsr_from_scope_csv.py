@@ -34,7 +34,7 @@ SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation 
 LONG_ARM_LENGTH = 36e-2         # [m] lens -> far mirror; only the DEFAULT - the
                                   # value actually used is asked for on every run
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
-N_points = 200                    # lens positions simulated across SHORT_ARM_LENGTHS
+N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
 
 # The long arm changes between measurements, so it is asked for on every run;
@@ -288,3 +288,8 @@ else:
             results_text += f", NA {summary['NA_std']:.4f}"
         results_text += ")"
     append_numerical_result_line(input_path, results_text)
+
+# The simulation shows its system plot non-blocking (so the report above prints without waiting
+# for the window). Without this the interpreter would reach the end of the script and tear the Qt
+# event loop down with the window still on screen - it would flash open and vanish.
+plt.show(block=True)

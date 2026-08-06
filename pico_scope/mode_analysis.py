@@ -293,7 +293,11 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
     `plot_system` shows the simulated system in one window: the two dependency
     panels plus the cavity underneath. `measured_mode_spacing_MHz` is drawn on
     both dependency panels as a vertical line (at the spacing itself, and at
-    the small arm length that yields it), so pass it along with plot_system.
+    the small arm length that yields it), and the cavity is drawn at that small
+    arm length, so the plotted system has the NA that is about to be reported.
+    A measurement the lens scan never reached raises ModeSpacingOutOfRange
+    rather than being extrapolated - as does looking one up on the returned
+    interpolators.
     When the cavity-design project cannot be imported or the simulation
     fails, returns (None, None, '<why>') — callers report the MHz quantities
     and mark the NA unavailable.
@@ -321,9 +325,10 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
                     plot_system=plot_system,
                 )
             result = (mode_spacing_interp, mode_spacing_over_fsr_interp, None)
-        except simulation.UnknownCavityElement:
-            # A misspelled element name is a typo in the caller's config block, not a missing
-            # simulation: fail loudly instead of silently dropping the NA from the report.
+        except (simulation.UnknownCavityElement, simulation.ModeSpacingOutOfRange):
+            # A misspelled element name, or a measurement the scan never reached, is something the
+            # caller has to fix in its own config - not a missing simulation. Fail loudly instead
+            # of silently dropping the NA from the report.
             raise
         except Exception as error:
             result = (None, None, f'{type(error).__name__}: {error}')

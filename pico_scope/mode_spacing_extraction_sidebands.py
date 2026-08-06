@@ -91,7 +91,7 @@ SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation 
 LONG_ARM_LENGTH = 34.4e-2         # [m] lens -> far mirror; only the DEFAULT - the
                                   # value actually used is asked for on every run
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
-N_points = 200                    # lens positions simulated across SHORT_ARM_LENGTHS
+N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 
 
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
