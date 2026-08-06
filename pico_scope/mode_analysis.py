@@ -18,12 +18,21 @@ from scipy.optimize import curve_fit
 MAX_FIT_POINTS = 500              # decimate fits to at most this many points
 DEFAULT_SIDEBAND_FREQ_MHZ = 25.0  # single-side EOM modulation frequency [MHz]
 SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
+N_points = 200
 LONG_ARM_LENGTH = 34.4e-2
 MID_ARM_LENGTH = 1.5e-2
 SHORT_ARM_LENGTHS = 4e-4          # the simulation's lens-scan parameter
 SHORT_ARM_LENGTH = 0.7e-2         # the physical short arm: sets the cavity
                                   # length and with it the FSR
 SPEED_OF_LIGHT = 299792458.0      # m / s
+
+# The cavity's optical elements, named after the cavity-design catalog and listed in optical order.
+# This is only the default for callers that do not pass their own (the kalishlot web GUI); the
+# offline scripts define their own list in a config block at the top of the file.
+# See list_cavity_elements() for the available names.
+CAVITY_ELEMENTS = ['LASER_OPTIK_MIRROR',
+                   'EDMUND_4p5MM_ASPHERIC_83580',
+                   'COASTLINE_20CM_MIRROR']
 
 SIX_LORENTZIAN_PARAMS = ['A0', 's0', 'x0', 'A1', 's1', 'x1', 'd', 'r', 'y0']
 DOUBLE_LORENTZIAN_PARAMS = ['x01', 'gamma1', 'A1', 'x02', 'gamma2', 'A2', 'y0']
@@ -235,44 +244,80 @@ def pair_summary(rows):
 # The mode-spacing <-> NA relation comes from the external cavity-design
 # project (path in local_config.py). Building the interpolators runs the whole
 # lens-position simulation and takes a while, so they are cached per geometry.
-_na_cache = {}  # (long_arm, mid_arm, short_arms) -> (interp, interp, error)
+_na_cache = {}  # (elements, long_arm, mid_arm, short_arms, N_points) -> (interp, interp, error)
+
+
+def _add_cavity_design_to_path():
+    """Put the repo root and the cavity-design project on sys.path."""
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from local_config import PATH_CAVITY_DESIGN_PROJECT
+    if PATH_CAVITY_DESIGN_PROJECT not in sys.path:
+        sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
+
+
+def _import_simulation():
+    """Import the cavity-design lens-position simulation (raises if unavailable)."""
+    _add_cavity_design_to_path()
+    import simple_analysis_scripts.mode_spacing_to_NA as simulation
+    return simulation
+
+
+def list_cavity_elements():
+    """Names accepted in a cavity element list, from the cavity-design catalog.
+
+        python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\\n')"
+    """
+    _add_cavity_design_to_path()
+    from cavity_design import EXISTING_ELEMENTS_REGISTRY
+    return sorted(EXISTING_ELEMENTS_REGISTRY)
 
 
 def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
                          short_arm_lengths=SHORT_ARM_LENGTHS,
+                         elements=CAVITY_ELEMENTS,
+                         N_points=N_points,
                          plot_cavity=False, plot_spectrum=False,
                          plot_dependencies=False):
     """Return (mode_spacing_interp, mode_spacing_over_fsr_interp, error).
 
     mode_spacing_interp maps mode spacing [Hz] -> NA;
     mode_spacing_over_fsr_interp maps (df / FSR) -> NA.
+    `elements` names the cavity's optical elements in optical order (see
+    list_cavity_elements()); a name that is not in the catalog is an error the
+    caller must fix, so it is raised, not reported.
     When the cavity-design project cannot be imported or the simulation
     fails, returns (None, None, '<why>') — callers report the MHz quantities
     and mark the NA unavailable.
     """
-    key = (long_arm, mid_arm, short_arm_lengths)
+    key = (tuple(elements), long_arm, mid_arm, short_arm_lengths, N_points)
     if key in _na_cache:
         return _na_cache[key]
     try:
-        repo_root = str(Path(__file__).resolve().parents[1])
-        if repo_root not in sys.path:
-            sys.path.insert(0, repo_root)
-        from local_config import PATH_CAVITY_DESIGN_PROJECT
-        if PATH_CAVITY_DESIGN_PROJECT not in sys.path:
-            sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
-        import simple_analysis_scripts.mode_spacing_to_NA as simulation
-        mode_spacing_interp, mode_spacing_over_fsr_interp = \
-            simulation.generate_lens_position_dependencies_output(
-                short_arm_lengths=short_arm_lengths,
-                long_arm_length=long_arm,
-                mid_arm_length=mid_arm,
-                plot_cavity=plot_cavity,
-                plot_spectrum=plot_spectrum,
-                plot_dependencies=plot_dependencies,
-            )
-        result = (mode_spacing_interp, mode_spacing_over_fsr_interp, None)
+        simulation = _import_simulation()
     except Exception as error:
         result = (None, None, f'{type(error).__name__}: {error}')
+    else:
+        try:
+            mode_spacing_interp, mode_spacing_over_fsr_interp = \
+                simulation.generate_lens_position_dependencies_output(
+                    short_arm_lengths=short_arm_lengths,
+                    long_arm_length=long_arm,
+                    mid_arm_length=mid_arm,
+                    elements=list(elements),
+                    N_points=N_points,
+                    plot_cavity=plot_cavity,
+                    plot_spectrum=plot_spectrum,
+                    plot_dependencies=plot_dependencies,
+                )
+            result = (mode_spacing_interp, mode_spacing_over_fsr_interp, None)
+        except simulation.UnknownCavityElement:
+            # A misspelled element name is a typo in the caller's config block, not a missing
+            # simulation: fail loudly instead of silently dropping the NA from the report.
+            raise
+        except Exception as error:
+            result = (None, None, f'{type(error).__name__}: {error}')
     _na_cache[key] = result
     return result
 

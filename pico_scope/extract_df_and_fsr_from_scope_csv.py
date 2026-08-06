@@ -14,20 +14,33 @@ import itertools
 # in pico_scope.mode_analysis so the kalishlot web GUI runs the exact same
 # operations live on the streaming scope.
 from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,
-                                      LONG_ARM_LENGTH, MID_ARM_LENGTH,
-                                      SHORT_ARM_LENGTH,
                                       area_lorentzian as lorentzian,
                                       cavity_fsr_mhz, double_lorentzian,
                                       fit_lorentzian_pair,
                                       get_na_interpolators,
                                       pair_positions_results, pair_summary)
 
+# --- the cavity being measured (edit this when the setup changes) ----------
+# Element names come from the cavity-design catalog; list them in optical order.
+# To see the available names:
+#   python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
+CAVITY_ELEMENTS = [
+    'LASER_OPTIK_MIRROR',
+    'EDMUND_4p5MM_ASPHERIC_83580',
+    'COASTLINE_20CM_MIRROR',
+]
+LONG_ARM_LENGTH = 34.4e-2   # [m] lens -> far mirror
+MID_ARM_LENGTH = 1.5e-2     # [m] only used by 4-element cavities
+SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
+
 L = LONG_ARM_LENGTH + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
-FSR_MHZ = cavity_fsr_mhz()
+FSR_MHZ = cavity_fsr_mhz(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
+                         short_arm=SHORT_ARM_LENGTH)
 
 # Built by the cavity-design project (path in local_config.py); cached, so a
 # second analysis in the same session is instant.
-mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = get_na_interpolators()
+mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = get_na_interpolators(
+    elements=CAVITY_ELEMENTS, long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH)
 if mode_spacing_over_fsr_interp is None:
     raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
 # %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
