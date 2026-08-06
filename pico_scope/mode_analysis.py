@@ -226,15 +226,20 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None):
 
 
 def pair_summary(rows):
-    """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR and NA;
-    stds are None with a single row, NA fields None when no pair got an NA."""
+    """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR, df [MHz]
+    and NA; stds are None with a single row, and the NA / MHz fields are None
+    when no pair got an NA / when the rows were built without an FSR in MHz."""
     ratios = np.array([row['df_over_fsr'] for row in rows], dtype=float)
     nas = np.array([row['NA'] for row in rows if row['NA'] is not None],
                    dtype=float)
+    dfs_mhz = np.array([row['df_MHz'] for row in rows if row['df_MHz'] is not None],
+                       dtype=float)
     return {
         'n_pairs': len(rows),
         'df_over_fsr_mean': float(ratios.mean()),
         'df_over_fsr_std': float(ratios.std(ddof=1)) if len(ratios) > 1 else None,
+        'df_MHz_mean': float(dfs_mhz.mean()) if len(dfs_mhz) else None,
+        'df_MHz_std': float(dfs_mhz.std(ddof=1)) if len(dfs_mhz) > 1 else None,
         'NA_mean': float(nas.mean()) if len(nas) else None,
         'NA_std': float(nas.std(ddof=1)) if len(nas) > 1 else None,
     }
@@ -269,9 +274,22 @@ def list_cavity_elements():
 
         python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\\n')"
     """
-    _add_cavity_design_to_path()
-    from cavity_design import EXISTING_ELEMENTS_REGISTRY
-    return sorted(EXISTING_ELEMENTS_REGISTRY)
+    return _import_simulation().available_element_names()
+
+
+def mark_mode_spacing_on_dependencies(mode_spacing_MHz):
+    """Mark a measured mode spacing [MHz] on the cavity-design dependencies figure.
+
+    Draws a vertical line on each panel: at the spacing itself on the NA-vs-spacing panel, and at
+    the small arm length that yields it on the other. Needs a dependencies figure to be open (i.e.
+    get_na_interpolators(..., plot_dependencies=True) earlier in the run). Returns None on success
+    or a '<why>' string, so a missing cavity-design project never breaks the analysis.
+    """
+    try:
+        _import_simulation().mark_mode_spacing(mode_spacing_MHz)
+    except Exception as error:
+        return f'{type(error).__name__}: {error}'
+    return None
 
 
 def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
@@ -292,7 +310,10 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
     and mark the NA unavailable.
     """
     key = (tuple(elements), long_arm, mid_arm, short_arm_lengths, N_points)
-    if key in _na_cache:
+    # The cached interpolators carry no figures with them, so a caller that asked for plots has to
+    # re-run the simulation to get them - otherwise a second run in the same session (a live
+    # console re-running a script) would silently show nothing to mark the measurement on.
+    if key in _na_cache and not (plot_cavity or plot_spectrum or plot_dependencies):
         return _na_cache[key]
     try:
         simulation = _import_simulation()

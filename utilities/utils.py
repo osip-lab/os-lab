@@ -322,6 +322,38 @@ def get_picoscope_trace_path_from_clipboard():
     return input_path, input_path
 
 
+def ask_long_arm_length(default_m, verbose=True):
+    """Ask for the cavity's long arm length in cm; return it in METRES.
+
+    It is the one geometry number that changes between measurements, and a
+    stale value silently biases the NA (the measured mode spacing itself is
+    unaffected), so the analysis scripts prompt for it on every run instead of
+    reading a config constant. Values outside 1 - 1000 cm are rejected: they
+    are almost always a length typed in metres.
+    """
+    default_cm = float(default_m) * 100
+    while True:
+        raw_in = input(
+            f"Long arm length in CENTIMETRES [default {default_cm:g}]: "
+        ).strip()
+        if raw_in == '':
+            value_cm = default_cm
+            break
+        try:
+            value_cm = float(raw_in)
+        except ValueError:
+            print(f"  Could not parse '{raw_in}' as a number.")
+            continue
+        if not 1.0 <= value_cm <= 1000.0:
+            print(f"  {value_cm:g} cm is outside the plausible range "
+                  f"1 - 1000 cm - the value is in centimetres, not metres.")
+            continue
+        break
+    if verbose:
+        print(f"Long arm length: {value_cm:.4g} cm ({value_cm / 100:.4g} m)")
+    return value_cm / 100
+
+
 def convert_path_to_obsidian_embedding_converter(verbose=True):
     """Rewrite a Windows path on the clipboard as an Obsidian embed link.
 

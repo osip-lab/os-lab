@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib
 
 matplotlib.use('Qt5Agg')
-from utilities.utils import (append_numerical_result_line,
+from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
                              get_picoscope_trace_path_from_clipboard)
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,6 +18,7 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,
                                       cavity_fsr_mhz, double_lorentzian,
                                       fit_lorentzian_pair,
                                       get_na_interpolators,
+                                      mark_mode_spacing_on_dependencies,
                                       pair_positions_results, pair_summary)
 
 # --- the cavity being measured (edit this when the setup changes) ----------
@@ -27,20 +28,32 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,
 CAVITY_ELEMENTS = [
     'LASER_OPTIK_MIRROR',
     'EDMUND_4p5MM_ASPHERIC_83580',
+    'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
     'COASTLINE_20CM_MIRROR',
 ]
-LONG_ARM_LENGTH = 34.4e-2   # [m] lens -> far mirror
-MID_ARM_LENGTH = 1.5e-2     # [m] only used by 4-element cavities
+SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
+LONG_ARM_LENGTH = 36e-2         # [m] lens -> far mirror; only the DEFAULT - the
+                                  # value actually used is asked for on every run
+MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
+N_points = 200                    # lens positions simulated across SHORT_ARM_LENGTHS
 SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
+PLOT_CAVITY=True
+# The dependency plot is not optional - it is where the measured mode spacing is marked once
+# the pairs have been fitted.
 
-L = LONG_ARM_LENGTH + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
-FSR_MHZ = cavity_fsr_mhz(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
+# The long arm changes between measurements, so it is asked for on every run;
+# LONG_ARM_LENGTH above is only the default. It feeds both the FSR and the NA
+# simulation, so it has to be answered before either is built.
+long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
+
+L = long_arm_length + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
+FSR_MHZ = cavity_fsr_mhz(long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH,
                          short_arm=SHORT_ARM_LENGTH)
 
 # Built by the cavity-design project (path in local_config.py); cached, so a
 # second analysis in the same session is instant.
 mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = get_na_interpolators(
-    elements=CAVITY_ELEMENTS, long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH)
+    elements=CAVITY_ELEMENTS, long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH, N_points=N_points, plot_dependencies=True, plot_cavity=PLOT_CAVITY)
 if mode_spacing_over_fsr_interp is None:
     raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
 # %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
@@ -239,16 +252,30 @@ else:
     results_df = pd.DataFrame(rows)
     print(results_df)
 
-    # Record the extraction next to the original data file (one line per run).
     summary = pair_summary(rows)
+
+    # Mark the measured mode spacing (the mean df over the pairs) on both panels of the
+    # dependency plot: at the spacing itself on the right, at the small arm length that
+    # would produce it on the left.
+    if summary["df_MHz_mean"] is not None:
+        mark_error = mark_mode_spacing_on_dependencies(summary["df_MHz_mean"])
+        if mark_error is not None:
+            print(f"Could not mark the dependency plots: {mark_error}")
+
+    # Record the extraction next to the original data file (one line per run).
     na_text = (f"{summary['NA_mean']:.4f}" if summary["NA_mean"] is not None
                else "unavailable (df/FSR outside the simulated range)")
-    results_text = (f"long_arm_length = {LONG_ARM_LENGTH:.4g} m, "
+    df_mhz_text = (f"{summary['df_MHz_mean']:.4f} MHz"
+                   if summary["df_MHz_mean"] is not None else "unavailable")
+    results_text = (f"long_arm_length = {long_arm_length:.4g} m, "
                     f"n_mode_pairs = {summary['n_pairs']}, "
+                    f"mode_spacing = {df_mhz_text}, "
                     f"df_over_fsr = {summary['df_over_fsr_mean']:.4f}, "
                     f"NA = {na_text}")
     if summary["df_over_fsr_std"] is not None:
         results_text += f" (std over pairs: df_over_fsr {summary['df_over_fsr_std']:.4f}"
+        if summary["df_MHz_std"] is not None:
+            results_text += f", mode_spacing {summary['df_MHz_std']:.4f} MHz"
         if summary["NA_std"] is not None:
             results_text += f", NA {summary['NA_std']:.4f}"
         results_text += ")"

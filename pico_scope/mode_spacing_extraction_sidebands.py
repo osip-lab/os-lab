@@ -10,9 +10,9 @@ Pipeline
 1. Load a PicoScope trace (file path taken from the clipboard). Both .csv and
    .psdata files are accepted; .psdata files are converted to CSV on the fly
    via PicoScope 7's command-line BatchConvert.
-2. Choose the analysis mode and enter the long arm length (it changes between
-   measurements, so it is asked for every run rather than read from a config
-   constant), then plot the spectrum in an interactive Qt window.
+2. Choose the analysis mode and enter the long arm length in cm (it changes
+   between measurements, so it is asked for every run rather than read from a
+   config constant), then plot the spectrum in an interactive Qt window.
 3. Drag a horizontal window to select the region of interest (the full-trace
    window closes once the region is picked).
 4. Click the zeroth-order mode.
@@ -40,7 +40,9 @@ Pipeline
     simulates - the optical elements and the arm lengths - is defined in the
     configuration block at the top of this file; nothing has to be edited in
     the cavity-design project.
-11. Print mode spacing, linewidths and NA together.
+11. Print mode spacing, linewidths and NA together, and mark the measured
+    spacing on both panels of the simulation's dependency plot (on the left
+    panel, at the small arm length that would produce it).
 12. Append a one-line record (long arm length, mode spacing, NA, waveform
     buffer) to numerical-results.txt in the folder of the original data file.
 
@@ -60,7 +62,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
-from utilities.utils import (append_numerical_result_line,
+from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
                              get_picoscope_trace_path_from_clipboard)
 # All the math (models, fit, scaling, NA mapping) lives in mode_analysis so
 # the kalishlot web GUI runs the identical computation on the live stream.
@@ -69,6 +71,7 @@ from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
                                       SIX_LORENTZIAN_PARAMS, decimate,
                                       fit_six_lorentzians,
                                       get_na_interpolators, lorentzian,
+                                      mark_mode_spacing_on_dependencies,
                                       sideband_results, six_lorentzian_model)
 
 # --- configuration the user may want to tweak ------------------------------
@@ -82,6 +85,7 @@ SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
 CAVITY_ELEMENTS = [
     'LASER_OPTIK_MIRROR',
     'EDMUND_4p5MM_ASPHERIC_83580',
+    'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
@@ -93,10 +97,10 @@ N_points = 200                    # lens positions simulated across SHORT_ARM_LE
 # --- NA mapping (cavity-design project) ------------------------------------
 # Plot toggles passed to generate_lens_position_dependencies_output(); the
 # cavity / spectrum / dependency plots are shown non-blocking, so the final
-# report prints without waiting for the windows to be closed.
+# report prints without waiting for the windows to be closed. The dependency
+# plot is not optional - it is where the measurement is marked (step 11.5).
 SIM_PLOT_CAVITY = True
 SIM_PLOT_SPECTRUM = False
-SIM_PLOT_DEPENDENCIES = True
 
 
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
@@ -145,37 +149,10 @@ def ask_analysis_mode():
         print("  Please enter 'f' (fit) or 'p' (point-selection).")
 
 
-def ask_long_arm_length(default_m):
-    """Return the long arm length [m], asked every run.
-
-    It is the one geometry number that changes between measurements, and a
-    stale value silently biases the NA (the mode spacing itself is unaffected),
-    so it is prompted rather than left to the config block. Values outside
-    1 cm - 10 m are rejected: they are almost always metres/centimetres mix-ups.
-    """
-    while True:
-        raw_in = input(
-            f"Long arm length in METRES [default {default_m:g}]: "
-        ).strip()
-        if raw_in == '':
-            return float(default_m)
-        try:
-            value = float(raw_in)
-        except ValueError:
-            print(f"  Could not parse '{raw_in}' as a number.")
-            continue
-        if not 0.01 <= value <= 10.0:
-            print(f"  {value:g} m is outside the plausible range 0.01 - 10 m "
-                  f"- the value is in metres, not centimetres.")
-            continue
-        return value
-
-
 analysis_mode = ask_analysis_mode()
 print(f"Analysis mode: {analysis_mode}")
 
-long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)
-print(f"Long arm length: {long_arm_length:.4g} m ({long_arm_length * 100:.4g} cm)")
+long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
 
 
 # %% [Step 2] Plot the full spectrum ----------------------------------------
@@ -383,7 +360,7 @@ mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = \
         mid_arm=MID_ARM_LENGTH,
         plot_cavity=SIM_PLOT_CAVITY,
         plot_spectrum=SIM_PLOT_SPECTRUM,
-        plot_dependencies=SIM_PLOT_DEPENDENCIES,
+        plot_dependencies=True,  # always: step 11.5 marks the measurement on it
     )
 if na_error is not None:
     print(f"NA mapping unavailable: {na_error}")
@@ -395,6 +372,14 @@ results = report_results(
     fit_params=fit_params, fit_errors=fit_errors,
     na_interp=mode_spacing_interp,
 )
+
+
+# %% [Step 11.5] Mark the measurement on the dependency plots ----------------
+# A vertical line on each panel: at the measured spacing on the NA-vs-spacing
+# panel, and at the small arm length that would produce it on the other.
+mark_error = mark_mode_spacing_on_dependencies(results['mode_spacing_MHz'])
+if mark_error is not None:
+    print(f"Could not mark the dependency plots: {mark_error}")
 
 
 # %% [Step 12] Record the results next to the original data file -------------
