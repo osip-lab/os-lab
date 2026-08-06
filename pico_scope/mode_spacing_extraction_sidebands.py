@@ -39,10 +39,10 @@ Pipeline
     simulation (simple_analysis_scripts.mode_spacing_to_NA). The cavity it
     simulates - the optical elements and the arm lengths - is defined in the
     configuration block at the top of this file; nothing has to be edited in
-    the cavity-design project.
-11. Print mode spacing, linewidths and NA together, and mark the measured
-    spacing on both panels of the simulation's dependency plot (on the left
+    the cavity-design project. The measured spacing goes in with it, so the
+    dependency plot comes back with it marked on both panels (on the left
     panel, at the small arm length that would produce it).
+11. Print mode spacing, linewidths and NA together.
 12. Append a one-line record (long arm length, mode spacing, NA, waveform
     buffer) to numerical-results.txt in the folder of the original data file.
 
@@ -71,7 +71,6 @@ from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
                                       SIX_LORENTZIAN_PARAMS, decimate,
                                       fit_six_lorentzians,
                                       get_na_interpolators, lorentzian,
-                                      mark_mode_spacing_on_dependencies,
                                       sideband_results, six_lorentzian_model)
 
 # --- configuration the user may want to tweak ------------------------------
@@ -93,14 +92,6 @@ LONG_ARM_LENGTH = 34.4e-2         # [m] lens -> far mirror; only the DEFAULT - t
                                   # value actually used is asked for on every run
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 200                    # lens positions simulated across SHORT_ARM_LENGTHS
-
-# --- NA mapping (cavity-design project) ------------------------------------
-# Plot toggles passed to generate_lens_position_dependencies_output(); the
-# cavity / spectrum / dependency plots are shown non-blocking, so the final
-# report prints without waiting for the windows to be closed. The dependency
-# plot is not optional - it is where the measurement is marked (step 11.5).
-SIM_PLOT_CAVITY = True
-SIM_PLOT_SPECTRUM = False
 
 
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
@@ -349,7 +340,10 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
 # local_config.py); mode_analysis builds and caches the interpolators.
 # mode_spacing_interp: mode spacing [Hz] -> NA
 
-
+# The measured spacing is handed to the simulation so it can draw it on the
+# dependency plot; the same call in step 11 turns it into an NA.
+measured_mode_spacing_MHz = sideband_results(
+    x0, x1, d, s0, s1, f_sb_mhz)['mode_spacing_MHz']
 
 mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = \
     get_na_interpolators(
@@ -358,9 +352,8 @@ mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = \
         N_points=N_points,
         long_arm=long_arm_length,  # asked in step 1.5, not the config default
         mid_arm=MID_ARM_LENGTH,
-        plot_cavity=SIM_PLOT_CAVITY,
-        plot_spectrum=SIM_PLOT_SPECTRUM,
-        plot_dependencies=True,  # always: step 11.5 marks the measurement on it
+        measured_mode_spacing_MHz=measured_mode_spacing_MHz,
+        plot_system=True,  # always: the plot is what carries the measurement marker
     )
 if na_error is not None:
     print(f"NA mapping unavailable: {na_error}")
@@ -372,14 +365,6 @@ results = report_results(
     fit_params=fit_params, fit_errors=fit_errors,
     na_interp=mode_spacing_interp,
 )
-
-
-# %% [Step 11.5] Mark the measurement on the dependency plots ----------------
-# A vertical line on each panel: at the measured spacing on the NA-vs-spacing
-# panel, and at the small arm length that would produce it on the other.
-mark_error = mark_mode_spacing_on_dependencies(results['mode_spacing_MHz'])
-if mark_error is not None:
-    print(f"Could not mark the dependency plots: {mark_error}")
 
 
 # %% [Step 12] Record the results next to the original data file -------------

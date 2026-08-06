@@ -277,27 +277,12 @@ def list_cavity_elements():
     return _import_simulation().available_element_names()
 
 
-def mark_mode_spacing_on_dependencies(mode_spacing_MHz):
-    """Mark a measured mode spacing [MHz] on the cavity-design dependencies figure.
-
-    Draws a vertical line on each panel: at the spacing itself on the NA-vs-spacing panel, and at
-    the small arm length that yields it on the other. Needs a dependencies figure to be open (i.e.
-    get_na_interpolators(..., plot_dependencies=True) earlier in the run). Returns None on success
-    or a '<why>' string, so a missing cavity-design project never breaks the analysis.
-    """
-    try:
-        _import_simulation().mark_mode_spacing(mode_spacing_MHz)
-    except Exception as error:
-        return f'{type(error).__name__}: {error}'
-    return None
-
-
 def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
                          short_arm_lengths=SHORT_ARM_LENGTHS,
                          elements=CAVITY_ELEMENTS,
                          N_points=N_points,
-                         plot_cavity=False, plot_spectrum=False,
-                         plot_dependencies=False):
+                         measured_mode_spacing_MHz=None,
+                         plot_system=False):
     """Return (mode_spacing_interp, mode_spacing_over_fsr_interp, error).
 
     mode_spacing_interp maps mode spacing [Hz] -> NA;
@@ -305,15 +290,19 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
     `elements` names the cavity's optical elements in optical order (see
     list_cavity_elements()); a name that is not in the catalog is an error the
     caller must fix, so it is raised, not reported.
+    `plot_system` shows the simulated system in one window: the two dependency
+    panels plus the cavity underneath. `measured_mode_spacing_MHz` is drawn on
+    both dependency panels as a vertical line (at the spacing itself, and at
+    the small arm length that yields it), so pass it along with plot_system.
     When the cavity-design project cannot be imported or the simulation
     fails, returns (None, None, '<why>') — callers report the MHz quantities
     and mark the NA unavailable.
     """
     key = (tuple(elements), long_arm, mid_arm, short_arm_lengths, N_points)
-    # The cached interpolators carry no figures with them, so a caller that asked for plots has to
-    # re-run the simulation to get them - otherwise a second run in the same session (a live
-    # console re-running a script) would silently show nothing to mark the measurement on.
-    if key in _na_cache and not (plot_cavity or plot_spectrum or plot_dependencies):
+    # The cache holds interpolators, not figures, and `measured_mode_spacing_MHz` only ever changes
+    # what is drawn - so a caller that asked for plots has to re-run the simulation, or a second run
+    # in the same session (a live console re-running a script) would get no plots at all.
+    if key in _na_cache and not plot_system:
         return _na_cache[key]
     try:
         simulation = _import_simulation()
@@ -328,9 +317,8 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
                     mid_arm_length=mid_arm,
                     elements=list(elements),
                     N_points=N_points,
-                    plot_cavity=plot_cavity,
-                    plot_spectrum=plot_spectrum,
-                    plot_dependencies=plot_dependencies,
+                    measured_mode_spacing_MHz=measured_mode_spacing_MHz,
+                    plot_system=plot_system,
                 )
             result = (mode_spacing_interp, mode_spacing_over_fsr_interp, None)
         except simulation.UnknownCavityElement:

@@ -18,7 +18,6 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,
                                       cavity_fsr_mhz, double_lorentzian,
                                       fit_lorentzian_pair,
                                       get_na_interpolators,
-                                      mark_mode_spacing_on_dependencies,
                                       pair_positions_results, pair_summary)
 
 # --- the cavity being measured (edit this when the setup changes) ----------
@@ -37,9 +36,6 @@ LONG_ARM_LENGTH = 36e-2         # [m] lens -> far mirror; only the DEFAULT - the
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 200                    # lens positions simulated across SHORT_ARM_LENGTHS
 SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
-PLOT_CAVITY=True
-# The dependency plot is not optional - it is where the measured mode spacing is marked once
-# the pairs have been fitted.
 
 # The long arm changes between measurements, so it is asked for on every run;
 # LONG_ARM_LENGTH above is only the default. It feeds both the FSR and the NA
@@ -50,12 +46,9 @@ L = long_arm_length + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in mete
 FSR_MHZ = cavity_fsr_mhz(long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH,
                          short_arm=SHORT_ARM_LENGTH)
 
-# Built by the cavity-design project (path in local_config.py); cached, so a
-# second analysis in the same session is instant.
-mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = get_na_interpolators(
-    elements=CAVITY_ELEMENTS, long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH, N_points=N_points, plot_dependencies=True, plot_cavity=PLOT_CAVITY)
-if mode_spacing_over_fsr_interp is None:
-    raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
+# The NA mapping is NOT built here: the cavity-design simulation is run at the end of the
+# script, once every pair has been fitted, so that the measured mode spacing can be handed
+# to it and come back marked on its dependency plot.
 # %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
 specific_file_path, input_path = get_picoscope_trace_path_from_clipboard()
 
@@ -71,7 +64,13 @@ lorentzian_positions = [[]]
 fit_colors = itertools.cycle(["r", "g", "b", "m", "c", "y"])
 current_color = next(fit_colors)
 
+# Kept as the figure's suptitle rather than the axes title, which the handlers below overwrite
+# with the current mode - this way the instructions stay on screen while you click.
+SELECTION_INSTRUCTIONS = ("Drag the zeroth lorentzian range and the first order lorentzian "
+                          "in each FSR sequentially.")
+
 fig, ax = plt.subplots()
+fig.suptitle(SELECTION_INSTRUCTIONS)
 ax.plot(x, y, label="Raw Data")
 fit_lines = []
 position_lines = []
@@ -94,17 +93,17 @@ def add_position(x0):
         current_color = next(fit_colors)
 
 
-def print_latest_pair_na():
+def print_latest_pair():
     # Needs two consecutive completed pairs: the FSR is the spacing between their first peaks.
+    # No NA here - that needs the simulation, which only runs once every pair has been fitted.
     pairs = [pos for pos in lorentzian_positions if len(pos) == 2]
     if len(pairs) < 2:
         return
     fsr = np.abs(pairs[-1][0] - pairs[-2][0])
     df_pair = np.abs(pairs[-1][1] - pairs[-1][0])
     df_over_fsr = df_pair / fsr
-    na = float(mode_spacing_over_fsr_interp(df_over_fsr))
     df_mhz = df_over_fsr * FSR_MHZ
-    print(f"df/FSR = {df_over_fsr:.4f}, NA = {na:.4f}, "
+    print(f"df/FSR = {df_over_fsr:.4f}, "
           f"df = {df_mhz:.2f} MHz (FSR = {FSR_MHZ:.1f} MHz for L = {L:.4g} m)")
 
 
@@ -172,7 +171,7 @@ def onselect(xmin, xmax):
                 fit_line, = ax.plot(fit_x, fit_y, color=current_color, linestyle="--")
                 fit_lines.append(fit_line)
 
-                print_latest_pair_na()
+                print_latest_pair()
 
                 current_color = next(fit_colors)
                 double_span_stage = 0
@@ -247,20 +246,29 @@ print("after cleaning:", lorentzian_positions)
 if len(lorentzian_positions) < 2:
     print("Not enough data to calculate FSR and df.")
 else:
+    # First pass, without the NA mapping: it gives the measured mode spacing (the mean df
+    # over the pairs), which the simulation needs before it runs in order to mark it on the
+    # dependency plot.
+    measured_mode_spacing_MHz = pair_summary(
+        pair_positions_results(lorentzian_positions, fsr_mhz=FSR_MHZ))['df_MHz_mean']
+    print(f"Measured mode spacing: {measured_mode_spacing_MHz:.4f} MHz")
+
+    # Built by the cavity-design project (path in local_config.py). Slow - it runs the whole
+    # lens-position simulation - so it happens once, here, rather than per fitted pair.
+    mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = get_na_interpolators(
+        elements=CAVITY_ELEMENTS, long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH,
+        short_arm_lengths=SHORT_ARM_LENGTHS, N_points=N_points,
+        measured_mode_spacing_MHz=measured_mode_spacing_MHz,
+        plot_system=True)  # always: the plot is what carries the measurement marker
+    if mode_spacing_over_fsr_interp is None:
+        raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
+
+    # Second pass, now with an NA per pair.
     rows = pair_positions_results(lorentzian_positions, fsr_mhz=FSR_MHZ,
                                   na_over_fsr_interp=mode_spacing_over_fsr_interp)
     results_df = pd.DataFrame(rows)
     print(results_df)
-
     summary = pair_summary(rows)
-
-    # Mark the measured mode spacing (the mean df over the pairs) on both panels of the
-    # dependency plot: at the spacing itself on the right, at the small arm length that
-    # would produce it on the left.
-    if summary["df_MHz_mean"] is not None:
-        mark_error = mark_mode_spacing_on_dependencies(summary["df_MHz_mean"])
-        if mark_error is not None:
-            print(f"Could not mark the dependency plots: {mark_error}")
 
     # Record the extraction next to the original data file (one line per run).
     na_text = (f"{summary['NA_mean']:.4f}" if summary["NA_mean"] is not None
