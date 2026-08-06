@@ -84,7 +84,7 @@ SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
 CAVITY_ELEMENTS = [
     'LASER_OPTIK_MIRROR',
     'EDMUND_4p5MM_ASPHERIC_83580',
-    'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
+    # 'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
@@ -226,21 +226,21 @@ print(f"d  guess = {d_guess:.6g} s  (from sideband click)")
 
 
 # %% [Step 7] Enter the sideband modulation frequency -----------------------
-# def ask_sideband_freq(default_mhz):
-#     raw_in = input(
-#         f"Step 7: sideband (single-side) frequency in MHz "
-#         f"[default {default_mhz}]: "
-#     ).strip()
-#     if raw_in == '':
-#         return float(default_mhz)
-#     try:
-#         return float(raw_in)
-#     except ValueError:
-#         print(f"  Could not parse '{raw_in}', using default {default_mhz} MHz.")
-#         return float(default_mhz)
+def ask_sideband_freq(default_mhz):
+    raw_in = input(
+        f"Step 7: sideband (single-side) frequency in MHz "
+        f"[default {default_mhz}]: "
+    ).strip()
+    if raw_in == '':
+        return float(default_mhz)
+    try:
+        return float(raw_in)
+    except ValueError:
+        print(f"  Could not parse '{raw_in}', using default {default_mhz} MHz.")
+        return float(default_mhz)
 
 
-f_sb_mhz = DEFAULT_SIDEBAND_FREQ_MHZ  # ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
+f_sb_mhz = ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
 print(f"Using sideband frequency f_sb = {f_sb_mhz} MHz (per side).")
 
 
