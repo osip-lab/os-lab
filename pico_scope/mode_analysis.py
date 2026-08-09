@@ -18,12 +18,21 @@ from scipy.optimize import curve_fit
 MAX_FIT_POINTS = 500              # decimate fits to at most this many points
 DEFAULT_SIDEBAND_FREQ_MHZ = 25.0  # single-side EOM modulation frequency [MHz]
 SIDEBAND_AMP_RATIO_GUESS = 6.0    # r: main-peak / sideband-peak amplitude ratio
-LONG_ARM_LENGTH = 40e-2
+N_points = 200
+LONG_ARM_LENGTH = 34.4e-2
 MID_ARM_LENGTH = 1.5e-2
 SHORT_ARM_LENGTHS = 4e-4          # the simulation's lens-scan parameter
 SHORT_ARM_LENGTH = 0.7e-2         # the physical short arm: sets the cavity
                                   # length and with it the FSR
 SPEED_OF_LIGHT = 299792458.0      # m / s
+
+# The cavity's optical elements, named after the cavity-design catalog and listed in optical order.
+# This is only the default for callers that do not pass their own (the kalishlot web GUI); the
+# offline scripts define their own list in a config block at the top of the file.
+# See list_cavity_elements() for the available names.
+CAVITY_ELEMENTS = ['LASER_OPTIK_MIRROR',
+                   'EDMUND_4p5MM_ASPHERIC_83580',
+                   'COASTLINE_20CM_MIRROR']
 
 SIX_LORENTZIAN_PARAMS = ['A0', 's0', 'x0', 'A1', 's1', 'x1', 'd', 'r', 'y0']
 DOUBLE_LORENTZIAN_PARAMS = ['x01', 'gamma1', 'A1', 'x02', 'gamma2', 'A2', 'y0']
@@ -217,15 +226,20 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None):
 
 
 def pair_summary(rows):
-    """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR and NA;
-    stds are None with a single row, NA fields None when no pair got an NA."""
+    """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR, df [MHz]
+    and NA; stds are None with a single row, and the NA / MHz fields are None
+    when no pair got an NA / when the rows were built without an FSR in MHz."""
     ratios = np.array([row['df_over_fsr'] for row in rows], dtype=float)
     nas = np.array([row['NA'] for row in rows if row['NA'] is not None],
                    dtype=float)
+    dfs_mhz = np.array([row['df_MHz'] for row in rows if row['df_MHz'] is not None],
+                       dtype=float)
     return {
         'n_pairs': len(rows),
         'df_over_fsr_mean': float(ratios.mean()),
         'df_over_fsr_std': float(ratios.std(ddof=1)) if len(ratios) > 1 else None,
+        'df_MHz_mean': float(dfs_mhz.mean()) if len(dfs_mhz) else None,
+        'df_MHz_std': float(dfs_mhz.std(ddof=1)) if len(dfs_mhz) > 1 else None,
         'NA_mean': float(nas.mean()) if len(nas) else None,
         'NA_std': float(nas.std(ddof=1)) if len(nas) > 1 else None,
     }
@@ -235,44 +249,89 @@ def pair_summary(rows):
 # The mode-spacing <-> NA relation comes from the external cavity-design
 # project (path in local_config.py). Building the interpolators runs the whole
 # lens-position simulation and takes a while, so they are cached per geometry.
-_na_cache = {}  # (long_arm, mid_arm, short_arms) -> (interp, interp, error)
+_na_cache = {}  # (elements, long_arm, mid_arm, short_arms, N_points) -> (interp, interp, error)
+
+
+def _add_cavity_design_to_path():
+    """Put the repo root and the cavity-design project on sys.path."""
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from local_config import PATH_CAVITY_DESIGN_PROJECT
+    if PATH_CAVITY_DESIGN_PROJECT not in sys.path:
+        sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
+
+
+def _import_simulation():
+    """Import the cavity-design lens-position simulation (raises if unavailable)."""
+    _add_cavity_design_to_path()
+    import simple_analysis_scripts.mode_spacing_to_NA as simulation
+    return simulation
+
+
+def list_cavity_elements():
+    """Names accepted in a cavity element list, from the cavity-design catalog.
+
+        python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\\n')"
+    """
+    return _import_simulation().available_element_names()
 
 
 def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
                          short_arm_lengths=SHORT_ARM_LENGTHS,
-                         plot_cavity=False, plot_spectrum=False,
-                         plot_dependencies=False):
+                         elements=CAVITY_ELEMENTS,
+                         N_points=N_points,
+                         measured_mode_spacing_MHz=None,
+                         plot_system=False):
     """Return (mode_spacing_interp, mode_spacing_over_fsr_interp, error).
 
     mode_spacing_interp maps mode spacing [Hz] -> NA;
     mode_spacing_over_fsr_interp maps (df / FSR) -> NA.
+    `elements` names the cavity's optical elements in optical order (see
+    list_cavity_elements()); a name that is not in the catalog is an error the
+    caller must fix, so it is raised, not reported.
+    `plot_system` shows the simulated system in one window: the two dependency
+    panels plus the cavity underneath. `measured_mode_spacing_MHz` is drawn on
+    both dependency panels as a vertical line (at the spacing itself, and at
+    the small arm length that yields it), and the cavity is drawn at that small
+    arm length, so the plotted system has the NA that is about to be reported.
+    A measurement the lens scan never reached raises ModeSpacingOutOfRange
+    rather than being extrapolated - as does looking one up on the returned
+    interpolators.
     When the cavity-design project cannot be imported or the simulation
     fails, returns (None, None, '<why>') — callers report the MHz quantities
     and mark the NA unavailable.
     """
-    key = (long_arm, mid_arm, short_arm_lengths)
-    if key in _na_cache:
+    key = (tuple(elements), long_arm, mid_arm, short_arm_lengths, N_points)
+    # The cache holds interpolators, not figures, and `measured_mode_spacing_MHz` only ever changes
+    # what is drawn - so a caller that asked for plots has to re-run the simulation, or a second run
+    # in the same session (a live console re-running a script) would get no plots at all.
+    if key in _na_cache and not plot_system:
         return _na_cache[key]
     try:
-        repo_root = str(Path(__file__).resolve().parents[1])
-        if repo_root not in sys.path:
-            sys.path.insert(0, repo_root)
-        from local_config import PATH_CAVITY_DESIGN_PROJECT
-        if PATH_CAVITY_DESIGN_PROJECT not in sys.path:
-            sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
-        import simple_analysis_scripts.mode_spacing_to_NA as simulation
-        mode_spacing_interp, mode_spacing_over_fsr_interp = \
-            simulation.generate_lens_position_dependencies_output(
-                short_arm_lengths=short_arm_lengths,
-                long_arm_length=long_arm,
-                mid_arm_length=mid_arm,
-                plot_cavity=plot_cavity,
-                plot_spectrum=plot_spectrum,
-                plot_dependencies=plot_dependencies,
-            )
-        result = (mode_spacing_interp, mode_spacing_over_fsr_interp, None)
+        simulation = _import_simulation()
     except Exception as error:
         result = (None, None, f'{type(error).__name__}: {error}')
+    else:
+        try:
+            mode_spacing_interp, mode_spacing_over_fsr_interp = \
+                simulation.generate_lens_position_dependencies_output(
+                    short_arm_lengths=short_arm_lengths,
+                    long_arm_length=long_arm,
+                    mid_arm_length=mid_arm,
+                    elements=list(elements),
+                    N_points=N_points,
+                    measured_mode_spacing_MHz=measured_mode_spacing_MHz,
+                    plot_system=plot_system,
+                )
+            result = (mode_spacing_interp, mode_spacing_over_fsr_interp, None)
+        except (simulation.UnknownCavityElement, simulation.ModeSpacingOutOfRange):
+            # A misspelled element name, or a measurement the scan never reached, is something the
+            # caller has to fix in its own config - not a missing simulation. Fail loudly instead
+            # of silently dropping the NA from the report.
+            raise
+        except Exception as error:
+            result = (None, None, f'{type(error).__name__}: {error}')
     _na_cache[key] = result
     return result
 

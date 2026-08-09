@@ -322,6 +322,38 @@ def get_picoscope_trace_path_from_clipboard():
     return input_path, input_path
 
 
+def ask_long_arm_length(default_m, verbose=True):
+    """Ask for the cavity's long arm length in cm; return it in METRES.
+
+    It is the one geometry number that changes between measurements, and a
+    stale value silently biases the NA (the measured mode spacing itself is
+    unaffected), so the analysis scripts prompt for it on every run instead of
+    reading a config constant. Values outside 1 - 1000 cm are rejected: they
+    are almost always a length typed in metres.
+    """
+    default_cm = float(default_m) * 100
+    while True:
+        raw_in = input(
+            f"Long arm length in CENTIMETRES [default {default_cm:g}]: "
+        ).strip()
+        if raw_in == '':
+            value_cm = default_cm
+            break
+        try:
+            value_cm = float(raw_in)
+        except ValueError:
+            print(f"  Could not parse '{raw_in}' as a number.")
+            continue
+        if not 1.0 <= value_cm <= 1000.0:
+            print(f"  {value_cm:g} cm is outside the plausible range "
+                  f"1 - 1000 cm - the value is in centimetres, not metres.")
+            continue
+        break
+    if verbose:
+        print(f"Long arm length: {value_cm:.4g} cm ({value_cm / 100:.4g} m)")
+    return value_cm / 100
+
+
 def convert_path_to_obsidian_embedding_converter(verbose=True):
     """Rewrite a Windows path on the clipboard as an Obsidian embed link.
 
@@ -418,3 +450,61 @@ def save_fig_safe(filepath, **kwargs):
 
     plt.savefig(candidate, **kwargs)
     print(f"✔ Saved figure to: {candidate}")
+
+
+# The two functions below are duplicated verbatim in the cavity-design project, in
+# cavity_design/_utils.py - the two projects are independent, so keep the copies in sync by hand.
+def copy_figure_as_png_to_clipboard(fig=None, dpi=200):
+    """Copy a matplotlib figure to the system clipboard as a PNG.
+
+    `fig` defaults to the current figure. The figure is re-rendered at `dpi` rather than grabbed
+    off the screen, so the copy does not depend on how large the window happens to be. Both
+    clipboard flavours are set: the real PNG bytes ('image/png') and a bitmap, which is what
+    Word / Obsidian actually reach for when pasting.
+
+    Needs a Qt backend (matplotlib.use('Qt5Agg')) - there is no Qt clipboard without a Qt app.
+    """
+    import io
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.qt_compat import QtCore, QtGui, QtWidgets
+
+    if fig is None:
+        fig = plt.gcf()
+    application = QtWidgets.QApplication.instance()
+    if application is None:
+        raise RuntimeError(
+            "copying a figure to the clipboard needs a running Qt application - select the Qt "
+            "backend with matplotlib.use('Qt5Agg') before creating the figure")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    png_bytes = buf.getvalue()
+
+    mime = QtCore.QMimeData()
+    mime.setData("image/png", QtCore.QByteArray(png_bytes))
+    mime.setImageData(QtGui.QImage.fromData(png_bytes, "PNG"))
+    application.clipboard().setMimeData(mime)
+    return fig
+
+
+def enable_copy_to_clipboard(fig=None, dpi=200):
+    """Bind Ctrl+C on `fig` (default: the current figure) to copy_figure_as_png_to_clipboard().
+
+    The binding follows rcParams['keymap.copy'] - the same setting matplotlib's own copy tool
+    uses, which the classic toolbar never consults, so it clashes with nothing. Returns the
+    connection id, should you want fig.canvas.mpl_disconnect(cid).
+
+    The plot window needs the keyboard focus; with the focus on the console, Ctrl+C interrupts
+    the script as usual.
+    """
+    import matplotlib.pyplot as plt
+
+    if fig is None:
+        fig = plt.gcf()
+
+    def on_key(event):
+        if event.key in plt.rcParams["keymap.copy"]:
+            copy_figure_as_png_to_clipboard(fig, dpi=dpi)
+            print(f"Copied figure {fig.get_label() or fig.number} to the clipboard.")
+
+    return fig.canvas.mpl_connect("key_press_event", on_key)

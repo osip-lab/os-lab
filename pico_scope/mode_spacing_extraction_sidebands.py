@@ -10,8 +10,11 @@ Pipeline
 1. Load a PicoScope trace (file path taken from the clipboard). Both .csv and
    .psdata files are accepted; .psdata files are converted to CSV on the fly
    via PicoScope 7's command-line BatchConvert.
-2. Plot the spectrum in an interactive Qt window.
-3. Drag a horizontal window to select the region of interest.
+2. Choose the analysis mode and enter the long arm length in cm (it changes
+   between measurements, so it is asked for every run rather than read from a
+   config constant), then plot the spectrum in an interactive Qt window.
+3. Drag a horizontal window to select the region of interest (the full-trace
+   window closes once the region is picked).
 4. Click the zeroth-order mode.
 5. Click one sideband of the central line (gives the sideband distance d).
 6. Click the first-order mode.
@@ -33,7 +36,12 @@ Pipeline
        s1/d        * f_sb   -> 1st-order linewidth (HWHM)    [MHz]
        s0/d        * f_sb   -> 0th-order linewidth (HWHM)    [MHz]
 10. Map the mode spacing to the numerical aperture (NA) using the cavity-design
-    simulation (simple_analysis_scripts.mode_spacing_to_NA).
+    simulation (simple_analysis_scripts.mode_spacing_to_NA). The cavity it
+    simulates - the optical elements and the arm lengths - is defined in the
+    configuration block at the top of this file; nothing has to be edited in
+    the cavity-design project. The measured spacing goes in with it, so the
+    dependency plot comes back with it marked on both panels (on the left
+    panel, at the small arm length that would produce it).
 11. Print mode spacing, linewidths and NA together.
 12. Append a one-line record (long arm length, mode spacing, NA, waveform
     buffer) to numerical-results.txt in the folder of the original data file.
@@ -54,12 +62,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
-from utilities.utils import (append_numerical_result_line,
+from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
                              get_picoscope_trace_path_from_clipboard)
 # All the math (models, fit, scaling, NA mapping) lives in mode_analysis so
 # the kalishlot web GUI runs the identical computation on the live stream.
 from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
-                                      LONG_ARM_LENGTH, MID_ARM_LENGTH,
                                       SIDEBAND_AMP_RATIO_GUESS,
                                       SIX_LORENTZIAN_PARAMS, decimate,
                                       fit_six_lorentzians,
@@ -70,13 +77,21 @@ from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
 SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
 
-# --- NA mapping (cavity-design project) ------------------------------------
-# Plot toggles passed to generate_lens_position_dependencies_output(); the
-# cavity / spectrum / dependency plots are shown non-blocking, so the final
-# report prints without waiting for the windows to be closed.
-SIM_PLOT_CAVITY = False
-SIM_PLOT_SPECTRUM = False
-SIM_PLOT_DEPENDENCIES = False
+# --- the cavity being measured (edit this when the setup changes) ----------
+# Element names come from the cavity-design catalog; list them in optical order.
+# To see the available names:
+#   python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
+CAVITY_ELEMENTS = [
+    'LASER_OPTIK_MIRROR',
+    'EDMUND_4p5MM_ASPHERIC_83580',
+    # 'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
+    'COASTLINE_20CM_MIRROR',
+]
+SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
+LONG_ARM_LENGTH = 34.4e-2         # [m] lens -> far mirror; only the DEFAULT - the
+                                  # value actually used is asked for on every run
+MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
+N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 
 
 # %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
@@ -111,7 +126,7 @@ y = raw[SIGNAL_COLUMN].to_numpy(dtype=float)
 print(f"Loaded {len(x)} samples from column '{SIGNAL_COLUMN}'.")
 
 
-# %% [Step 1.5] Choose the analysis mode ------------------------------------
+# %% [Step 1.5] Choose the analysis mode and the long arm length -------------
 def ask_analysis_mode():
     """Return 'fit' (Lorentzian fit) or 'point' (use clicked points as-is)."""
     while True:
@@ -127,6 +142,8 @@ def ask_analysis_mode():
 
 analysis_mode = ask_analysis_mode()
 print(f"Analysis mode: {analysis_mode}")
+
+long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
 
 
 # %% [Step 2] Plot the full spectrum ----------------------------------------
@@ -168,6 +185,7 @@ def select_region(fig, ax):
 
 region_min, region_max = select_region(fig_full, ax_full)
 print(f"Selected region: [{region_min:.6g}, {region_max:.6g}] s")
+plt.close(fig_full)  # the full-trace window has served its purpose
 
 mask = (x >= region_min) & (x <= region_max)
 # Crop at full resolution, then decimate the region for re-plotting and fitting
@@ -208,21 +226,21 @@ print(f"d  guess = {d_guess:.6g} s  (from sideband click)")
 
 
 # %% [Step 7] Enter the sideband modulation frequency -----------------------
-# def ask_sideband_freq(default_mhz):
-#     raw_in = input(
-#         f"Step 7: sideband (single-side) frequency in MHz "
-#         f"[default {default_mhz}]: "
-#     ).strip()
-#     if raw_in == '':
-#         return float(default_mhz)
-#     try:
-#         return float(raw_in)
-#     except ValueError:
-#         print(f"  Could not parse '{raw_in}', using default {default_mhz} MHz.")
-#         return float(default_mhz)
+def ask_sideband_freq(default_mhz):
+    raw_in = input(
+        f"Step 7: sideband (single-side) frequency in MHz "
+        f"[default {default_mhz}]: "
+    ).strip()
+    if raw_in == '':
+        return float(default_mhz)
+    try:
+        return float(raw_in)
+    except ValueError:
+        print(f"  Could not parse '{raw_in}', using default {default_mhz} MHz.")
+        return float(default_mhz)
 
 
-f_sb_mhz = DEFAULT_SIDEBAND_FREQ_MHZ  # ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
+f_sb_mhz = ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
 print(f"Using sideband frequency f_sb = {f_sb_mhz} MHz (per side).")
 
 
@@ -321,13 +339,21 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
 # The NA<->mode-spacing relation comes from the cavity-design project (path in
 # local_config.py); mode_analysis builds and caches the interpolators.
 # mode_spacing_interp: mode spacing [Hz] -> NA
+
+# The measured spacing is handed to the simulation so it can draw it on the
+# dependency plot; the same call in step 11 turns it into an NA.
+measured_mode_spacing_MHz = sideband_results(
+    x0, x1, d, s0, s1, f_sb_mhz)['mode_spacing_MHz']
+
 mode_spacing_interp, mode_spacing_over_fsr_interp, na_error = \
     get_na_interpolators(
-        long_arm=LONG_ARM_LENGTH,
+        elements=CAVITY_ELEMENTS,
+        short_arm_lengths=SHORT_ARM_LENGTHS,
+        N_points=N_points,
+        long_arm=long_arm_length,  # asked in step 1.5, not the config default
         mid_arm=MID_ARM_LENGTH,
-        plot_cavity=SIM_PLOT_CAVITY,
-        plot_spectrum=SIM_PLOT_SPECTRUM,
-        plot_dependencies=SIM_PLOT_DEPENDENCIES,
+        measured_mode_spacing_MHz=measured_mode_spacing_MHz,
+        plot_system=True,  # always: the plot is what carries the measurement marker
     )
 if na_error is not None:
     print(f"NA mapping unavailable: {na_error}")
@@ -347,7 +373,7 @@ results = report_results(
 na_text = f"{results['NA']:.4f}" if results['NA'] is not None else "N/A"
 append_numerical_result_line(
     input_path,
-    f"long_arm_length = {LONG_ARM_LENGTH:.4g} m, "
+    f"long_arm_length = {long_arm_length:.4g} m, "
     f"mode_spacing = {results['mode_spacing_MHz']:.4f} MHz, "
     f"NA = {na_text}, "
     f"waveform_buffer = {waveform_buffer}",
