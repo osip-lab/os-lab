@@ -1,189 +1,88 @@
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
+"""Inspect a video (or a single image) frame by frame.
+
+The path is taken from the clipboard. Controls:
+    left / right : previous / next frame
+    space        : add the current frame to the set used for the Gaussian fit
+    w            : fit a 2D Gaussian to the average of the selected frames
+    3 clicks     : fit a circle through three points on the image
+    sliders      : frame index and display vmax; the text box sets the rebin factor
+
+Run from the repository root: python -m utilities.media_tools.plot_video
+"""
 import os
-from matplotlib.patches import Circle
+
+import cv2
 import matplotlib
-from utilities.utils import wait_for_path_from_clipboard
-from basler_cam.mode_position_capture_gui import fit_gaussian, rebin_image
+import numpy as np
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
+
+import matplotlib.pyplot as plt
 from matplotlib import gridspec
+from matplotlib.patches import Circle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import Slider, TextBox
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-# ---- Set video/image path ----
-path = wait_for_path_from_clipboard(filetype='media')  # <--- changed from 'video' to 'media'
-
-if not os.path.exists(path):
-    raise FileNotFoundError(f"File not found: {path}")
-
-# ---- Try to load as video ----
-frames = []
-is_video = False
-
-cap = cv2.VideoCapture(path)
-if cap.isOpened():
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        frames.append(gray)
-
-    cap.release()
-
-    if len(frames) > 0:
-        frames = np.array(frames)
-        is_video = True
-    else:
-        print("⚠ Detected empty video file. Trying to load as image instead.")
-else:
-    print("⚠ Failed to open as video. Trying to load as image instead.")
-
-# ---- If not a video, try to load as an image ----
-if not is_video:
-    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise IOError(f"Cannot open file as video or image: {path}")
-    frames = np.array([img])  # Add an extra dimension: shape (1, H, W)
-
-# `fps` only exists when the file was loaded as a video, and some containers
-# report 0/NaN. Fall back to 1 so the time axis and title stay usable.
-if not is_video or not fps or np.isnan(fps):
-    fps = 1.0
+# The GUI-free fitting module, the same one kalishlot's camera adapters use
+from basler_cam.gaussian_fit import fit_gaussian, gaussian2d, rebin_image
+from utilities.utils import wait_for_path_from_clipboard
 
 PIXEL_SIZE_MM = 0.0055
-rebin_factor = 64
-selected_frames = []
-selected_frames_indices = []
+DEFAULT_REBIN_FACTOR = 64
+CONTOUR_LEVELS = 5
+# Bottom of the axes area, in figure coordinates. Everything under it belongs to
+# the rotated time labels and the controls. It is a starting point only - long
+# videos have taller (rotated) time labels, so the margin is measured and grown
+# once the figure knows how big they really are.
+BOTTOM_MARGIN = 0.35
+LABEL_CLEARANCE_PX = 8
 
-# Precompute intensity sum per frame
-frame_sums = [np.sum(f) for f in frames]
-
-# ---- Initialize plot ----
-vmax_default = np.max(frames)
-
-# Create the main figure window
-fig = plt.figure(figsize=(10, 8))
-
-# Define a grid layout with 3 rows and 3 columns
-# Row heights: [top projection, main image, bottom plot]
-# Column widths: [left projection, main image, colorbar]
-gs = gridspec.GridSpec(
-    3, 3,
-    height_ratios=[1, 6, 1],
-    width_ratios=[1, 6, 0.25]
-)
+HELP_TEXT = ("space: add the current frame to the fit set | w: fit a Gaussian | "
+             "left/right: change frame | 3 clicks: fit a circle | box: rebin factor")
 
 
-# Create axes for each panel
-ax_top = fig.add_subplot(gs[0, 1])     # Top projection (column mean)
-ax_left = fig.add_subplot(gs[1, 0])    # Left projection (row mean)
-ax = fig.add_subplot(gs[1, 1])         # Main image display
-ax_cb = fig.add_subplot(gs[1, 2])      # Colorbar
-ax_plot = fig.add_subplot(gs[2, 1])    # Intensity vs. frame plot
+def load_frames(path):
+    """Return (frames, fps) for a video, or a single-frame stack for an image.
 
-# Adjust layout to make room for sliders and help text below
-plt.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.25)
+    Frames are decoded once into memory as grayscale, so stepping backwards is
+    instant. `fps` falls back to 1 for images and for containers that report no
+    frame rate, so the time axis and the title stay usable either way.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"File not found: {path}")
 
-# Display the first frame in grayscale
-img_disp = ax.imshow(frames[0], cmap='gray', vmin=0, vmax=vmax_default)
-
-# Add a colorbar for intensity scaling
-cb = plt.colorbar(img_disp, cax=ax_cb)
-
-# === Line objects for projections ===
-
-# These lines show the row/column means of the raw image
-col_mean_line, = ax_top.plot([], [], lw=1)       # Top projection
-row_mean_line, = ax_left.plot([], [], lw=1)      # Left projection
-
-# These lines show the Gaussian fit projections (dashed red)
-gauss_col_line, = ax_top.plot([], [], 'r--', lw=1)
-gauss_row_line, = ax_left.plot([], [], 'r--', lw=1)
-
-# Lines for fitted Gaussian mean positions (vertical/horizontal markers)
-gauss_xline = ax_top.axvline(0, color='r', linestyle='--', visible=False)
-gauss_yline = ax_left.axhline(0, color='r', linestyle='--', visible=False)
-
-# === Styling for side projection plots ===
-
-# Remove ticks to declutter side plots
-ax_top.set_xticks([])
-ax_top.set_yticks([])
-ax_left.set_xticks([])
-ax_left.set_yticks([])
-
-# Invert the y-axis on the left projection so it aligns with image
-ax_left.invert_yaxis()
-
-# === Bottom intensity plot (total image intensity per frame) ===
-
-intensity_line, = ax_plot.plot(frame_sums, lw=1)  # Main intensity trace
-selected_lines = []                               # To store markers for selected frames
-
-# Marker for the frame currently shown in the main image
-current_frame_line = ax_plot.axvline(0, color='k', lw=1)
-
-ax_plot.set_xlim(0, len(frames) - 1)
-ax_plot.set_ylabel("Total Intensity")
-# The data stays in frame units (so do all the axvline positions); only the
-# tick labels are converted to seconds.
-ax_plot.xaxis.set_major_formatter(FuncFormatter(lambda frame_idx, pos: f"{frame_idx / fps:.3f}"))
-ax_plot.set_xlabel("Time [s]")
-
-# === UI Controls ===
-
-# Slider to select the current frame
-ax_frame = plt.axes([0.25, 0.2, 0.65, 0.03])
-frame_slider = Slider(ax_frame, 'Frame', 0, len(frames) - 1, valinit=0, valstep=1)
-
-# Slider to adjust the display intensity max (vmax)
-ax_vmax = plt.axes([0.25, 0.15, 0.65, 0.03])
-vmax_slider = Slider(ax_vmax, 'vmax', 1, 255, valinit=vmax_default)
-
-# Text box to set the rebinning factor
-ax_rebin = plt.axes([0.25, 0.1, 0.2, 0.03])
-rebin_textbox = TextBox(ax_rebin, "Rebin", initial=str(rebin_factor))
-
-# === Help instructions at the bottom ===
-
-# Add a fixed help text at the bottom center of the window
-help_text = (
-    "Press: space to add frame to frames for fitting, w to fit, "
-    "arrows to navigate between frames, and the number box is for rebinningFrame"
-)
-fig.text(0.5, 0.02, help_text, ha='center', va='bottom', fontsize=9)
-
-
-def on_rebin_text_submit(text):
-    global rebin_factor
+    frames = []
+    fps = 0.0
+    cap = cv2.VideoCapture(path)
     try:
-        val = int(text)
-        if val >= 1:
-            rebin_factor = val
-            print(f"Rebinning factor set to: {rebin_factor}")
-            update(None)
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+            if not frames:
+                print("⚠ Detected empty video file. Trying to load as image instead.")
         else:
-            print("Rebin factor must be >= 1")
-    except ValueError:
-        print("Invalid integer input for rebin factor")
+            print("⚠ Failed to open as video. Trying to load as image instead.")
+    finally:
+        cap.release()
 
-rebin_textbox.on_submit(on_rebin_text_submit)
+    if not frames:
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise IOError(f"Cannot open file as video or image: {path}")
+        frames = [img]
 
-# State
-clicked_points = []
-circle_patch = None
-gaussian_contour = None
-current_frame_index = 0
-fit_data = None
+    if not fps or np.isnan(fps):
+        fps = 1.0
+    return np.array(frames), fps
 
 
 def calc_circle(x1, y1, x2, y2, x3, y3):
+    """Center and radius of the circle through three points."""
     temp = x2 ** 2 + y2 ** 2
     bc = (x1 ** 2 + y1 ** 2 - temp) / 2
     cd = (temp - x3 ** 2 - y3 ** 2) / 2
@@ -196,198 +95,326 @@ def calc_circle(x1, y1, x2, y2, x3, y3):
     return cx, cy, r
 
 
-def update_title(frame_idx, radius=None, status=""):
-    global fit_data
-    time = frame_idx / fps
-    base_title = (f" {frame_idx} (Time: {time:.3f}s)")
-    if radius is not None:
-        radius_mm = radius * PIXEL_SIZE_MM
-        base_title += f" | Radius: {radius:.2f}px = {radius_mm:.3f}mm"
-    if frame_idx in selected_frames_indices:
-        base_title += " [SELECTED]"
-    if status:
-        base_title += f" | {status}"
-    if fit_data is not None:
-        gauss, par = fit_data
-        base_title += f" | Fit: w_x={par['w_x'] * 5.5e-3:.2f}mm, w_y={par['w_y'] * 5.5e-3:.2f}mm"
-    ax.set_title(base_title)
+class VideoInspector:
+    """The figure and all of the state that its callbacks share."""
 
+    def __init__(self, frames, fps, rebin_factor=DEFAULT_REBIN_FACTOR):
+        self.frames = frames
+        self.fps = fps
+        self.rebin_factor = rebin_factor
+        self.frame_sums = [np.sum(f) for f in frames]  # Precomputed intensity per frame
 
-def update_selected_lines():
-    global selected_lines
-    for line in selected_lines:
-        line.remove()
-    selected_lines = [ax_plot.axvline(x=idx, color='red', linestyle='--', alpha=0.5) for idx in selected_frames_indices]
-    fig.canvas.draw_idle()
+        # --- Interaction state ---
+        self.current_frame_index = 0
+        self.selected_frames_indices = []
+        self.fit_data = None           # (gauss, parameters) from the last successful fit
+        self.clicked_points = []       # Image-coordinate clicks for the circle fit
+        self.click_markers = []        # The red dots drawn for those clicks
+        self.circle_patch = None
+        self.gaussian_contour = None
+        self.selected_lines = []
 
+        self._build_figure()
+        self._connect()
+        self.update()
+        self.reserve_room_for_time_labels()
 
-def update(val):
-    global current_frame_index, circle_patch, clicked_points, gaussian_contour, fit_data
-    current_frame_index = int(frame_slider.val)
-    vmax_val = vmax_slider.val
-    frame = frames[current_frame_index]
-    frame = rebin_image(frame, rebin_factor) if rebin_factor > 1 else frame
-    img_disp.set_data(frame)
-    img_disp.set_clim(vmin=0, vmax=vmax_val)
-    current_frame_line.set_xdata([current_frame_index])
+    # ------------------------------------------------------------------ layout
 
-    # Remove old overlays
-    if circle_patch:
-        circle_patch.remove()
-        circle_patch = None
-    if gaussian_contour:
-        for coll in gaussian_contour.collections:
-            coll.remove()
-        gaussian_contour = None
+    def _build_figure(self):
+        self.fig = plt.figure(figsize=(10, 8))
 
-    clicked_points = []
+        # Two rows: the image (with its projections) and the intensity trace.
+        # Everything below the axes - the rotated time labels, the sliders and
+        # the help text - lives in the bottom margin.
+        self.gs = gridspec.GridSpec(2, 1, height_ratios=[6, 1],
+                                    left=0.13, right=0.90, top=0.95, bottom=BOTTOM_MARGIN, hspace=0.7)
+        self.ax = self.fig.add_subplot(self.gs[0])          # Main image
+        self.ax_plot = self.fig.add_subplot(self.gs[1])     # Intensity vs. time
 
-    # Update projections
-    row_mean = np.mean(frame, axis=1)
-    col_mean = np.mean(frame, axis=0)
-    col_mean_line.set_data(np.arange(len(col_mean)), col_mean)
-    row_mean_line.set_data(row_mean, np.arange(len(row_mean)))
-    ax_top.set_xlim(0, len(col_mean))
-    ax_top.set_ylim(0, np.max(col_mean) * 1.1)
-    ax_left.set_xlim(0, np.max(row_mean) * 1.1)
-    ax_left.set_ylim(0, len(row_mean))
+        vmax_default = max(int(np.max(self.frames)), 1)
+        self.img_disp = self.ax.imshow(self.displayed_frame(), cmap='gray', vmin=0, vmax=vmax_default)
 
-    # Hide Gaussian projection lines
-    # Hide Gaussian lines initially
-    # gauss_xline.set_visible(False)
-    # gauss_yline.set_visible(False)
-    # gauss_col_line.set_data([], [])
-    # gauss_row_line.set_data([], [])
-    # If Gaussian fit is available, plot the contour and projections
-    if fit_data is not None:
-        gauss, par = fit_data
-        gaussian_contour = ax.contour(gauss, levels=5, colors='r')
+        # The image keeps a 1:1 aspect, so it does not fill its grid cell. Hanging
+        # the projections and the colorbar off the image axes itself (rather than
+        # off neighbouring grid cells) keeps them glued to the image as drawn, and
+        # sharex/sharey puts their pixel columns/rows exactly above/beside it.
+        divider = make_axes_locatable(self.ax)
+        self.ax_top = divider.append_axes("top", size="18%", pad=0.06, sharex=self.ax)
+        self.ax_left = divider.append_axes("left", size="18%", pad=0.06, sharey=self.ax)
+        self.ax_cb = divider.append_axes("right", size="4%", pad=0.12)
+        plt.colorbar(self.img_disp, cax=self.ax_cb)
 
-        # Gaussian mean position
-        # x_mean, y_mean = par['x_0'], par['y_0']
-        # gauss_xline.set_visible(True)
-        # gauss_yline.set_visible(True)
-        # gauss_xline.set_xdata([x_mean])
-        # gauss_yline.set_ydata([y_mean])
+        # Raw projections (solid) and the Gaussian-fit projections (dashed red)
+        self.col_mean_line, = self.ax_top.plot([], [], lw=1)
+        self.row_mean_line, = self.ax_left.plot([], [], lw=1)
+        self.gauss_col_line, = self.ax_top.plot([], [], 'r--', lw=1)
+        self.gauss_row_line, = self.ax_left.plot([], [], 'r--', lw=1)
 
-        # Gaussian projections
-        gauss_col_mean = np.mean(gauss, axis=0)
-        gauss_row_mean = np.mean(gauss, axis=1)
-        print(f"{col_mean.shape=}")
-        print(f"{col_mean=}")
-        print(f"{gauss_col_mean.shape=}")
-        print(f"{gauss_col_mean=}")
+        # Declutter: no ticks on the intensity axis of either projection, and the
+        # shared pixel axes are labelled once - columns under the image, rows on
+        # the left projection. Hiding the *labels* only, since clearing ticks on a
+        # shared axis would clear the image's as well.
+        self.ax_top.set_yticks([])
+        self.ax_left.set_xticks([])
+        self.ax_top.tick_params(labelbottom=False)
+        self.ax.tick_params(labelleft=False)
 
-        gauss_col_line.set_visible(True)
-        gauss_row_line.set_visible(True)
-        gauss_col_line.set_data(np.arange(len(gauss_col_mean)) / rebin_factor, gauss_col_mean)
-        gauss_row_line.set_data(gauss_row_mean, np.arange(len(gauss_row_mean)) / rebin_factor)
+        # --- Bottom plot: total intensity per frame ---
+        self.ax_plot.plot(self.frame_sums, lw=1)
+        self.current_frame_line = self.ax_plot.axvline(0, color='k', lw=1)  # Frame on screen
+        self.ax_plot.set_xlim(0, max(len(self.frames) - 1, 1))
+        self.ax_plot.set_ylabel("Total Intensity")
+        # The data stays in frame units (so do all the axvline positions); only
+        # the tick labels are converted to seconds.
+        self.ax_plot.xaxis.set_major_formatter(FuncFormatter(lambda idx, pos: f"{idx / self.fps:.2f}"))
+        self.ax_plot.tick_params(axis='x', labelrotation=90)  # Rotated, so labels can sit denser
+        self.ax_plot.set_xlabel("Time [s]")
 
-        # Update axis limits to ensure lines are shown
-        ax_top.relim()
-        ax_top.autoscale_view()
-        ax_left.relim()
-        ax_left.autoscale_view()
+        # --- Controls, stacked below the axes area ---
+        self.frame_slider = Slider(self.fig.add_axes([0.25, 0.22, 0.65, 0.03]), 'Frame',
+                                   0, max(len(self.frames) - 1, 1), valinit=0, valstep=1)
+        self.vmax_slider = Slider(self.fig.add_axes([0.25, 0.16, 0.65, 0.03]), 'vmax',
+                                  1, 255, valinit=vmax_default)
+        self.rebin_textbox = TextBox(self.fig.add_axes([0.25, 0.10, 0.2, 0.03]), "Rebin",
+                                     initial=str(self.rebin_factor))
+        self.fig.text(0.5, 0.02, HELP_TEXT, ha='center', va='bottom', fontsize=9)
 
-    update_title(current_frame_index)
-    fig.canvas.draw_idle()
+    def reserve_room_for_time_labels(self):
+        """Lift the axes area until the rotated time labels clear the sliders.
 
+        How tall those labels are is only known once they are rendered - a long
+        video labels its ticks '1234.56' where a short one gets '1.20' - so the
+        bottom margin is measured here rather than guessed.
+        """
+        self.fig.canvas.draw()
+        renderer = self.fig.canvas.get_renderer()
+        labels = self.ax_plot.get_xticklabels() + [self.ax_plot.xaxis.label]
+        labels_bottom = min(label.get_window_extent(renderer).y0 for label in labels)
+        controls_top = self.frame_slider.ax.get_window_extent().y1
 
+        deficit_px = controls_top + LABEL_CLEARANCE_PX - labels_bottom
+        if deficit_px > 0:
+            figure_height = self.fig.get_window_extent().height
+            self.gs.update(bottom=min(self.gs.bottom + deficit_px / figure_height, 0.7))
 
-frame_slider.on_changed(update)
-vmax_slider.on_changed(update)
+    def _connect(self):
+        self.frame_slider.on_changed(self.update)
+        self.vmax_slider.on_changed(self.update)
+        self.rebin_textbox.on_submit(self.on_rebin_text_submit)
+        self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+        self.fig.canvas.mpl_connect('button_press_event', self.on_click)
 
+    # ----------------------------------------------------------- coordinates
 
-def on_key(event):
-    global rebin_factor, fit_data, gaussian_contour
+    def displayed_frame(self):
+        frame = self.frames[self.current_frame_index]
+        return rebin_image(frame, self.rebin_factor) if self.rebin_factor > 1 else frame
 
-    current = int(frame_slider.val)
+    def to_display_coords(self, full_res_coords):
+        """Map full-resolution pixel coordinates onto the rebinned grid on screen.
 
-    if event.key == 'right' and current < len(frames) - 1:
-        frame_slider.set_val(current + 1)
+        Rebinned bin k averages full-resolution pixels [k*r, (k+1)*r - 1], whose
+        center sits at k*r + (r - 1)/2 - hence the shift before dividing.
+        """
+        return (np.asarray(full_res_coords) - (self.rebin_factor - 1) / 2) / self.rebin_factor
 
-    elif event.key == 'left' and current > 0:
-        frame_slider.set_val(current - 1)
+    # --------------------------------------------------------------- drawing
 
-    elif event.key == ' ':
-        if current_frame_index not in selected_frames_indices:
-            selected_frames_indices.append(current_frame_index)
-            print(selected_frames_indices)
-            selected_frames.append(frames[current_frame_index])
-            update_selected_lines()
-        update_title(current_frame_index)
-        fig.canvas.draw_idle()
+    def update(self, _=None):
+        """Redraw everything that depends on the current frame / vmax / rebin."""
+        # Clamped, because a single image gives the slider a wider range than
+        # the one frame it has (matplotlib rejects valmin == valmax).
+        self.current_frame_index = min(int(self.frame_slider.val), len(self.frames) - 1)
+        frame = self.displayed_frame()
+        self.img_disp.set_data(frame)
+        self.img_disp.set_clim(vmin=0, vmax=self.vmax_slider.val)
+        self.current_frame_line.set_xdata([self.current_frame_index])
 
-    # elif event.key.isdigit() and 1 <= int(event.key) <= 9:
-    #     rebin_factor = int(event.key)
-    #     print(f"Rebinning factor set to: {rebin_factor}")
-    #     update(None)
+        self.clear_click_overlay()
+        self.draw_projections(frame)
+        self.draw_fit_overlay(frame)
+        self.autoscale_projections()
+        self.update_title()
+        self.fig.canvas.draw_idle()
 
-    elif event.key == 'w':
-        if not selected_frames_indices:
+    def draw_projections(self, frame):
+        # Only the intensity axis is scaled here: the pixel axis of each
+        # projection is shared with the image, which owns those limits.
+        row_mean = np.mean(frame, axis=1)
+        col_mean = np.mean(frame, axis=0)
+        self.col_mean_line.set_data(np.arange(len(col_mean)), col_mean)
+        self.row_mean_line.set_data(row_mean, np.arange(len(row_mean)))
+
+    def autoscale_projections(self):
+        """Fit the intensity axes around the data and the Gaussian fit together."""
+        top_values = np.concatenate([self.col_mean_line.get_ydata(), self.gauss_col_line.get_ydata()])
+        left_values = np.concatenate([self.row_mean_line.get_xdata(), self.gauss_row_line.get_xdata()])
+        # max(..., 1): an all-black frame would give identical limits
+        self.ax_top.set_ylim(0, max(np.max(top_values) * 1.1, 1))
+        self.ax_left.set_xlim(0, max(np.max(left_values) * 1.1, 1))
+
+    def fit_model_on_screen(self, shape):
+        """Evaluate the fitted Gaussian on the same (rebinned) grid as the image.
+
+        `fit_gaussian` reports its parameters in full-resolution sensor pixels,
+        so they are converted to display coordinates before the model is built.
+        """
+        par = self.fit_data
+        height, width = shape
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float64),
+                             np.arange(height, dtype=np.float64))
+        model = gaussian2d(np.array((xx, yy)), par['amplitude'],
+                           self.to_display_coords(par['x_0']), self.to_display_coords(par['y_0']),
+                           par['s_x'] / self.rebin_factor, par['s_y'] / self.rebin_factor,
+                           par['angle'], par['offset'])
+        return model.reshape(height, width)
+
+    def draw_fit_overlay(self, frame):
+        """Draw the fitted Gaussian as a contour plus its two projections."""
+        if self.gaussian_contour is not None:
+            self.gaussian_contour.remove()
+            self.gaussian_contour = None
+
+        if self.fit_data is None:
+            self.gauss_col_line.set_data([], [])
+            self.gauss_row_line.set_data([], [])
+            return
+
+        gauss = self.fit_model_on_screen(frame.shape)
+        self.gaussian_contour = self.ax.contour(gauss, levels=CONTOUR_LEVELS, colors='r')
+
+        # On the display grid, so these overlay the raw projections directly
+        self.gauss_col_line.set_data(np.arange(gauss.shape[1]), np.mean(gauss, axis=0))
+        self.gauss_row_line.set_data(np.mean(gauss, axis=1), np.arange(gauss.shape[0]))
+
+    def update_title(self, radius=None, status=""):
+        time = self.current_frame_index / self.fps
+        title = f" {self.current_frame_index} (Time: {time:.3f}s)"
+        if radius is not None:
+            title += f" | Radius: {radius:.2f}px = {radius * PIXEL_SIZE_MM:.3f}mm"
+        if self.current_frame_index in self.selected_frames_indices:
+            title += " [SELECTED]"
+        if status:
+            title += f" | {status}"
+        if self.fit_data is not None:
+            title += (f" | Fit: w_x={self.fit_data['w_x'] * PIXEL_SIZE_MM:.2f}mm,"
+                      f" w_y={self.fit_data['w_y'] * PIXEL_SIZE_MM:.2f}mm")
+        self.ax.set_title(title)
+
+    def update_selected_lines(self):
+        for line in self.selected_lines:
+            line.remove()
+        self.selected_lines = [self.ax_plot.axvline(x=idx, color='red', linestyle='--', alpha=0.5)
+                               for idx in self.selected_frames_indices]
+        self.fig.canvas.draw_idle()
+
+    def clear_click_overlay(self):
+        """Drop the circle-fit clicks and the artists drawn for them."""
+        for marker in self.click_markers:
+            marker.remove()
+        self.click_markers = []
+        self.clicked_points = []
+        if self.circle_patch is not None:
+            self.circle_patch.remove()
+            self.circle_patch = None
+
+    # -------------------------------------------------------------- callbacks
+
+    def on_rebin_text_submit(self, text):
+        try:
+            value = int(text)
+        except ValueError:
+            print("Invalid integer input for rebin factor")
+            return
+        if value < 1:
+            print("Rebin factor must be >= 1")
+            return
+        self.rebin_factor = value
+        print(f"Rebinning factor set to: {self.rebin_factor}")
+        self.update()
+
+    def on_key(self, event):
+        current = int(self.frame_slider.val)
+
+        if event.key == 'right' and current < len(self.frames) - 1:
+            self.frame_slider.set_val(current + 1)
+
+        elif event.key == 'left' and current > 0:
+            self.frame_slider.set_val(current - 1)
+
+        elif event.key == ' ':
+            if self.current_frame_index not in self.selected_frames_indices:
+                self.selected_frames_indices.append(self.current_frame_index)
+                print(f"Selected frames: {self.selected_frames_indices}")
+                self.update_selected_lines()
+            self.update_title()
+            self.fig.canvas.draw_idle()
+
+        elif event.key == 'w':
+            self.fit_selected_frames()
+
+    def fit_selected_frames(self):
+        if not self.selected_frames_indices:
             print("No frames selected.")
             return
 
-        update_title(current_frame_index, status="Calculating fit...")
-        fig.canvas.draw_idle()
-        plt.pause(0.01)  # allow GUI to refresh
+        self.update_title(status="Calculating fit...")
+        self.fig.canvas.draw_idle()
+        plt.pause(0.01)  # Let the GUI refresh before the fit blocks it
 
+        averaged_frame = np.mean(self.frames[self.selected_frames_indices], axis=0)
         try:
-            selected_array = frames[selected_frames_indices]
-            averaged_frame = np.mean(selected_array, axis=0)
-
-            # rebinned = rebin_image(averaged_frame, rebin_factor) if rebin_factor > 1 else averaged_frame
-            # print ("rebinned_shape :", rebinned.shape)
-            # gauss, par = fit_gaussian(rebinned, rebinning=1)  # already rebinned
-            # print("gauss shape:", gauss.shape)
-            gauss, par = fit_gaussian(averaged_frame, rebinning=rebin_factor)  # already rebinned
+            # `fit_gaussian` rebins internally and reports back in full-resolution pixels
+            success, par = fit_gaussian(averaged_frame, rebinning=self.rebin_factor)
             print("Fit parameters:", par)
-            fit_data = (gauss, par)
-            print("updating title")
-            update_title(current_frame_index, status="Fit finished")
-            update(None)
-
+            self.fit_data = par if success else None
+            status = "Fit finished" if success else "Fit did not converge"
         except Exception as e:
             print("Fit failed:", e)
-            fit_data = None
-            update_title(current_frame_index, status="Fit failed")
-            update(None)
+            self.fit_data = None
+            status = "Fit failed"
+
+        self.update()
+        self.update_title(status=status)
+        self.fig.canvas.draw_idle()
+
+    def on_click(self, event):
+        toolbar = self.fig.canvas.manager.toolbar
+        if event.inaxes is not self.ax or (toolbar is not None and toolbar.mode != ''):
+            return
+
+        if len(self.clicked_points) >= 3:  # A circle is already drawn - start over
+            self.clear_click_overlay()
+
+        self.clicked_points.append((event.xdata, event.ydata))
+        marker, = self.ax.plot(event.xdata, event.ydata, 'ro')
+        self.click_markers.append(marker)
+
+        if len(self.clicked_points) == 3:
+            (x1, y1), (x2, y2), (x3, y3) = self.clicked_points
+            try:
+                cx, cy, radius = calc_circle(x1, y1, x2, y2, x3, y3)
+            except ValueError as e:
+                print("Error:", e)
+                return
+            self.circle_patch = Circle((cx, cy), radius, color='cyan', linestyle='--',
+                                       fill=False, linewidth=2, alpha=0.5)
+            self.ax.add_patch(self.circle_patch)
+            # The clicks are in display units; report the radius in camera pixels
+            radius_px = radius * self.rebin_factor
+            print(f"Radius: {radius_px:.2f} pixels, {radius_px * PIXEL_SIZE_MM:.3f} mm")
+            self.update_title(radius=radius_px)
+
+        self.fig.canvas.draw_idle()
 
 
-def on_click(event):
-    global clicked_points, circle_patch
-
-    if event.inaxes != ax or plt.get_current_fig_manager().toolbar.mode != '':
-        return
-
-    if len(clicked_points) >= 3:
-        clicked_points = []
-        ax.images[0].set_data(frames[current_frame_index])
-        if circle_patch:
-            circle_patch.remove()
-            circle_patch = None
-
-    x, y = event.xdata, event.ydata
-    clicked_points.append((x, y))
-    ax.plot(x, y, 'ro')
-
-    if len(clicked_points) == 3:
-        try:
-            (x1, y1), (x2, y2), (x3, y3) = clicked_points
-            cx, cy, radius = calc_circle(x1, y1, x2, y2, x3, y3)
-            radius_mm = radius * PIXEL_SIZE_MM
-            print(f"Radius: {radius:.2f} pixels, {radius_mm:.3f} mm")
-            circle_patch = Circle((cx, cy), radius, color='cyan', linestyle='--', fill=False, linewidth=2, alpha=0.5)
-            ax.add_patch(circle_patch)
-            update_title(current_frame_index, radius)
-            plt.draw()
-        except ValueError as e:
-            print("Error:", e)
+def main():
+    path = wait_for_path_from_clipboard(filetype='media')
+    frames, fps = load_frames(path)
+    VideoInspector(frames, fps)
+    plt.show()
 
 
-fig.canvas.mpl_connect('key_press_event', on_key)
-fig.canvas.mpl_connect('button_press_event', on_click)
-
-update_title(0)
-plt.show()
-# %%
+if __name__ == '__main__':
+    main()
