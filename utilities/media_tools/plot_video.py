@@ -4,11 +4,12 @@ import matplotlib.pyplot as plt
 import os
 from matplotlib.patches import Circle
 import matplotlib
-from utilities.media_tools.utils import wait_for_path_from_clipboard
+from utilities.utils import wait_for_path_from_clipboard
 from basler_cam.mode_position_capture_gui import fit_gaussian, rebin_image
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 from matplotlib import gridspec
+from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import Slider, TextBox
 
 # ---- Set video/image path ----
@@ -49,6 +50,11 @@ if not is_video:
     if img is None:
         raise IOError(f"Cannot open file as video or image: {path}")
     frames = np.array([img])  # Add an extra dimension: shape (1, H, W)
+
+# `fps` only exists when the file was loaded as a video, and some containers
+# report 0/NaN. Fall back to 1 so the time axis and title stay usable.
+if not is_video or not fps or np.isnan(fps):
+    fps = 1.0
 
 PIXEL_SIZE_MM = 0.0055
 rebin_factor = 64
@@ -120,9 +126,15 @@ ax_left.invert_yaxis()
 intensity_line, = ax_plot.plot(frame_sums, lw=1)  # Main intensity trace
 selected_lines = []                               # To store markers for selected frames
 
+# Marker for the frame currently shown in the main image
+current_frame_line = ax_plot.axvline(0, color='k', lw=1)
+
 ax_plot.set_xlim(0, len(frames) - 1)
 ax_plot.set_ylabel("Total Intensity")
-ax_plot.set_xlabel("Frame")
+# The data stays in frame units (so do all the axvline positions); only the
+# tick labels are converted to seconds.
+ax_plot.xaxis.set_major_formatter(FuncFormatter(lambda frame_idx, pos: f"{frame_idx / fps:.3f}"))
+ax_plot.set_xlabel("Time [s]")
 
 # === UI Controls ===
 
@@ -187,7 +199,7 @@ def calc_circle(x1, y1, x2, y2, x3, y3):
 def update_title(frame_idx, radius=None, status=""):
     global fit_data
     time = frame_idx / fps
-    base_title = (f" {frame_idx} (Time: {time:.2f}s)")
+    base_title = (f" {frame_idx} (Time: {time:.3f}s)")
     if radius is not None:
         radius_mm = radius * PIXEL_SIZE_MM
         base_title += f" | Radius: {radius:.2f}px = {radius_mm:.3f}mm"
@@ -217,7 +229,7 @@ def update(val):
     frame = rebin_image(frame, rebin_factor) if rebin_factor > 1 else frame
     img_disp.set_data(frame)
     img_disp.set_clim(vmin=0, vmax=vmax_val)
-    print("kaki 1")
+    current_frame_line.set_xdata([current_frame_index])
 
     # Remove old overlays
     if circle_patch:
