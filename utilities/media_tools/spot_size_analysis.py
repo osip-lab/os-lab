@@ -20,8 +20,17 @@ def _import_simulation():
     return import_cavity_design_module('simple_analysis_scripts.camera_spot_size_per_cavity_NA')
 
 
+def list_cavity_elements():
+    """Names accepted in the element lists, from the cavity-design catalog.
+
+        python -c "from utilities.media_tools.spot_size_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\\n')"
+    """
+    return _import_simulation().available_element_names()
+
+
 def get_spot_size_to_na(long_arm_length, mid_arm_length=None, lens_distance=None,
-                        camera_distance=None, N_points=None, NA_long_arm_range=None,
+                        camera_distance=None, outgoing_elements=None, intracavity_elements=None,
+                        N_points=None, NA_long_arm_range=None,
                         measured_spot_sizes_m=(), measured_labels=(), plot=False):
     """Return (spot_size_to_NA, error).
 
@@ -30,6 +39,12 @@ def get_spot_size_to_na(long_arm_length, mid_arm_length=None, lens_distance=None
     the ones left None keep the simulation's own default. `plot=True` shows the simulated system in
     one window - the two dependency panels plus the optical system underneath - with the spot sizes
     in `measured_spot_sizes_m` (named by `measured_labels`, e.g. ('w_x', 'w_y')) marked on it.
+
+    `outgoing_elements` names what the beam meets between the cavity and the camera, starting at the
+    end mirror in transmission; `intracavity_elements` names the lens (or two, `mid_arm_length`
+    apart) it meets going back into the short arm. Both are catalog names in optical order - see
+    list_cavity_elements(). A name that is not in the catalog is an error the caller must fix, so it
+    is raised, not reported.
 
     `NA_long_arm_range` is the (min, max) long-arm NA the scan sweeps, and with it the range of
     camera spot sizes the result is defined over - widen it when a measured spot size comes back as
@@ -40,7 +55,9 @@ def get_spot_size_to_na(long_arm_length, mid_arm_length=None, lens_distance=None
     (None, '<why>') and the caller reports the spot sizes with the NA marked unavailable.
     """
     key = (long_arm_length, mid_arm_length, lens_distance, camera_distance, N_points,
-           NA_long_arm_range)
+           NA_long_arm_range,
+           tuple(outgoing_elements) if outgoing_elements is not None else None,
+           tuple(intracavity_elements) if intracavity_elements is not None else None)
     # The cache holds interpolators, not figures, and the measured spot sizes only change what is
     # drawn - so a caller that asked for a plot re-runs the scan, or a second run in the same
     # session (a live console re-running a script) would get no plot at all.
@@ -53,6 +70,8 @@ def get_spot_size_to_na(long_arm_length, mid_arm_length=None, lens_distance=None
     else:
         geometry = {'long_arm_length': long_arm_length, 'mid_arm_length': mid_arm_length,
                     'lens_distance': lens_distance, 'camera_distance': camera_distance,
+                    'outgoing_elements': outgoing_elements,
+                    'intracavity_elements': intracavity_elements,
                     'N_points': N_points, 'NA_long_arm_range': NA_long_arm_range}
         geometry = {name: value for name, value in geometry.items() if value is not None}
         try:
@@ -60,6 +79,10 @@ def get_spot_size_to_na(long_arm_length, mid_arm_length=None, lens_distance=None
                 measured_spot_sizes_m=measured_spot_sizes_m, measured_labels=measured_labels,
                 plot=plot, **geometry)
             result = (spot_size_to_NA, None)
+        except simulation.UnknownCavityElement:
+            # A misspelled element name is something the caller has to fix in its own config, not a
+            # missing simulation. Fail loudly instead of silently dropping the NA from the report.
+            raise
         except Exception as error:
             result = (None, f'{type(error).__name__}: {error}')
     _interpolator_cache[key] = result

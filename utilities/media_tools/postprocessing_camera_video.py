@@ -23,11 +23,11 @@ Pipeline
    selects:
    - 'simulation': the cavity-design simulation
      (simple_analysis_scripts.camera_spot_size_per_cavity_NA). The optical
-     system it simulates - the arm lengths, the collimating lens and the camera
-     distance - is defined in the configuration block below; nothing has to be
-     edited in the cavity-design project. The measured spot sizes go in with
-     it, so the dependency plot comes back with them marked, and the system is
-     drawn with the mode that was measured.
+     system it simulates - the two element lists, the arm lengths and the
+     camera distance - is defined in the configuration block below; nothing has
+     to be edited in the cavity-design project. The measured spot sizes go in
+     with it, so the dependency plot comes back with them marked, and the
+     system is drawn with the mode that was measured.
    - 'ratio': the fixed linear ratio NA = NA_TO_SPOT_SIZE_RATIO * w, which was
      calibrated once against a measured spectrum. No simulation is run.
    - None: no NA at all, only the spot sizes.
@@ -79,12 +79,32 @@ NA_TO_SPOT_SIZE_RATIO = 0.0545 * 1000
 
 # --- the system being measured, simulated by the 'simulation' route --------
 # (edit this when the setup changes.)
+# Element names come from the cavity-design catalog; list them in optical order.
+# To see the available names:
+#   python -c "from utilities.media_tools.spot_size_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
+#
+# What the outgoing beam meets on its way to the camera, starting with the
+# cavity's end mirror in TRANSMISSION (the ..._REFRACTIVE entry - the mode is
+# matched to it, and every distance below is measured from it):
+OUTGOING_ELEMENTS = [
+    'COASTLINE_20CM_REFRACTIVE',
+    'NEWPORT_200MM_PLANO_CONVEX',
+]
+# What the mode meets going the other way, from the long arm into the short arm.
+# One lens or two; with two, MID_ARM_LENGTH is the distance between them (with
+# one it is ignored). They are turned around automatically - the catalog
+# orientations belong to the real cavity, whose layout is mirrored w.r.t. this
+# simulation's.
+INTRACAVITY_ELEMENTS = [
+    'THOLABS_200MM_PLANO_CONVEX_LENS',
+    'EDMUND_4p5MM_ASPHERIC_83580',
+]
 # All lengths in metres, as everywhere in the cavity-design library.
-LONG_ARM_LENGTH = 0.4     # Coastline mirror -> Thorlabs 200mm lens; only the DEFAULT -
+LONG_ARM_LENGTH = 0.4     # end mirror -> first intracavity lens; only the DEFAULT -
                           # the value actually used is asked for on every run
-MID_ARM_LENGTH = 1e-2     # Thorlabs 200mm lens -> Edmund 4.5mm aspheric
-LENS_DISTANCE = 59e-3     # Coastline mirror -> Newport 200mm collimating lens (outside the cavity)
-CAMERA_DISTANCE = 0.02    # Newport collimating lens -> camera sensor
+MID_ARM_LENGTH = 1e-2     # between the two intracavity lenses (unused if there is one)
+LENS_DISTANCE = 59e-3     # end mirror -> the next outgoing element (the collimating lens)
+CAMERA_DISTANCE = 0.02    # last outgoing element -> camera sensor
 N_points = 200            # long-arm NAs simulated across the scanned range
 # (min, max) long-arm NA the simulation scans - it sets the range of camera spot
 # sizes the mapping is defined over. None keeps the simulation's own range (its
@@ -428,6 +448,8 @@ if NA_FROM_SPOT_SIZE == 'simulation':
         mid_arm_length=MID_ARM_LENGTH,
         lens_distance=LENS_DISTANCE,
         camera_distance=CAMERA_DISTANCE,
+        outgoing_elements=OUTGOING_ELEMENTS,
+        intracavity_elements=INTRACAVITY_ELEMENTS,
         N_points=N_points,
         NA_long_arm_range=NA_LONG_ARM_RANGE,
         measured_spot_sizes_m=(w_x_m, w_y_m),
