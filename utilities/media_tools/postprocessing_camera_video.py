@@ -1,3 +1,35 @@
+"""postprocessing_camera_video.py
+
+Extract the cavity mode's spot size from a camera video, and map it to the
+numerical aperture (NA) of the cavity's short arm.
+
+Pipeline
+--------
+1. Load a video (file path taken from the clipboard) and enter the long arm
+   length in cm (it changes between measurements, so it is asked for on every
+   run rather than read from a config constant).
+2. Drag a horizontal window over the intensity-vs-time trace to pick the part
+   of the video worth looking at.
+3. Click one frame out of the grid of the selected frames.
+4. Click the Gaussian's center and a point ~1 sigma away (MANUAL_INITIAL_GUESS),
+   then fit a 2D Gaussian to that frame: spot sizes w_x, w_y in pixels ->
+   metres via PIXEL_SIZE_BASLER_CAMERA.
+5. Map each spot size to the short arm's NA, by whichever route NA_FROM_SPOT_SIZE
+   selects:
+   - 'simulation': the cavity-design simulation
+     (simple_analysis_scripts.camera_spot_size_per_cavity_NA). The optical
+     system it simulates - the arm lengths, the collimating lens and the camera
+     distance - is defined in the configuration block below; nothing has to be
+     edited in the cavity-design project. The measured spot sizes go in with
+     it, so the dependency plot comes back with them marked, and the system is
+     drawn with the mode that was measured.
+   - 'ratio': the fixed linear ratio NA = NA_TO_SPOT_SIZE_RATIO * w, which was
+     calibrated once against a measured spectrum. No simulation is run.
+   - None: no NA at all, only the spot sizes.
+6. Print the spot sizes and NAs, and append a one-line record to
+   numerical-results.txt in the folder of the video.
+"""
+
 import time
 
 import cv2
@@ -7,19 +39,43 @@ import matplotlib
 from matplotlib.widgets import SpanSelector
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from basler_cam.mode_position_capture_gui import fit_gaussian
-from utilities.utils import append_numerical_result_line, wait_for_path_from_clipboard
+from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
+                             wait_for_path_from_clipboard)
+# The spot size -> NA mapping comes from the cavity-design project; this module
+# forwards the geometry below to it and caches the scan.
+from utilities.media_tools.spot_size_analysis import get_spot_size_to_na, na_from_spot_size
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
-# If None, it is ignored. If a float, the extracted spot sizes are converted to
-# an NA estimate via NA_x = NA_TO_SPOT_SIZE_RATIO * w_x (and likewise for y),
-# with w in METERS - so the ratio has units of 1/m. The NAs are then shown in
-# the fit plot title and recorded in numerical-results.txt.
-NA_TO_SPOT_SIZE_RATIO = None # 0.0545 * 1000  # This ratio was extracted from the video/spectrum of .\2026-07-13\25MHz\1 35
 # If True, the user clicks the Gaussian center and a point ~1 sigma away on the
 # selected frame to seed the fit. If False, the initial guess is estimated
 # automatically (as before).
 MANUAL_INITIAL_GUESS = True
+
+# --- how the spot sizes become an NA ---------------------------------------
+# 'simulation' - propagate the mode through the real optical system (below);
+# 'ratio'      - the fixed linear ratio just underneath, no simulation;
+# None         - report the spot sizes only.
+NA_FROM_SPOT_SIZE = 'simulation'
+# Used by the 'ratio' route: NA_x = NA_TO_SPOT_SIZE_RATIO * w_x with w in
+# METRES, so the ratio is in 1/m. This one was extracted from the
+# video/spectrum of .\2026-07-13\25MHz\1 35 - it holds for that geometry only,
+# which is why the simulation route exists.
+NA_TO_SPOT_SIZE_RATIO = 0.0545 * 1000
+
+# --- the system being measured, simulated by the 'simulation' route --------
+# (edit this when the setup changes.)
+# All lengths in metres, as everywhere in the cavity-design library.
+LONG_ARM_LENGTH = 0.4     # Coastline mirror -> Thorlabs 200mm lens; only the DEFAULT -
+                          # the value actually used is asked for on every run
+MID_ARM_LENGTH = 1e-2     # Thorlabs 200mm lens -> Edmund 4.5mm aspheric
+LENS_DISTANCE = 59e-3     # Coastline mirror -> Newport 200mm collimating lens (outside the cavity)
+CAMERA_DISTANCE = 0.02    # Newport collimating lens -> camera sensor
+N_points = 200            # long-arm NAs simulated across the scanned range
+# (min, max) long-arm NA the simulation scans - it sets the range of camera spot
+# sizes the mapping is defined over. None keeps the simulation's own range (its
+# NA floor .. 0.01); widen it if a measured spot size comes back out of range.
+NA_LONG_ARM_RANGE = None
 
 
 def load_video_as_numpy(video_path):
@@ -109,6 +165,9 @@ video_path = wait_for_path_from_clipboard(filetype='video')
 
 video_array, fps = load_video_as_numpy(video_path)
 
+# Asked here, before the interactive windows take over the console.
+long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
+
 intensity_t = video_array.sum(axis=(1, 2))  # Sum pixel intensities per frame
 
 times = np.arange(len(intensity_t)) / fps  # Get time values for each frame
@@ -183,20 +242,94 @@ w_y_m = pars['w_y'] * PIXEL_SIZE_BASLER_CAMERA
 w_x_mm = w_x_m * 1e3
 w_y_mm = w_y_m * 1e3
 
-title = f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm"
-results_text = (f"frame_time = {selected_frame_time:.2f} s, "
-                f"(w_x, w_y) = ({w_x_mm:.4f} mm, {w_y_mm:.4f} mm)")
-if NA_TO_SPOT_SIZE_RATIO is not None:
-    NA_x = NA_TO_SPOT_SIZE_RATIO * w_x_m
-    NA_y = NA_TO_SPOT_SIZE_RATIO * w_y_m
-    title += f"\nNA_x = {NA_x:.4f},  NA_y = {NA_y:.4f}"
-    results_text += (f", NA_x = {NA_x:.4f}, NA_y = {NA_y:.4f}, "
-                     f"NA_to_spot_size_ratio = {NA_TO_SPOT_SIZE_RATIO:.6g} 1/m")
-fig.suptitle(title, fontsize=14)
-
+fig.suptitle(f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm", fontsize=14)
 fig.tight_layout()
-fig.subplots_adjust(top=0.90 if NA_TO_SPOT_SIZE_RATIO is not None else 0.93)
+fig.subplots_adjust(top=0.93)
+# Without a running event loop, the window would stay blank until the final
+# plt.show(); a short pause flushes the fit to screen before the (slower)
+# simulation runs.
+plt.pause(0.1)
 
+# %% Map the spot sizes to the NA in the short arm --------------------------
+# One NA per axis - both routes are rotationally symmetric, so each spot size is
+# mapped on its own. An NA left None is one the chosen route could not give (see
+# the printed reason); the spot sizes are reported either way.
+NAs = {'x': None, 'y': None}
+spot_sizes_m = {'x': w_x_m, 'y': w_y_m}
+
+if NA_FROM_SPOT_SIZE == 'simulation':
+    # The spot size <-> NA relation comes from the cavity-design project (path
+    # in local_config.py); spot_size_analysis builds and caches the
+    # interpolator, and the measured spot sizes are handed over with it so the
+    # dependency plot comes back with them marked on it.
+    spot_size_to_NA, na_error = get_spot_size_to_na(
+        long_arm_length=long_arm_length,  # asked at the start, not the config default
+        mid_arm_length=MID_ARM_LENGTH,
+        lens_distance=LENS_DISTANCE,
+        camera_distance=CAMERA_DISTANCE,
+        N_points=N_points,
+        NA_long_arm_range=NA_LONG_ARM_RANGE,
+        measured_spot_sizes_m=(w_x_m, w_y_m),
+        measured_labels=('w_x', 'w_y'),
+        plot=True,  # always: the plot is what carries the measurement markers
+    )
+    if na_error is not None:
+        print(f"NA mapping unavailable: {na_error}")
+    else:
+        for axis, spot_size_m in spot_sizes_m.items():
+            NAs[axis], lookup_error = na_from_spot_size(spot_size_to_NA, spot_size_m)
+            if lookup_error is not None:
+                print(f"NA_{axis} unavailable: {lookup_error}")
+
+elif NA_FROM_SPOT_SIZE == 'ratio':
+    NAs = {axis: NA_TO_SPOT_SIZE_RATIO * spot_size_m
+           for axis, spot_size_m in spot_sizes_m.items()}
+
+elif NA_FROM_SPOT_SIZE is not None:
+    raise ValueError(f"NA_FROM_SPOT_SIZE is {NA_FROM_SPOT_SIZE!r}; expected "
+                     f"'simulation', 'ratio' or None.")
+
+# Which route produced the NAs, for the report and the record: the two disagree
+# whenever the ratio's calibration geometry is not the one being measured, so a
+# logged NA is only readable next to the route it came from.
+if NA_FROM_SPOT_SIZE == 'ratio':
+    na_route_text = f'ratio {NA_TO_SPOT_SIZE_RATIO:.6g} 1/m'
+else:
+    na_route_text = NA_FROM_SPOT_SIZE or 'none'
+
+# %% Report and record ------------------------------------------------------
+width = 64
+print()
+print('=' * width)
+print("  CAMERA SPOT SIZE ANALYSIS".center(width))
+print('=' * width)
+print(f"  {'Frame time':<28}{selected_frame_time:>18.2f} s")
+print(f"  {'Long arm length':<28}{long_arm_length * 1e2:>18.4g} cm")
+print('-' * width)
+print(f"  {'Spot size w_x':<28}{w_x_mm:>18.4f} mm")
+print(f"  {'Spot size w_y':<28}{w_y_mm:>18.4f} mm")
+if any(na is not None for na in NAs.values()):
+    print('-' * width)
+    for axis, na in NAs.items():
+        if na is not None:
+            print(f"  {'Short arm NA_' + axis:<28}{na:>18.4f}")
+    print(f"  {'  (NA from)':<28}{na_route_text:>18}")
+print('=' * width)
+print()
+
+na_text = ', '.join(f"NA_{axis} = " + (f"{na:.4f}" if na is not None else "N/A")
+                    for axis, na in NAs.items())
+results_text = (f"frame_time = {selected_frame_time:.2f} s, "
+                f"(w_x, w_y) = ({w_x_mm:.4f} mm, {w_y_mm:.4f} mm), "
+                f"long_arm_length = {long_arm_length:.4g} m, {na_text}, "
+                f"NA_from = {na_route_text}")
 append_numerical_result_line(video_path, results_text)
 
-plt.show()
+na_title = ',  '.join(f"NA_{axis} = {na:.4f}" for axis, na in NAs.items() if na is not None)
+if na_title:
+    fig.suptitle(f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm\n{na_title}", fontsize=14)
+    fig.subplots_adjust(top=0.90)
+    fig.canvas.draw_idle()
+
+# Keep all windows open (and responsive) after the report has been printed.
+plt.show(block=True)
