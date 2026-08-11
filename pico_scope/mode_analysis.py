@@ -252,21 +252,15 @@ def pair_summary(rows):
 _na_cache = {}  # (elements, long_arm, mid_arm, short_arms, N_points) -> (interp, interp, error)
 
 
-def _add_cavity_design_to_path():
-    """Put the repo root and the cavity-design project on sys.path."""
+def _import_simulation():
+    """Import the cavity-design lens-position simulation (raises if unavailable)."""
+    # The repo root first, so `utilities` is importable when this file is run as a script; the
+    # bridge then puts the cavity-design project itself on the path.
     repo_root = str(Path(__file__).resolve().parents[1])
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    from local_config import PATH_CAVITY_DESIGN_PROJECT
-    if PATH_CAVITY_DESIGN_PROJECT not in sys.path:
-        sys.path.append(PATH_CAVITY_DESIGN_PROJECT)
-
-
-def _import_simulation():
-    """Import the cavity-design lens-position simulation (raises if unavailable)."""
-    _add_cavity_design_to_path()
-    import simple_analysis_scripts.mode_spacing_to_NA as simulation
-    return simulation
+    from utilities.cavity_design_bridge import import_cavity_design_module
+    return import_cavity_design_module('simple_analysis_scripts.mode_spacing_to_NA')
 
 
 def list_cavity_elements():
