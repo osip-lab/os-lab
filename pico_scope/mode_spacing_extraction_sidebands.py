@@ -84,7 +84,7 @@ SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
 CAVITY_ELEMENTS = [
     'LASER_OPTIK_MIRROR',
     'EDMUND_4p5MM_ASPHERIC_83580',
-    # 'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
+    'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point

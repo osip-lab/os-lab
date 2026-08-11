@@ -290,7 +290,7 @@ class VideoInspector:
 
     def update_title(self, radius=None, status=""):
         time = self.current_frame_index / self.fps
-        title = f" {self.current_frame_index} (Time: {time:.3f}s)"
+        title = f"Frame {self.current_frame_index} (Time: {time:.3f}s)"
         if radius is not None:
             title += f" | Radius: {radius:.2f}px = {radius * PIXEL_SIZE_MM:.3f}mm"
         if self.current_frame_index in self.selected_frames_indices:
@@ -300,7 +300,10 @@ class VideoInspector:
         if self.fit_data is not None:
             title += (f" | Fit: w_x={self.fit_data['w_x'] * PIXEL_SIZE_MM:.2f}mm,"
                       f" w_y={self.fit_data['w_y'] * PIXEL_SIZE_MM:.2f}mm")
-        self.ax.set_title(title)
+        # A figure title, not an axes one: the top projection axes is appended
+        # into the image's own bbox, so it sits right where an axes title would
+        # be drawn and hides it.
+        self.fig.suptitle(title, fontsize=10)
 
     def update_selected_lines(self):
         for line in self.selected_lines:
