@@ -11,9 +11,14 @@ Pipeline
 2. Drag a horizontal window over the intensity-vs-time trace to pick the part
    of the video worth looking at.
 3. Click one frame out of the grid of the selected frames.
-4. Click the Gaussian's center and a point ~1 sigma away (MANUAL_INITIAL_GUESS),
-   then fit a 2D Gaussian to that frame: spot sizes w_x, w_y in pixels ->
-   metres via PIXEL_SIZE_BASLER_CAMERA.
+4. Drag out the mode's diameter to seed the fit (MANUAL_INITIAL_GUESS) - press at
+   one side of it, release at the other, and the circle follows the mouse. In
+   the same window, CROP_TO_CIRCLE_KEY makes the next drag mark a circle to
+   keep: everything outside it is replaced by its CROP_FILL_PERCENTILE-th
+   percentile, which takes a second spot or a bright edge out of the fit.
+   SKIP_MANUAL_GUESS_KEY leaves the guess to the fit. Then fit a 2D Gaussian to
+   that frame: spot sizes w_x, w_y in pixels -> metres via
+   PIXEL_SIZE_BASLER_CAMERA.
 5. Map each spot size to the short arm's NA, by whichever route NA_FROM_SPOT_SIZE
    selects:
    - 'simulation': the cavity-design simulation
@@ -36,6 +41,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+from matplotlib.backend_bases import MouseButton
+from matplotlib.patches import Circle
 from matplotlib.widgets import SpanSelector
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from basler_cam.mode_position_capture_gui import fit_gaussian
@@ -47,10 +54,17 @@ from utilities.media_tools.spot_size_analysis import get_spot_size_to_na, na_fro
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
-# If True, the user clicks the Gaussian center and a point ~1 sigma away on the
-# selected frame to seed the fit. If False, the initial guess is estimated
-# automatically (as before).
+# If True, the user drags the mode's diameter on the selected frame to seed the
+# fit. If False, the initial guess is estimated automatically (as before).
+# Either way the decision can be taken per frame: pressing SKIP_MANUAL_GUESS_KEY
+# in the marking window falls back to the automatic guess for that frame, and
+# CROP_TO_CIRCLE_KEY masks everything outside a dragged circle before the fit.
 MANUAL_INITIAL_GUESS = True
+# Keep away from matplotlib's own window shortcuts when changing these - s saves,
+# q quits, p pans, o zooms, g grids, f goes fullscreen, k/l switch to log axes,
+# c/v/left/right step the view history, h/r reset it.
+SKIP_MANUAL_GUESS_KEY = 'escape'
+CROP_TO_CIRCLE_KEY = 'm'
 
 # --- how the spot sizes become an NA ---------------------------------------
 # 'simulation' - propagate the mode through the real optical system (below);
@@ -134,21 +148,162 @@ def get_time_range_from_user(times, intensity):
     return tuple(selected_range)
 
 
-def get_manual_initial_guess(frame):
-    """Presents `frame` and lets the user click the Gaussian center followed by a
-    point ~1 sigma away. Returns a dict with 'x_0', 'y_0' and 'sigma' (pixels)."""
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(frame, cmap='gray')
-    ax.set_title("Click the Gaussian center, then a point ~1 sigma away")
-    fig.tight_layout()
-    pts = plt.ginput(2, timeout=0)
+CROP_FILL_PERCENTILE = 10  # what the pixels outside the kept circle are replaced with
+
+
+def key_label(key):
+    """How a hotkey is written in a window title."""
+    return {'escape': 'Esc', 'enter': 'Enter', ' ': 'Space'}.get(key, f"'{key}'")
+
+
+def crop_outside_circle(frame, center, radius, percentile=CROP_FILL_PERCENTILE):
+    """Replace every pixel outside the circle with the `percentile`-th percentile of those pixels.
+
+    Everything the circle does not keep - a second spot, a reflection, a bright edge - is flattened
+    to the low end of its own background level, so it can neither pull the 2D Gaussian fit nor lift
+    its offset. Returns a new frame; `center` is (x, y) and `radius` is in pixels.
+    """
+    yy, xx = np.ogrid[:frame.shape[0], :frame.shape[1]]
+    outside = (xx - center[0]) ** 2 + (yy - center[1]) ** 2 > radius ** 2
+    if not outside.any():  # a circle around the whole frame removes nothing
+        return frame.copy()
+    cropped = frame.copy()
+    cropped[outside] = np.percentile(frame[outside], percentile)
+    return cropped
+
+
+def mark_gaussian_on_frame(frame, skip_key=SKIP_MANUAL_GUESS_KEY, crop_key=CROP_TO_CIRCLE_KEY):
+    """Present `frame` and let the user drag out circles on it, in one window.
+
+    A drag runs from one side of a circle to the opposite one - press at one end of the diameter,
+    release at the other - and the circle is drawn live while the mouse moves. What the drag means
+    depends on the mode:
+      - by default it marks the mode itself, and seeds the fit with center = the drag's midpoint and
+        sigma = half its length;
+      - after `crop_key` is pressed the next drag marks the circle to KEEP: everything outside it is
+        replaced by crop_outside_circle(), the image is redrawn, and the window returns to marking
+        the mode. Any number of crops can be taken.
+    `skip_key` (or closing the window) leaves the guess to fit_gaussian, which estimates it itself.
+
+    Returns (frame, guess, crops): the frame to fit - cropped if the user cropped it - the initial
+    guess dict ('x_0', 'y_0', 'sigma' in pixels) or None, and the list of ((x, y), radius) circles
+    that were kept.
+    """
+    frame = np.asarray(frame, dtype=float)
+    # Constrained layout, not tight_layout(): the title is two lines long and changes with the mode,
+    # so the room it needs has to be re-made on every draw - tight_layout() runs once, before the
+    # title exists, and the first line ends up above the top of the window.
+    fig, ax = plt.subplots(figsize=(8, 8), layout='constrained')
+    image = ax.imshow(frame, cmap='gray')
+    preview = Circle((0, 0), 0, fill=False, color='tab:red', lw=1.4, ls='--', visible=False)
+    ax.add_patch(preview)
+
+    state = {'frame': frame, 'guess': None, 'crops': [], 'start': None, 'mode': 'mark',
+             'background': None}
+
+    def show_title():
+        if state['mode'] == 'crop':
+            title = (f"Drag the circle to KEEP: press one side, release the other\n"
+                     f"outside it -> its {CROP_FILL_PERCENTILE}th percentile  |  "
+                     f"{key_label(crop_key)}: cancel")
+        else:
+            title = (f"Drag the mode's diameter: press one side, release the other\n"
+                     f"{key_label(crop_key)}: mask outside a circle  |  "
+                     f"{key_label(skip_key)}: skip, the fit guesses")
+        # Short lines, small font and wrap=True together: the title has to survive a window the
+        # user narrowed, and a clipped instruction is one the user never reads.
+        ax.set_title(title, fontsize=10, wrap=True)
+        fig.canvas.draw_idle()
+
+    def circle_of_drag(x, y):
+        """The circle whose diameter runs from the press point to (x, y)."""
+        (x0, y0) = state['start']
+        return ((0.5 * (x0 + x), 0.5 * (y0 + y)), 0.5 * float(np.hypot(x - x0, y - y0)))
+
+    def on_press(event):
+        if event.inaxes is ax and event.button == MouseButton.LEFT:
+            state['start'] = (event.xdata, event.ydata)
+            preview.set_center(state['start'])
+            preview.set_radius(0.0)
+            preview.set_visible(False)
+            # Snapshot the image once, so each mouse move only has to blit the circle back over it -
+            # a full redraw of a multi-megapixel frame per motion event would make the circle lag
+            # behind the mouse. Backends that cannot blit fall back to redrawing (see on_motion).
+            try:
+                fig.canvas.draw()
+                state['background'] = fig.canvas.copy_from_bbox(ax.bbox)
+            except Exception:
+                state['background'] = None
+            preview.set_visible(True)
+
+    def on_motion(event):
+        # Repainting on every motion event is what makes the circle follow the mouse.
+        if state['start'] is None or event.inaxes is not ax:
+            return
+        center, radius = circle_of_drag(event.xdata, event.ydata)
+        preview.set_center(center)
+        preview.set_radius(radius)
+        if state['background'] is None:
+            fig.canvas.draw_idle()
+            return
+        fig.canvas.restore_region(state['background'])
+        ax.draw_artist(preview)
+        fig.canvas.blit(ax.bbox)
+
+    def on_release(event):
+        if state['start'] is None or event.button != MouseButton.LEFT:
+            return
+        if event.inaxes is not ax:  # released off the image: abandon the drag
+            state['start'] = None
+            preview.set_visible(False)
+            fig.canvas.draw_idle()
+            return
+        center, radius = circle_of_drag(event.xdata, event.ydata)
+        state['start'] = None
+        if radius < 1.0:  # a stray click rather than a drag
+            preview.set_visible(False)
+            fig.canvas.draw_idle()
+            return
+        if state['mode'] == 'crop':
+            state['frame'] = crop_outside_circle(state['frame'], center, radius)
+            state['crops'].append((center, radius))
+            image.set_data(state['frame'])  # the clim stays put, so the contrast does not jump
+            preview.set_visible(False)
+            print(f"Cropped to a circle at ({center[0]:.1f}, {center[1]:.1f}) px, "
+                  f"radius {radius:.1f} px; outside -> {CROP_FILL_PERCENTILE}th percentile.")
+            state['mode'] = 'mark'
+            show_title()
+        else:
+            state['guess'] = {'x_0': float(center[0]), 'y_0': float(center[1]),
+                              'sigma': max(radius, 1.0)}
+            fig.canvas.stop_event_loop()
+
+    def on_key(event):
+        if event.key == skip_key:
+            fig.canvas.stop_event_loop()
+        elif event.key == crop_key:
+            state['mode'] = 'mark' if state['mode'] == 'crop' else 'crop'
+            state['start'] = None
+            preview.set_visible(False)
+            show_title()
+
+    cids = [fig.canvas.mpl_connect(name, handler) for name, handler in
+            (('button_press_event', on_press), ('motion_notify_event', on_motion),
+             ('button_release_event', on_release), ('key_press_event', on_key),
+             ('close_event', lambda event: fig.canvas.stop_event_loop()))]
+    show_title()
+    fig.show()  # realise the window before blocking on events
+    fig.canvas.start_event_loop(timeout=0)  # runs until stop_event_loop()
+    for cid in cids:
+        fig.canvas.mpl_disconnect(cid)
     plt.close(fig)
-    if len(pts) < 2:
-        raise RuntimeError("Manual initial guess requires two clicks (center and 1-sigma point).")
-    (cx, cy), (px, py) = pts
-    sigma = float(np.hypot(px - cx, py - cy))
-    print(f"Manual initial guess: center=({cx:.1f}, {cy:.1f}), sigma={sigma:.1f} px")
-    return {'x_0': float(cx), 'y_0': float(cy), 'sigma': max(sigma, 1.0)}
+
+    if state['guess'] is None:
+        print("Manual initial guess skipped - fit_gaussian estimates it automatically.")
+    else:
+        print(f"Manual initial guess: center=({state['guess']['x_0']:.1f}, "
+              f"{state['guess']['y_0']:.1f}), sigma={state['guess']['sigma']:.1f} px")
+    return state['frame'], state['guess'], state['crops']
 
 
 def trim_video_by_time_range(video_array, time_range, fps):
@@ -214,7 +369,13 @@ plt.show()  # blocks until a frame is clicked (the click closes the window)
 if selected_frame is None:
     raise RuntimeError("No frame was selected — click one of the frames in the grid.")
 
-manual_guess = get_manual_initial_guess(selected_frame) if MANUAL_INITIAL_GUESS else None
+crops = []
+if MANUAL_INITIAL_GUESS:
+    # The frame comes back cropped if the user cropped it, so the fit and the plot below both see
+    # the image the user was looking at.
+    selected_frame, manual_guess, crops = mark_gaussian_on_frame(selected_frame)
+else:
+    manual_guess = None
 gauss, pars = fit_gaussian(selected_frame, rebinning=2, manual_guess=manual_guess)
 
 sy, sx = selected_frame.shape
@@ -323,6 +484,10 @@ results_text = (f"frame_time = {selected_frame_time:.2f} s, "
                 f"(w_x, w_y) = ({w_x_mm:.4f} mm, {w_y_mm:.4f} mm), "
                 f"long_arm_length = {long_arm_length:.4g} m, {na_text}, "
                 f"NA_from = {na_route_text}")
+if crops:
+    # A crop changes the fit, so the record has to say the frame was not the raw one.
+    results_text += ', kept_circles = ' + '; '.join(
+        f"({center[0]:.0f}, {center[1]:.0f}) px r={radius:.0f} px" for center, radius in crops)
 append_numerical_result_line(video_path, results_text)
 
 na_title = ',  '.join(f"NA_{axis} = {na:.4f}" for axis, na in NAs.items() if na is not None)
