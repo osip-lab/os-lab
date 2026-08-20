@@ -19,7 +19,7 @@ matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Ellipse
 from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import Slider, TextBox
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -29,8 +29,7 @@ from basler_cam.gaussian_fit import fit_gaussian, gaussian2d, rebin_image
 from utilities.utils import wait_for_path_from_clipboard
 
 PIXEL_SIZE_MM = 0.0055
-DEFAULT_REBIN_FACTOR = 64
-CONTOUR_LEVELS = 5
+DEFAULT_REBIN_FACTOR = 4
 # Bottom of the axes area, in figure coordinates. Everything under it belongs to
 # the rotated time labels and the controls. It is a starting point only - long
 # videos have taller (rotated) time labels, so the margin is measured and grown
@@ -111,7 +110,7 @@ class VideoInspector:
         self.clicked_points = []       # Image-coordinate clicks for the circle fit
         self.click_markers = []        # The red dots drawn for those clicks
         self.circle_patch = None
-        self.gaussian_contour = None
+        self.gaussian_ellipse = None
         self.selected_lines = []
 
         self._build_figure()
@@ -271,10 +270,10 @@ class VideoInspector:
         return model.reshape(height, width)
 
     def draw_fit_overlay(self, frame):
-        """Draw the fitted Gaussian as a contour plus its two projections."""
-        if self.gaussian_contour is not None:
-            self.gaussian_contour.remove()
-            self.gaussian_contour = None
+        """Draw the fitted Gaussian as one ellipse plus its two projections."""
+        if self.gaussian_ellipse is not None:
+            self.gaussian_ellipse.remove()
+            self.gaussian_ellipse = None
 
         if self.fit_data is None:
             self.gauss_col_line.set_data([], [])
@@ -282,7 +281,19 @@ class VideoInspector:
             return
 
         gauss = self.fit_model_on_screen(frame.shape)
-        self.gaussian_contour = self.ax.contour(gauss, levels=CONTOUR_LEVELS, colors='r')
+        # A single contour, at the beam radius w = 2 sigma: a stack of contours at
+        # other widths hid the spot it was describing. On the display grid, like
+        # the model itself, and with Ellipse taking full axes rather than radii.
+        par = self.fit_data
+        self.gaussian_ellipse = Ellipse(
+            (self.to_display_coords(par['x_0']), self.to_display_coords(par['y_0'])),
+            width=2 * par['w_x'] / self.rebin_factor,
+            height=2 * par['w_y'] / self.rebin_factor,
+            # the fit's angle rotates the coordinates, so the ellipse itself is
+            # rotated the other way
+            angle=-np.degrees(par['angle']),
+            edgecolor='r', facecolor='none', linewidth=1.2)
+        self.ax.add_patch(self.gaussian_ellipse)
 
         # On the display grid, so these overlay the raw projections directly
         self.gauss_col_line.set_data(np.arange(gauss.shape[1]), np.mean(gauss, axis=0))

@@ -71,10 +71,15 @@ export const pairsExtension = {
         if (r?.rows) {
           const na = r.NA_mean != null ? meanStd(r.NA_mean, r.NA_std, 4)
             : `unavailable${r.na_error ? ` (${r.na_error})` : ''}`;
+          // the measured linewidths (FWHM) of a pair's two modes
+          const fwhm = (mean, std) => mean != null ? meanStd(mean, std, 3) : 'n/a';
           return `${nPairs} pairs | df/FSR = `
             + `${meanStd(r.df_over_fsr_mean, r.df_over_fsr_std, 4)}`
             + ` | df = ${(r.df_over_fsr_mean * r.fsr_mhz).toFixed(2)} MHz`
-            + ` (FSR = ${r.fsr_mhz.toFixed(1)} MHz) | NA = ${na}`;
+            + ` (FSR = ${r.fsr_mhz.toFixed(1)} MHz)`
+            + ` | FWHM = ${fwhm(r.fwhm_0_MHz_mean, r.fwhm_0_MHz_std)}`
+            + ` / ${fwhm(r.fwhm_1_MHz_mean, r.fwhm_1_MHz_std)} MHz`
+            + ` | NA = ${na}`;
         }
         if (r?.error) return r.error;
         if (nPairs === 1) {
@@ -86,12 +91,16 @@ export const pairsExtension = {
       copy() {
         const r = state?.results;
         if (!r?.rows) return null;
+        const cell = (value, digits) => value != null ? value.toFixed(digits) : '';
         return {
           text: `${r.n_pairs}\t${r.df_over_fsr_mean.toFixed(6)}\t`
-            + `${r.df_over_fsr_std != null ? r.df_over_fsr_std.toFixed(6) : ''}\t`
+            + `${cell(r.df_over_fsr_std, 6)}\t`
             + `${r.NA_mean != null ? r.NA_mean.toFixed(4) : 'N/A'}\t`
-            + `${r.NA_std != null ? r.NA_std.toFixed(4) : ''}`,
-          note: 'copied: n pairs, df/FSR (mean, std), NA (mean, std)',
+            + `${cell(r.NA_std, 4)}\t`
+            + `${cell(r.fwhm_0_MHz_mean, 4)}\t${cell(r.fwhm_0_MHz_std, 4)}\t`
+            + `${cell(r.fwhm_1_MHz_mean, 4)}\t${cell(r.fwhm_1_MHz_std, 4)}`,
+          note: 'copied: n pairs, df/FSR (mean, std), NA (mean, std), '
+            + 'FWHM of each mode [MHz] (mean, std)',
         };
       },
       draw(u, helpers) {

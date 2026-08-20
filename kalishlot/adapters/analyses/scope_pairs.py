@@ -18,6 +18,18 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,  # noqa: E402
                                       pair_positions_results, pair_summary)
 
 
+def ordered_peaks(pair):
+    """(x_left, x_right, gamma_left, gamma_right) of a fitted pair: its two
+    peaks in scan order, each keeping its own fitted HWHM (None when the fit
+    returned a non-finite width)."""
+    params = pair['params']
+    first = (pair['x01'], params.get('gamma1'))
+    second = (pair['x02'], params.get('gamma2'))
+    if first[0] > second[0]:
+        first, second = second, first
+    return (first[0], second[0], first[1], second[1])
+
+
 class PairsAnalysis:
     COMMANDS = ('fit_pair', 'undo_pair', 'clear_pairs')
 
@@ -78,15 +90,17 @@ class PairsAnalysis:
         if len(self._pairs) >= 2:
             # normalized scan order: pairs sorted left to right, each pair's
             # first peak the leftmost — the pair-to-pair spacing (the FSR)
-            # then always relates like peaks
-            positions = sorted((min(pair['x01'], pair['x02']),
-                                max(pair['x01'], pair['x02']))
-                               for pair in self._pairs)
+            # then always relates like peaks. The fitted widths follow the same
+            # swap and sort, so each stays with its own peak.
+            ordered = sorted((ordered_peaks(pair) for pair in self._pairs),
+                             key=lambda peaks: peaks[0])
+            positions = [[x1, x2] for x1, x2, _, _ in ordered]
+            widths = [[gamma1, gamma2] for _, _, gamma1, gamma2 in ordered]
             _, na_over_fsr_interp, na_error = na_interpolators()
             try:
                 rows = pair_positions_results(
                     positions, fsr_mhz=cavity_fsr_mhz(),
-                    na_over_fsr_interp=na_over_fsr_interp)
+                    na_over_fsr_interp=na_over_fsr_interp, widths=widths)
                 summary = pair_summary(rows)
                 if na_over_fsr_interp is not None and summary['NA_mean'] is None:
                     na_error = ('the fitted df/FSR is outside the simulated '

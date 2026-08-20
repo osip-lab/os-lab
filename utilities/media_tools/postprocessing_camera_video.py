@@ -42,7 +42,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib.backend_bases import MouseButton
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Ellipse
 from matplotlib.widgets import SpanSelector
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 from basler_cam.mode_position_capture_gui import fit_gaussian
@@ -96,8 +96,8 @@ OUTGOING_ELEMENTS = [
 # orientations belong to the real cavity, whose layout is mirrored w.r.t. this
 # simulation's.
 INTRACAVITY_ELEMENTS = [
-    'THOLABS_200MM_PLANO_CONVEX_LENS',
-    'EDMUND_4p5MM_ASPHERIC_83580',
+    # 'THOLABS_200MM_PLANO_CONVEX_LENS',
+    'EDMUND_4MM_ASPHERIC_16701',
 ]
 # All lengths in metres, as everywhere in the cavity-design library.
 LONG_ARM_LENGTH = 0.4     # end mirror -> first intracavity lens; only the DEFAULT -
@@ -411,7 +411,15 @@ vax.sharey(ax)
 vax.tick_params(left=False, right=True, labelleft=False, labelright=True)
 
 ax.imshow(selected_frame, cmap='gray', origin='upper')
-ax.contour(gauss, levels=5, colors='r')
+# A single contour, at the beam radius w = 2 sigma - the stack of contours that
+# used to be drawn at other widths hid the spot they were describing. Ellipse
+# takes full axes, so each is twice the corresponding radius.
+ax.add_patch(Ellipse((pars['x_0'], pars['y_0']),
+                     width=2 * pars['w_x'], height=2 * pars['w_y'],
+                     # the fit's angle rotates the coordinates, so the
+                     # ellipse itself is rotated the other way
+                     angle=-np.degrees(pars['angle']),
+                     edgecolor='r', facecolor='none', linewidth=1.5))
 
 hax.plot(np.arange(sx), selected_frame[y0, :])
 hax.plot(np.arange(sx), gauss[y0, :])
