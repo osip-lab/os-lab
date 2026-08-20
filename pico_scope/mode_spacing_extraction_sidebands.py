@@ -83,8 +83,7 @@ SIGNAL_COLUMN = 'Channel D'       # intensity column to analyze
 #   python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
 CAVITY_ELEMENTS = [
     'LASER_OPTIK_MIRROR',
-    'EDMUND_4p5MM_ASPHERIC_83580',
-    'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
+    'EDMUND_4MM_ASPHERIC_16701',
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point

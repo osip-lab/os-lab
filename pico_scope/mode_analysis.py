@@ -184,7 +184,17 @@ def fit_lorentzian_pair(x, y, x1_guess, x2_guess, region=None):
             dict(zip(DOUBLE_LORENTZIAN_PARAMS, (float(v) for v in perr))))
 
 
-def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None):
+def _fwhm_mhz(gamma, fsr, fsr_mhz):
+    """A fitted peak's full width at half maximum (2 gamma) in MHz, scaled from
+    x-units by the same FSR that scales df. None when the width or the FSR in
+    MHz is missing (a clicked, unfitted position has no width)."""
+    if gamma is None or fsr_mhz is None:
+        return None
+    return 2.0 * abs(float(gamma)) / abs(fsr) * fsr_mhz
+
+
+def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None,
+                           widths=None):
     """Per-pair df / FSR extraction from an ordered list of fitted pair
     positions [[x01, x02], ...] (>= 2 pairs, in scan order).
 
@@ -193,11 +203,16 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None):
     analyzed one, centred otherwise); each analyzed pair contributes
     df = |x02 - x01| and df / FSR. With `fsr_mhz` (cavity_fsr_mhz()) df is
     scaled to MHz; with `na_over_fsr_interp` ((df / FSR) -> NA) each pair
-    gets an NA (None outside the simulated range). Returns a list of
-    len(positions) - 1 row dicts.
+    gets an NA (None outside the simulated range). `widths` is an optional
+    list parallel to `positions` holding each pair's fitted HWHMs
+    [gamma1, gamma2] in x-units (None, or a short list, where a position was
+    clicked rather than fitted); the rows then also carry both peaks' measured
+    FWHM in MHz. Returns a list of len(positions) - 1 row dicts.
     """
     if len(positions) < 2:
         raise ValueError('need at least two fitted pairs to get an FSR')
+    if widths is not None and len(widths) != len(positions):
+        raise ValueError('widths must have one entry per pair of positions')
     rows = []
     for i in range(len(positions) - 1):
         if i == 0:
@@ -215,33 +230,53 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None):
             na = float(na_over_fsr_interp(df_over_fsr))
             if not np.isfinite(na):
                 na = None  # outside the simulated range (and not JSON-safe)
+        pair_widths = list(widths[i]) if widths is not None and widths[i] else []
+        pair_widths += [None] * (2 - len(pair_widths))
         rows.append({
             'fsr': float(fsr),
             'df': float(df),
             'df_over_fsr': float(df_over_fsr),
             'NA': na,
             'df_MHz': (df_over_fsr * fsr_mhz) if fsr_mhz is not None else None,
+            'fwhm_0_MHz': _fwhm_mhz(pair_widths[0], fsr, fsr_mhz),
+            'fwhm_1_MHz': _fwhm_mhz(pair_widths[1], fsr, fsr_mhz),
         })
     return rows
 
 
+def _mean_std(rows, key):
+    """(mean, std) over the rows whose `key` is set; both None when none is,
+    the std None with a single value (ddof=1, as pandas does)."""
+    values = np.array([row[key] for row in rows if row.get(key) is not None],
+                      dtype=float)
+    if not len(values):
+        return None, None
+    return (float(values.mean()),
+            float(values.std(ddof=1)) if len(values) > 1 else None)
+
+
 def pair_summary(rows):
-    """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR, df [MHz]
-    and NA; stds are None with a single row, and the NA / MHz fields are None
-    when no pair got an NA / when the rows were built without an FSR in MHz."""
+    """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR, df [MHz],
+    NA and each peak's FWHM [MHz]; stds are None with a single row, and the NA /
+    MHz fields are None when no pair got an NA / when the rows were built without
+    an FSR in MHz (the FWHM fields also when they were built without widths)."""
     ratios = np.array([row['df_over_fsr'] for row in rows], dtype=float)
-    nas = np.array([row['NA'] for row in rows if row['NA'] is not None],
-                   dtype=float)
-    dfs_mhz = np.array([row['df_MHz'] for row in rows if row['df_MHz'] is not None],
-                       dtype=float)
+    df_mhz_mean, df_mhz_std = _mean_std(rows, 'df_MHz')
+    na_mean, na_std = _mean_std(rows, 'NA')
+    fwhm_0_mean, fwhm_0_std = _mean_std(rows, 'fwhm_0_MHz')
+    fwhm_1_mean, fwhm_1_std = _mean_std(rows, 'fwhm_1_MHz')
     return {
         'n_pairs': len(rows),
         'df_over_fsr_mean': float(ratios.mean()),
         'df_over_fsr_std': float(ratios.std(ddof=1)) if len(ratios) > 1 else None,
-        'df_MHz_mean': float(dfs_mhz.mean()) if len(dfs_mhz) else None,
-        'df_MHz_std': float(dfs_mhz.std(ddof=1)) if len(dfs_mhz) > 1 else None,
-        'NA_mean': float(nas.mean()) if len(nas) else None,
-        'NA_std': float(nas.std(ddof=1)) if len(nas) > 1 else None,
+        'df_MHz_mean': df_mhz_mean,
+        'df_MHz_std': df_mhz_std,
+        'NA_mean': na_mean,
+        'NA_std': na_std,
+        'fwhm_0_MHz_mean': fwhm_0_mean,
+        'fwhm_0_MHz_std': fwhm_0_std,
+        'fwhm_1_MHz_mean': fwhm_1_mean,
+        'fwhm_1_MHz_std': fwhm_1_std,
     }
 
 

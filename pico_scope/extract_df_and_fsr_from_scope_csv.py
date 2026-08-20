@@ -26,8 +26,7 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,
 #   python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
 CAVITY_ELEMENTS = [
     'LASER_OPTIK_MIRROR',
-    'EDMUND_4p5MM_ASPHERIC_83580',
-    'Thorlabs 200mm Plano Convex Lens - LA-1708-B',
+    'EDMUND_4MM_ASPHERIC_16701',
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
@@ -61,6 +60,10 @@ y = data_numpy[:, 1]  # Channel B column
 
 
 lorentzian_positions = [[]]
+# The fitted HWHMs, kept in lockstep with lorentzian_positions (None where a
+# position was clicked rather than fitted) so the results table can report the
+# measured linewidth of every peak.
+lorentzian_widths = [[]]
 fit_colors = itertools.cycle(["r", "g", "b", "m", "c", "y"])
 current_color = next(fit_colors)
 
@@ -78,13 +81,16 @@ mode = "single"  # Can be 'single', 'position', or 'double'
 double_span_stage = 0
 
 
-def add_position(x0):
+def add_position(x0, gamma=None):
     if not lorentzian_positions:
         lorentzian_positions.append([x0])
+        lorentzian_widths.append([gamma])
     elif len(lorentzian_positions[-1]) < 2:
         lorentzian_positions[-1].append(x0)
+        lorentzian_widths[-1].append(gamma)
     else:
         lorentzian_positions.append([x0])
+        lorentzian_widths.append([gamma])
     print(lorentzian_positions)
 
     if len(lorentzian_positions[-1]) == 2:
@@ -126,14 +132,14 @@ def onselect(xmin, xmax):
 
         try:
             popt, _ = curve_fit(lorentzian, x_range, y_range, p0=p0)
-            x0_fitted = popt[0]
+            x0_fitted, gamma_fitted = popt[0], popt[1]
 
             fit_x = np.linspace(xmin, xmax, 200)
             fit_y = lorentzian(fit_x, *popt)
             fit_line, = ax.plot(fit_x, fit_y, color=current_color, linestyle="--")
             fit_lines.append(fit_line)
 
-            add_position(x0_fitted)
+            add_position(x0_fitted, gamma_fitted)
 
         except Exception as e:
             print("Single fit failed:", e)
@@ -164,6 +170,7 @@ def onselect(xmin, xmax):
                                               region=(xmin, xmax))
                 x01_fitted, x02_fitted = popt['x01'], popt['x02']
                 lorentzian_positions.append([x01_fitted, x02_fitted])
+                lorentzian_widths.append([popt['gamma1'], popt['gamma2']])
 
                 fit_x = np.linspace(xmin, xmax, 300)
                 fit_y = double_lorentzian(
@@ -203,8 +210,10 @@ def on_key(event):
     global current_color, mode, double_span_stage
     if event.key == "d" and lorentzian_positions[-1]:
         lorentzian_positions[-1].pop()
+        lorentzian_widths[-1].pop()
         if not lorentzian_positions[-1] and len(lorentzian_positions) > 1:
             lorentzian_positions.pop()
+            lorentzian_widths.pop()
         if mode == "position" and position_lines:
             position_lines.pop().remove()
         elif fit_lines:
@@ -241,7 +250,10 @@ plt.show(block=True)
 # Remove all elements that are empty lists from lorentzian_positions:
 # %%
 print("before cleaning:", lorentzian_positions)
-lorentzian_positions = [pos for pos in lorentzian_positions if pos]
+kept = [(pos, widths) for pos, widths
+        in zip(lorentzian_positions, lorentzian_widths) if pos]
+lorentzian_positions = [pos for pos, _ in kept]
+lorentzian_widths = [widths for _, widths in kept]
 print("after cleaning:", lorentzian_positions)
 if len(lorentzian_positions) < 2:
     print("Not enough data to calculate FSR and df.")
@@ -264,8 +276,11 @@ else:
         raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
 
     # Second pass, now with an NA per pair.
+    # widths= adds each peak's measured FWHM [MHz] to the table (empty for a
+    # clicked, unfitted position).
     rows = pair_positions_results(lorentzian_positions, fsr_mhz=FSR_MHZ,
-                                  na_over_fsr_interp=mode_spacing_over_fsr_interp)
+                                  na_over_fsr_interp=mode_spacing_over_fsr_interp,
+                                  widths=lorentzian_widths)
     results_df = pd.DataFrame(rows)
     print(results_df)
     summary = pair_summary(rows)
@@ -275,15 +290,26 @@ else:
                else "unavailable (df/FSR outside the simulated range)")
     df_mhz_text = (f"{summary['df_MHz_mean']:.4f} MHz"
                    if summary["df_MHz_mean"] is not None else "unavailable")
+    # The measured linewidths (FWHM), one per mode of the pair - "unavailable"
+    # when the positions were clicked (mode 2) rather than fitted.
+    linewidth_text = ", ".join(
+        f"linewidth_{i} = " + (f"{summary[f'fwhm_{i}_MHz_mean']:.4f} MHz"
+                               if summary[f"fwhm_{i}_MHz_mean"] is not None
+                               else "unavailable")
+        for i in (0, 1))
     results_text = (f"long_arm_length = {long_arm_length:.4g} m, "
                     f"n_mode_pairs = {summary['n_pairs']}, "
                     f"mode_spacing = {df_mhz_text}, "
                     f"df_over_fsr = {summary['df_over_fsr_mean']:.4f}, "
+                    f"{linewidth_text}, "
                     f"NA = {na_text}")
     if summary["df_over_fsr_std"] is not None:
         results_text += f" (std over pairs: df_over_fsr {summary['df_over_fsr_std']:.4f}"
         if summary["df_MHz_std"] is not None:
             results_text += f", mode_spacing {summary['df_MHz_std']:.4f} MHz"
+        for i in (0, 1):
+            if summary[f"fwhm_{i}_MHz_std"] is not None:
+                results_text += f", linewidth_{i} {summary[f'fwhm_{i}_MHz_std']:.4f} MHz"
         if summary["NA_std"] is not None:
             results_text += f", NA {summary['NA_std']:.4f}"
         results_text += ")"
