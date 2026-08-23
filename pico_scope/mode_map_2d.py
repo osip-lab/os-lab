@@ -65,7 +65,7 @@ from utilities.utils import ask_long_arm_length, psdata_to_csv  # noqa: E402
 # they are. The keys need not be evenly spaced - the map keeps their spacing.
 MEASUREMENTS = {
     44: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\44cm\04 43 44cm\without EOM-0003.psdata",
-    45: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\45cm\04 43 45cm\without EOM-0002.psdata",
+    45: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\45cm\04 43.8 45cm\without EOM-0002.psdata",
     42: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\42cm\04 43 42cm\without EOM-0002.psdata",
 }
 Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
@@ -195,7 +195,10 @@ def analyse_file(key, data_path, default_long_arm, remark=False):
     print(f"  loaded {len(x)} samples from '{SIGNAL_COLUMN}'")
 
     long_arm = ask_long_arm_length(default_long_arm)
-    marks = mark_pairs(x, y, title=f"{Y_AXIS_LABEL} = {key:g}")
+    # the folder is part of the title too: the file names repeat across
+    # measurements, so the name alone does not say which trace this is
+    marks = mark_pairs(x, y, title=f"{Y_AXIS_LABEL} = {key:g}   |   "
+                                   f"{data_path.parent.name}/{data_path.name}")
     marks = [pair for pair in marks if len(pair) == 2]
     if len(marks) < 2:
         raise ValueError(
@@ -423,8 +426,10 @@ def main(measurements=None, y_label=None):
     default_long_arm = LONG_ARM_LENGTH
     for index, key in enumerate(sorted(measurements), start=1):
         path = measurements[key]
-        print(f"\n=== [{index}/{len(measurements)}] {y_label} = {key:g}: "
-              f"{Path(path).name} ===")
+        # the full path, not just the name: many measurements share a file
+        # name and only the folder says which one is on screen
+        print(f"\n=== [{index}/{len(measurements)}] {y_label} = {key:g} ===")
+        print(f"  {path}")
         record = analyse_file(
             key, path, default_long_arm,
             remark=REMARK_ALL or key in REMARK_KEYS)
