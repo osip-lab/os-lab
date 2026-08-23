@@ -1,6 +1,6 @@
 """PicoScope 4000A streaming-scope adapter: rolling chart-recorder view.
 
-Wraps the pure device layer in picoscope/ps4000a_scope.py. The smooth-plot
+Wraps the pure device layer in pico_scope/ps4000a_scope.py. The smooth-plot
 recipe (never a per-sample redraw anywhere):
   device thread -> numpy ring buffers (device layer)
   emitter thread here, ~20 Hz -> min/max envelope decimation of the visible
@@ -17,12 +17,10 @@ from pathlib import Path
 
 import numpy as np
 
-# the device layer lives at the repo root, outside kalishlot/
+# the device layer lives in pico_scope (alongside analysis)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_REPO_ROOT / 'picoscope'))
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))  # for the pico_scope analysis package
-from ps4000a_scope import CHANNEL_NAMES, RANGES, PicoScope4000A  # noqa: E402
+sys.path.insert(0, str(_REPO_ROOT))
+from pico_scope.ps4000a_scope import CHANNEL_NAMES, RANGES, PicoScope4000A  # noqa: E402
 from pico_scope.mode_analysis import decimate  # noqa: E402
 
 from .analyses.scope_pairs import PairsAnalysis  # noqa: E402

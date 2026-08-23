@@ -6,7 +6,7 @@ GUI, scripts), per the lab's device/GUI decoupling rule.
 
 Run directly for a connectivity self-test (streams 2 s from channel A):
 
-    python ps4000a_scope.py
+    python pico_scope/ps4000a_scope.py
 
 Design (same single-owner pattern as basler_cam CameraStreamer): after
 open() a background thread owns the driver handle, continuously moving

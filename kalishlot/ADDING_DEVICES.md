@@ -151,7 +151,7 @@ Conventions the existing frontend already understands:
 - **Streaming-plot devices** (continuous data points, e.g. oscilloscopes,
   power meters): see `adapters/picoscope.py` + `static/boxes/picoscope.js`.
   Never send or draw per-sample: the device layer accumulates into numpy
-  ring buffers (`picoscope/ps4000a_scope.py` `RingBuffer`), an adapter
+  ring buffers (`pico_scope/ps4000a_scope.py` `RingBuffer`), an adapter
   thread emits the visible window at ~20 Hz **min/max-envelope-decimated**
   to <= ~1000 points per channel as a JSON event, and the box redraws once
   per event with the vendored uPlot (`static/vendor/uPlot.iife.min.js`,
