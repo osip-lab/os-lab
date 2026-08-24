@@ -18,7 +18,6 @@ import numpy as np
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 
 import matplotlib.pyplot as plt
-from matplotlib import gridspec
 from matplotlib.patches import Circle, Ellipse
 from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import Slider, TextBox
@@ -30,15 +29,39 @@ from utilities.utils import wait_for_path_from_clipboard
 
 PIXEL_SIZE_MM = 0.0055
 DEFAULT_REBIN_FACTOR = 4
-# Bottom of the axes area, in figure coordinates. Everything under it belongs to
-# the rotated time labels and the controls. It is a starting point only - long
-# videos have taller (rotated) time labels, so the margin is measured and grown
-# once the figure knows how big they really are.
-BOTTOM_MARGIN = 0.35
+
+# --- Layout, in figure coordinates -----------------------------------------
+# The frames are what this tool is for, so the image gets every bit of height
+# above the narrow band at the bottom that holds the intensity trace, the
+# sliders and the help text.
+AXES_LEFT, AXES_RIGHT = 0.13, 0.90
+AXES_TOP = 0.96
+TRACE_BOTTOM = 0.13     # Starting point only - grown by the measured label height
+TRACE_HEIGHT = 0.07
+IMAGE_PAD = 0.03        # Room under the image's box for its own x tick labels
+MAX_LABEL_ROOM = 0.25   # Cap on what the rotated time labels may take from the image
 LABEL_CLEARANCE_PX = 8
 
 HELP_TEXT = ("space: add the current frame to the fit set | w: fit a Gaussian | "
              "left/right: change frame | 3 clicks: fit a circle | box: rebin factor")
+
+
+def maximize_window(fig):
+    """Open the figure maximized, so the image gets the whole screen to fill.
+
+    Every backend spells this differently and none of them is guaranteed to be
+    the one in use, so an unknown backend just leaves the window at its default
+    size rather than failing.
+    """
+    manager = fig.canvas.manager
+    for maximize in (lambda: manager.window.showMaximized(),   # Qt
+                     lambda: manager.window.state('zoomed'),   # Tk on Windows
+                     lambda: manager.frame.Maximize(True)):    # wx
+        try:
+            maximize()
+            return
+        except Exception:
+            continue
 
 
 def load_frames(path):
@@ -121,15 +144,17 @@ class VideoInspector:
     # ------------------------------------------------------------------ layout
 
     def _build_figure(self):
-        self.fig = plt.figure(figsize=(10, 8))
+        self.fig = plt.figure(figsize=(16, 9))
+        maximize_window(self.fig)
+        self.label_room = 0.0  # Measured in reserve_room_for_time_labels
 
-        # Two rows: the image (with its projections) and the intensity trace.
-        # Everything below the axes - the rotated time labels, the sliders and
-        # the help text - lives in the bottom margin.
-        self.gs = gridspec.GridSpec(2, 1, height_ratios=[6, 1],
-                                    left=0.13, right=0.90, top=0.95, bottom=BOTTOM_MARGIN, hspace=0.7)
-        self.ax = self.fig.add_subplot(self.gs[0])          # Main image
-        self.ax_plot = self.fig.add_subplot(self.gs[1])     # Intensity vs. time
+        # The two axes are placed by hand rather than by a GridSpec: the image
+        # is meant to take everything the bottom band does not need, and that
+        # band is sized from the controls and the labels as rendered.
+        width = AXES_RIGHT - AXES_LEFT
+        self.ax = self.fig.add_axes([AXES_LEFT, 0.3, width, 0.6])           # Main image
+        self.ax_plot = self.fig.add_axes([AXES_LEFT, TRACE_BOTTOM, width, TRACE_HEIGHT])  # Intensity vs. time
+        self._place_axes()
 
         vmax_default = max(int(np.max(self.frames)), 1)
         self.img_disp = self.ax.imshow(self.displayed_frame(), cmap='gray', vmin=0, vmax=vmax_default)
@@ -170,21 +195,35 @@ class VideoInspector:
         self.ax_plot.tick_params(axis='x', labelrotation=90)  # Rotated, so labels can sit denser
         self.ax_plot.set_xlabel("Time [s]")
 
-        # --- Controls, stacked below the axes area ---
-        self.frame_slider = Slider(self.fig.add_axes([0.25, 0.22, 0.65, 0.03]), 'Frame',
+        # --- Controls, stacked in the band under the trace ---
+        self.frame_slider = Slider(self.fig.add_axes([0.25, 0.090, 0.65, 0.018]), 'Frame',
                                    0, max(len(self.frames) - 1, 1), valinit=0, valstep=1)
-        self.vmax_slider = Slider(self.fig.add_axes([0.25, 0.16, 0.65, 0.03]), 'vmax',
+        self.vmax_slider = Slider(self.fig.add_axes([0.25, 0.060, 0.65, 0.018]), 'vmax',
                                   1, 255, valinit=vmax_default)
-        self.rebin_textbox = TextBox(self.fig.add_axes([0.25, 0.10, 0.2, 0.03]), "Rebin",
+        self.rebin_textbox = TextBox(self.fig.add_axes([0.25, 0.026, 0.15, 0.025]), "Rebin",
                                      initial=str(self.rebin_factor))
-        self.fig.text(0.5, 0.02, HELP_TEXT, ha='center', va='bottom', fontsize=9)
+        self.fig.text(0.5, 0.004, HELP_TEXT, ha='center', va='bottom', fontsize=9)
 
-    def reserve_room_for_time_labels(self):
-        """Lift the axes area until the rotated time labels clear the sliders.
+    def _place_axes(self):
+        """Give the trace its band at the bottom and the image everything above.
+
+        `self.label_room` is the extra height inserted under the trace for the
+        rotated time labels. The placement is recomputed from the constants
+        every time, so repeated calls cannot make the layout creep.
+        """
+        width = AXES_RIGHT - AXES_LEFT
+        trace_bottom = TRACE_BOTTOM + self.label_room
+        self.ax_plot.set_position([AXES_LEFT, trace_bottom, width, TRACE_HEIGHT])
+        image_bottom = trace_bottom + TRACE_HEIGHT + IMAGE_PAD
+        self.ax.set_position([AXES_LEFT, image_bottom, width, AXES_TOP - image_bottom])
+
+    def reserve_room_for_time_labels(self, _event=None):
+        """Lift the trace until the rotated time labels clear the sliders.
 
         How tall those labels are is only known once they are rendered - a long
-        video labels its ticks '1234.56' where a short one gets '1.20' - so the
-        bottom margin is measured here rather than guessed.
+        video labels its ticks '1234.56' where a short one gets '1.20' - and it
+        changes with the window, so this runs on every resize, including the one
+        that maximizing the window causes.
         """
         self.fig.canvas.draw()
         renderer = self.fig.canvas.get_renderer()
@@ -193,9 +232,10 @@ class VideoInspector:
         controls_top = self.frame_slider.ax.get_window_extent().y1
 
         deficit_px = controls_top + LABEL_CLEARANCE_PX - labels_bottom
-        if deficit_px > 0:
-            figure_height = self.fig.get_window_extent().height
-            self.gs.update(bottom=min(self.gs.bottom + deficit_px / figure_height, 0.7))
+        figure_height = self.fig.get_window_extent().height
+        room = self.label_room + deficit_px / figure_height
+        self.label_room = min(max(room, 0.0), MAX_LABEL_ROOM)
+        self._place_axes()
 
     def _connect(self):
         self.frame_slider.on_changed(self.update)
@@ -203,6 +243,7 @@ class VideoInspector:
         self.rebin_textbox.on_submit(self.on_rebin_text_submit)
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.fig.canvas.mpl_connect('button_press_event', self.on_click)
+        self.fig.canvas.mpl_connect('resize_event', self.reserve_room_for_time_labels)
 
     # ----------------------------------------------------------- coordinates
 
