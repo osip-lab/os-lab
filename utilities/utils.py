@@ -67,7 +67,17 @@ def wait_for_path_from_clipboard(filetype: Optional[Union[str, Sequence[str]]] =
                     return clipboard
 
             if filetype is not None:
-                extensions = [filetype_lower] if filetype_is_str else [ft.lower() for ft in filetype]
+                # In sequence form, entries can mix directory keywords with
+                # plain extensions (e.g. ('avi', 'directory')).
+                tokens = [filetype_lower] if filetype_is_str else [ft.lower() for ft in filetype]
+                extensions = [t for t in tokens if t not in ('folder', 'directory', 'dir')]
+                wants_directory = len(extensions) != len(tokens)
+
+                if wants_directory and os.path.isdir(clipboard):
+                    if verbose:
+                        print(f"✔ Detected valid directory path: {clipboard}")
+                    return clipboard
+
                 if any(clipboard.lower().endswith(f'.{ext}') for ext in extensions):
                     if verbose:
                         print(f"✔ Detected valid path: {clipboard}")
