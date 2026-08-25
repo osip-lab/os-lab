@@ -45,6 +45,10 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,  # noqa: E402
 # Kept as the figure's suptitle rather than the axes title, which the handlers
 # below overwrite with the current mode - this way the instructions stay on
 # screen while you click.
+# Half of matplotlib's 1.5 default: the traces are dense and the fits sit right
+# on top of the peaks, so a thinner line leaves the peak shape visible.
+LINE_WIDTH = 0.75
+
 SELECTION_INSTRUCTIONS = ("Drag the zeroth lorentzian range and the first order lorentzian "
                           "in each FSR sequentially. 'd' undoes the last "
                           "marking, Enter finishes.")
@@ -97,7 +101,7 @@ class _PairMarker:
 
         self.fig, self.ax = plt.subplots()
         self.fig.suptitle(instructions)
-        self.ax.plot(self.x, self.y, label="Raw Data")
+        self.ax.plot(self.x, self.y, lw=LINE_WIDTH, label="Raw Data")
         self.ax.set_xlabel("X")
         self.ax.set_ylabel("Y")
         self.ax.set_title(title if title else f"Mode: {self.mode}")
@@ -189,7 +193,7 @@ class _PairMarker:
                 fit_x = np.linspace(xmin, xmax, 200)
                 fit_y = area_lorentzian(fit_x, *popt)
                 fit_line, = self.ax.plot(fit_x, fit_y, color=self.current_color,
-                                         linestyle="--")
+                                         linestyle="--", lw=LINE_WIDTH)
 
                 self.add_peaks([peak_record(x0_fitted, gamma_fitted,
                                             A_fitted, y0_fitted)], [fit_line])
@@ -223,7 +227,7 @@ class _PairMarker:
                 fit_y = double_lorentzian(
                     fit_x, *(popt[name] for name in DOUBLE_LORENTZIAN_PARAMS))
                 fit_line, = self.ax.plot(fit_x, fit_y, color=self.current_color,
-                                         linestyle="--")
+                                         linestyle="--", lw=LINE_WIDTH)
 
                 self.add_peaks(
                     [peak_record(popt['x01'], popt['gamma1'], popt['A1'], popt['y0']),
@@ -249,7 +253,7 @@ class _PairMarker:
         if self.mode == "position":
             x_clicked = event.xdata
             line = self.ax.axvline(x_clicked, color=self.current_color,
-                                   linestyle=":")
+                                   linestyle=":", lw=LINE_WIDTH)
             self.add_peaks([peak_record(x_clicked)], [line])
             self.ax.set_title(f"Mode: {self.mode}")
             plt.draw()

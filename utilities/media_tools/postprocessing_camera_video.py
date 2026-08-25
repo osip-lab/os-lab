@@ -100,8 +100,6 @@ INTRACAVITY_ELEMENTS = [
     'EDMUND_4MM_ASPHERIC_16701',
 ]
 # All lengths in metres, as everywhere in the cavity-design library.
-LONG_ARM_LENGTH = 0.4     # end mirror -> first intracavity lens; only the DEFAULT -
-                          # the value actually used is asked for on every run
 MID_ARM_LENGTH = 1e-2     # between the two intracavity lenses (unused if there is one)
 LENS_DISTANCE = 59e-3     # end mirror -> the next outgoing element (the collimating lens)
 CAMERA_DISTANCE = 0.02    # last outgoing element -> camera sensor
@@ -341,7 +339,7 @@ video_path = wait_for_path_from_clipboard(filetype='video')
 video_array, fps = load_video_as_numpy(video_path)
 
 # Asked here, before the interactive windows take over the console.
-long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
+long_arm_length = ask_long_arm_length()  # [m], prompted in cm
 
 intensity_t = video_array.sum(axis=(1, 2))  # Sum pixel intensities per frame
 

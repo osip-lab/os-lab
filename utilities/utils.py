@@ -360,23 +360,22 @@ def get_picoscope_trace_path_from_clipboard():
     return input_path, input_path
 
 
-def ask_long_arm_length(default_m, verbose=True):
+def ask_long_arm_length(verbose=True):
     """Ask for the cavity's long arm length in cm; return it in METRES.
 
     It is the one geometry number that changes between measurements, and a
     stale value silently biases the NA (the measured mode spacing itself is
     unaffected), so the analysis scripts prompt for it on every run instead of
-    reading a config constant. Values outside 1 - 1000 cm are rejected: they
-    are almost always a length typed in metres.
+    reading a config constant. For the same reason there is no default: the
+    length is always typed, so a reflex Enter cannot slip the previous
+    measurement's geometry into the results. Values outside 1 - 1000 cm are
+    rejected: they are almost always a length typed in metres.
     """
-    default_cm = float(default_m) * 100
     while True:
-        raw_in = input(
-            f"Long arm length in CENTIMETRES [default {default_cm:g}]: "
-        ).strip()
+        raw_in = input("Long arm length in CENTIMETRES: ").strip()
         if raw_in == '':
-            value_cm = default_cm
-            break
+            print("  The long arm length is required - type it in centimetres.")
+            continue
         try:
             value_cm = float(raw_in)
         except ValueError:

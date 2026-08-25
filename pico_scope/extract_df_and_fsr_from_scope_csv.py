@@ -24,16 +24,14 @@ CAVITY_ELEMENTS = [
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
-LONG_ARM_LENGTH = 36e-2         # [m] lens -> far mirror; only the DEFAULT - the
-                                  # value actually used is asked for on every run
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
 
-# The long arm changes between measurements, so it is asked for on every run;
-# LONG_ARM_LENGTH above is only the default. It feeds both the FSR and the NA
-# simulation, so it has to be answered before either is built.
-long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
+# The long arm changes between measurements, so it is asked for on every run
+# rather than configured. It feeds both the FSR and the NA simulation, so it
+# has to be answered before either is built.
+long_arm_length = ask_long_arm_length()  # [m], prompted in cm
 
 L = long_arm_length + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
 FSR_MHZ = cavity_fsr_mhz(long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH,

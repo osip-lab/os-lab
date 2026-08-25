@@ -98,9 +98,7 @@ Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
 # --- the cavity being measured (edit this when the setup changes) ----------
 # Only the FSR is needed here (it is the frequency ruler), so no element list:
 # FSR = c / 2L with L = long arm + mid arm + short arm. The long arm is asked
-# for once per file, as in the sibling scripts; the value below is the default
-# offered for the first file.
-LONG_ARM_LENGTH = 36e-2           # [m] lens -> far mirror (default only)
+# for once per file, as in the sibling scripts, so it is not configured here.
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 SHORT_ARM_LENGTH = 0.7e-2         # [m] near mirror -> lens
 
@@ -275,7 +273,7 @@ def resolve_csv(record, data_path):
     return str(new_path)
 
 
-def analyse_file(key, data_path, default_long_arm, remark=False):
+def analyse_file(key, data_path, remark=False):
     """Return the marking record for one measurement, marking it if needed.
 
     Keys of the record: csv_path (which waveform buffer was used), long_arm_m,
@@ -328,7 +326,7 @@ def analyse_file(key, data_path, default_long_arm, remark=False):
             "waveform buffer, or to skip the file.")
 
     # asked only now, so that skipping a file costs no answer
-    long_arm = ask_long_arm_length(default_long_arm)
+    long_arm = ask_long_arm_length()
 
     record = {'version': CACHE_VERSION,
               'key': float(key),
@@ -601,7 +599,6 @@ def main(measurements=None, y_label=None, normalize_to=None):
             'the top of pico_scope/mode_map_2d.py.')
 
     keys, rows = [], []
-    default_long_arm = LONG_ARM_LENGTH
     for index, key in enumerate(sorted(measurements), start=1):
         path = measurements[key]
         # the full path, not just the name: many measurements share a file
@@ -609,12 +606,10 @@ def main(measurements=None, y_label=None, normalize_to=None):
         print(f"\n=== [{index}/{len(measurements)}] {y_label} = {key:g} ===")
         print(f"  {path}")
         record = analyse_file(
-            key, path, default_long_arm,
-            remark=REMARK_ALL or key in REMARK_KEYS)
+            key, path, remark=REMARK_ALL or key in REMARK_KEYS)
         if record is None:
             print(f"  {y_label} = {key:g} skipped")
             continue
-        default_long_arm = record['long_arm_m']
 
         x, y = load_trace(resolve_csv(record, path))
         fsr_mhz = cavity_fsr_mhz(long_arm=record['long_arm_m'],

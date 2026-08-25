@@ -10,16 +10,17 @@ Pipeline
 1. Load a PicoScope trace (file path taken from the clipboard). Both .csv and
    .psdata files are accepted; .psdata files are converted to CSV on the fly
    via PicoScope 7's command-line BatchConvert.
-2. Choose the analysis mode and enter the long arm length in cm (it changes
-   between measurements, so it is asked for every run rather than read from a
-   config constant), then plot the spectrum in an interactive Qt window.
+2. Answer the three console prompts, asked together before any window opens:
+   the analysis mode, the long arm length in cm (it changes between
+   measurements, so it is asked for every run rather than read from a config
+   constant) and the (single-side) sideband modulation frequency in MHz
+   (default 25). Then plot the spectrum in an interactive Qt window.
 3. Drag a horizontal window to select the region of interest (the full-trace
    window closes once the region is picked).
 4. Click the zeroth-order mode.
 5. Click one sideband of the central line (gives the sideband distance d).
 6. Click the first-order mode.
-7. Enter the (single-side) sideband modulation frequency [MHz] (default 25).
-8. Fit a sum of 6 Lorentzians + constant offset:
+7. Fit a sum of 6 Lorentzians + constant offset:
 
        f_total = f(A0,    s0, x0)
                + f(A0/r,  s0, x0 - d) + f(A0/r,  s0, x0 + d)
@@ -31,19 +32,19 @@ Pipeline
 
    Free parameters: A0, s0, x0, A1, s1, x1, d, r, y0.
 
-9. Compute, scaled by the sideband frequency f_sb:
+8. Compute, scaled by the sideband frequency f_sb:
        (x1 - x0)/d * f_sb   -> 0th->1st-order mode spacing  [MHz]
        s1/d        * f_sb   -> 1st-order linewidth (HWHM)    [MHz]
        s0/d        * f_sb   -> 0th-order linewidth (HWHM)    [MHz]
-10. Map the mode spacing to the numerical aperture (NA) using the cavity-design
+9. Map the mode spacing to the numerical aperture (NA) using the cavity-design
     simulation (simple_analysis_scripts.mode_spacing_to_NA). The cavity it
     simulates - the optical elements and the arm lengths - is defined in the
     configuration block at the top of this file; nothing has to be edited in
     the cavity-design project. The measured spacing goes in with it, so the
     dependency plot comes back with it marked on both panels (on the left
     panel, at the small arm length that would produce it).
-11. Print mode spacing, linewidths and NA together.
-12. Append a one-line record (long arm length, mode spacing, NA, waveform
+10. Print mode spacing, linewidths and NA together.
+11. Append a one-line record (long arm length, mode spacing, NA, waveform
     buffer) to numerical-results.txt in the folder of the original data file.
 
 Note for future development: steps 4-6 already produce raw coordinate guesses
@@ -87,8 +88,6 @@ CAVITY_ELEMENTS = [
     'COASTLINE_20CM_MIRROR',
 ]
 SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
-LONG_ARM_LENGTH = 34.4e-2         # [m] lens -> far mirror; only the DEFAULT - the
-                                  # value actually used is asked for on every run
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 
@@ -125,7 +124,9 @@ y = raw[SIGNAL_COLUMN].to_numpy(dtype=float)
 print(f"Loaded {len(x)} samples from column '{SIGNAL_COLUMN}'.")
 
 
-# %% [Step 1.5] Choose the analysis mode and the long arm length -------------
+# %% [Step 1.5] The console prompts: mode, long arm, sideband frequency ------
+# Asked together, before any window opens: once the interactive figures take
+# over, a prompt hiding behind them is easy to miss.
 def ask_analysis_mode():
     """Return 'fit' (Lorentzian fit) or 'point' (use clicked points as-is)."""
     while True:
@@ -139,10 +140,26 @@ def ask_analysis_mode():
         print("  Please enter 'f' (fit) or 'p' (point-selection).")
 
 
+def ask_sideband_freq(default_mhz):
+    raw_in = input(
+        f"Sideband (single-side) frequency in MHz [default {default_mhz}]: "
+    ).strip()
+    if raw_in == '':
+        return float(default_mhz)
+    try:
+        return float(raw_in)
+    except ValueError:
+        print(f"  Could not parse '{raw_in}', using default {default_mhz} MHz.")
+        return float(default_mhz)
+
+
 analysis_mode = ask_analysis_mode()
 print(f"Analysis mode: {analysis_mode}")
 
-long_arm_length = ask_long_arm_length(LONG_ARM_LENGTH)  # [m], prompted in cm
+long_arm_length = ask_long_arm_length()  # [m], prompted in cm
+
+f_sb_mhz = ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
+print(f"Using sideband frequency f_sb = {f_sb_mhz} MHz (per side).")
 
 
 # %% [Step 2] Plot the full spectrum ----------------------------------------
@@ -152,7 +169,7 @@ print(f"Plotting {len(x_full_plot)} of {len(x)} points "
       f"(stride {max(1, len(x) // len(x_full_plot))}).")
 
 fig_full, ax_full = plt.subplots()
-ax_full.plot(x_full_plot, y_full_plot, lw=0.8, label='Raw data')
+ax_full.plot(x_full_plot, y_full_plot, lw=0.4, label='Raw data')
 ax_full.set_xlabel(f"{TIME_COLUMN} [s]")
 ax_full.set_ylabel(f"{SIGNAL_COLUMN}")
 ax_full.set_title('Step 3: drag a horizontal window over the region of interest')
@@ -197,7 +214,7 @@ print(f"Region of interest: {int(mask.sum())} raw points "
 
 # %% [Steps 4-6] Click the mode / sideband positions ------------------------
 fig, ax = plt.subplots()
-ax.plot(x_fit, y_fit, lw=0.9, label='Selected data')
+ax.plot(x_fit, y_fit, lw=0.45, label='Selected data')
 ax.set_xlabel(f"{TIME_COLUMN} [s]")
 ax.set_ylabel(f"{SIGNAL_COLUMN}")
 ax.legend(loc='upper right')
@@ -209,7 +226,7 @@ def click_x(fig, ax, prompt, marker_color):
     ax.set_title(prompt)
     fig.canvas.draw_idle()
     (xc, _yc), = fig.ginput(n=1, timeout=0)
-    ax.axvline(xc, color=marker_color, ls='--', lw=1)
+    ax.axvline(xc, color=marker_color, ls='--', lw=0.5)
     fig.canvas.draw_idle()
     return xc
 
@@ -224,26 +241,7 @@ print(f"x1 guess = {x1_guess:.6g} s")
 print(f"d  guess = {d_guess:.6g} s  (from sideband click)")
 
 
-# %% [Step 7] Enter the sideband modulation frequency -----------------------
-def ask_sideband_freq(default_mhz):
-    raw_in = input(
-        f"Step 7: sideband (single-side) frequency in MHz "
-        f"[default {default_mhz}]: "
-    ).strip()
-    if raw_in == '':
-        return float(default_mhz)
-    try:
-        return float(raw_in)
-    except ValueError:
-        print(f"  Could not parse '{raw_in}', using default {default_mhz} MHz.")
-        return float(default_mhz)
-
-
-f_sb_mhz = ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
-print(f"Using sideband frequency f_sb = {f_sb_mhz} MHz (per side).")
-
-
-# %% [Step 8] Fit the 6-Lorentzian model (shared with the web GUI) ----------
+# %% [Step 7] Fit the 6-Lorentzian model (shared with the web GUI) ----------
 if analysis_mode == 'fit':
     fit_params, fit_errors = fit_six_lorentzians(
         x_fit, y_fit, x0_guess=x0_guess, x1_guess=x1_guess, d_guess=d_guess,
@@ -256,13 +254,13 @@ if analysis_mode == 'fit':
     x_dense = np.linspace(region_min, region_max, 2000)
     ax.plot(x_dense, six_lorentzian_model(
                 x_dense, *(fit_params[name] for name in SIX_LORENTZIAN_PARAMS)),
-            color='k', lw=1.6, label='Fit (6 Lorentzians + offset)')
+            color='k', lw=0.8, label='Fit (6 Lorentzians + offset)')
     for centre, width, amp in [
         (x0, s0, A0), (x0 - d, s0, A0 / r), (x0 + d, s0, A0 / r),
         (x1, s1, A1), (x1 - d, s1, A1 / r), (x1 + d, s1, A1 / r),
     ]:
         ax.plot(x_dense, lorentzian(x_dense, amp, width, centre) + y0,
-                color='tab:blue', ls=':', lw=0.8, alpha=0.7)
+                color='tab:blue', ls=':', lw=0.4, alpha=0.7)
     ax.set_title('Fit result')
 
 else:  # point-selection: use the clicked positions as-is, no fitting
@@ -279,7 +277,7 @@ fig.canvas.draw_idle()
 plt.pause(0.1)
 
 
-# %% [Step 9] Compute and pretty-print the results --------------------------
+# %% [Step 8] Compute and pretty-print the results --------------------------
 def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None,
                    na_interp=None):
     """Scale the geometric quantities by the sideband frequency and print them.
@@ -334,7 +332,7 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
     return results
 
 
-# %% [Step 10] Map the mode spacing to numerical aperture (NA) ---------------
+# %% [Step 9] Map the mode spacing to numerical aperture (NA) ----------------
 # The NA<->mode-spacing relation comes from the cavity-design project (path in
 # local_config.py); mode_analysis builds and caches the interpolators.
 # mode_spacing_interp: mode spacing [Hz] -> NA
@@ -358,7 +356,7 @@ if na_error is not None:
     print(f"NA mapping unavailable: {na_error}")
 
 
-# %% [Step 11] Final report (mode spacing, linewidths, NA) -------------------
+# %% [Step 10] Final report (mode spacing, linewidths, NA) ------------------
 results = report_results(
     x0, x1, d, s0, s1, f_sb_mhz,
     fit_params=fit_params, fit_errors=fit_errors,
@@ -366,7 +364,7 @@ results = report_results(
 )
 
 
-# %% [Step 12] Record the results next to the original data file -------------
+# %% [Step 11] Record the results next to the original data file ------------
 # Appends a one-line record to numerical-results.txt in the folder of the
 # original file (the .psdata/.csv the user copied, not the temporary CSV).
 na_text = f"{results['NA']:.4f}" if results['NA'] is not None else "N/A"
