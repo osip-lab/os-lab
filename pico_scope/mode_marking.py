@@ -11,15 +11,20 @@ The interaction is unchanged:
 
     drag a span          fit (or, in mode 2, click) the next peak
     1 / 2 / 3            single-Lorentzian fit / manual position / pair fit
-    d                    undo the last peak
+    d                    undo the last marking (a mode-3 pair fit, which
+                         draws one curve over two peaks, goes as a whole)
     z                    toggle the toolbar's zoom
+    Enter                finish (same as closing the window)
     close the window     finish
 
 Peaks are marked in pairs: the 0th-order mode first, then the first-order
 mode that follows it, repeated for consecutive longitudinal mode numbers.
+
+Finishing with nothing marked returns an empty list, which is how a caller
+that marks many files in a row (pico_scope/mode_map_2d.py) is told to skip
+this one.
 """
 
-import itertools
 import sys
 from pathlib import Path
 
@@ -41,7 +46,8 @@ from pico_scope.mode_analysis import (DOUBLE_LORENTZIAN_PARAMS,  # noqa: E402
 # below overwrite with the current mode - this way the instructions stay on
 # screen while you click.
 SELECTION_INSTRUCTIONS = ("Drag the zeroth lorentzian range and the first order lorentzian "
-                          "in each FSR sequentially.")
+                          "in each FSR sequentially. 'd' undoes the last "
+                          "marking, Enter finishes.")
 
 
 def peak_record(x0, gamma=None, area=None, y0=None):
@@ -79,10 +85,12 @@ class _PairMarker:
         self.x = np.asarray(x, dtype=float)
         self.y = np.asarray(y, dtype=float)
         self.pairs = [[]]  # list of pairs, each a list of up to 2 peak records
-        self.fit_colors = itertools.cycle(["r", "g", "b", "m", "c", "y"])
-        self.current_color = next(self.fit_colors)
-        self.fit_lines = []
-        self.position_lines = []
+        # One entry per marking action, in order, so that 'd' can undo an
+        # action whole. The colours are an index into a list rather than an
+        # itertools.cycle(), because an undo has to step back through them.
+        self.undo_stack = []
+        self.fit_colors = ["r", "g", "b", "m", "c", "y"]
+        self.color_index = 0
         self.mode = "single"  # 'single', 'position' or 'double'
         self.double_span_stage = 0
         self.double_fit_data = {}
@@ -100,18 +108,49 @@ class _PairMarker:
         self.fig.canvas.mpl_connect("button_press_event", self.onclick)
 
     # ------------------------------------------------------------- bookkeeping
-    def add_peak(self, peak):
-        if not self.pairs:
-            self.pairs.append([peak])
-        elif len(self.pairs[-1]) < 2:
-            self.pairs[-1].append(peak)
-        else:
-            self.pairs.append([peak])
-        print(positions_and_widths(self.pairs)[0])
+    @property
+    def current_color(self):
+        return self.fit_colors[self.color_index % len(self.fit_colors)]
 
-        if len(self.pairs[-1]) == 2:
-            print("Changing color")
-            self.current_color = next(self.fit_colors)
+    def add_peaks(self, peaks, artists, new_pair=False):
+        """Record one marking action: the peak(s) it found and what it drew.
+
+        Kept together because an action is what 'd' undoes: the pair fit (mode
+        3) produces two peaks under a single curve, so undoing peak by peak
+        would leave the plot showing something the marks no longer say.
+        `new_pair` is for that same mode - a pair fit always starts a pair of
+        its own, rather than completing one that is half marked.
+        """
+        colors_advanced = 0
+        for index, peak in enumerate(peaks):
+            starts_pair = new_pair and index == 0
+            if self.pairs and len(self.pairs[-1]) < 2 and not starts_pair:
+                self.pairs[-1].append(peak)
+            else:
+                self.pairs.append([peak])
+            if len(self.pairs[-1]) == 2:
+                print("Changing color")
+                self.color_index += 1
+                colors_advanced += 1
+        print(positions_and_widths(self.pairs)[0])
+        self.undo_stack.append({'n_peaks': len(peaks),
+                                'artists': list(artists),
+                                'colors_advanced': colors_advanced})
+
+    def undo_last_action(self):
+        """Take back the last marking action - its peaks and its artists."""
+        if not self.undo_stack:
+            return
+        action = self.undo_stack.pop()
+        for _ in range(action['n_peaks']):
+            if self.pairs and self.pairs[-1]:
+                self.pairs[-1].pop()
+            if self.pairs and not self.pairs[-1] and len(self.pairs) > 1:
+                self.pairs.pop()
+        for artist in action['artists']:
+            artist.remove()
+        self.color_index -= action['colors_advanced']
+        print(positions_and_widths(self.pairs)[0])
 
     def print_latest_pair(self):
         """df / FSR of the two most recent complete pairs, as a live check.
@@ -151,10 +190,9 @@ class _PairMarker:
                 fit_y = area_lorentzian(fit_x, *popt)
                 fit_line, = self.ax.plot(fit_x, fit_y, color=self.current_color,
                                          linestyle="--")
-                self.fit_lines.append(fit_line)
 
-                self.add_peak(peak_record(x0_fitted, gamma_fitted,
-                                          A_fitted, y0_fitted))
+                self.add_peaks([peak_record(x0_fitted, gamma_fitted,
+                                            A_fitted, y0_fitted)], [fit_line])
 
             except Exception as e:
                 print("Single fit failed:", e)
@@ -181,21 +219,18 @@ class _PairMarker:
                                               x1_guess=x01_init,
                                               x2_guess=x02_init,
                                               region=(xmin, xmax))
-                self.pairs.append([
-                    peak_record(popt['x01'], popt['gamma1'], popt['A1'], popt['y0']),
-                    peak_record(popt['x02'], popt['gamma2'], popt['A2'], popt['y0']),
-                ])
-
                 fit_x = np.linspace(xmin, xmax, 300)
                 fit_y = double_lorentzian(
                     fit_x, *(popt[name] for name in DOUBLE_LORENTZIAN_PARAMS))
                 fit_line, = self.ax.plot(fit_x, fit_y, color=self.current_color,
                                          linestyle="--")
-                self.fit_lines.append(fit_line)
+
+                self.add_peaks(
+                    [peak_record(popt['x01'], popt['gamma1'], popt['A1'], popt['y0']),
+                     peak_record(popt['x02'], popt['gamma2'], popt['A2'], popt['y0'])],
+                    [fit_line], new_pair=True)
 
                 self.print_latest_pair()
-
-                self.current_color = next(self.fit_colors)
                 self.double_span_stage = 0
             except Exception as e:
                 print("Double fit failed:", e)
@@ -213,21 +248,15 @@ class _PairMarker:
 
         if self.mode == "position":
             x_clicked = event.xdata
-            self.add_peak(peak_record(x_clicked))
-            line = self.ax.axvline(x_clicked, color=self.current_color, linestyle=":")
-            self.position_lines.append(line)
+            line = self.ax.axvline(x_clicked, color=self.current_color,
+                                   linestyle=":")
+            self.add_peaks([peak_record(x_clicked)], [line])
             self.ax.set_title(f"Mode: {self.mode}")
             plt.draw()
 
     def on_key(self, event):
-        if event.key == "d" and self.pairs[-1]:
-            self.pairs[-1].pop()
-            if not self.pairs[-1] and len(self.pairs) > 1:
-                self.pairs.pop()
-            if self.mode == "position" and self.position_lines:
-                self.position_lines.pop().remove()
-            elif self.fit_lines:
-                self.fit_lines.pop().remove()
+        if event.key == "d":
+            self.undo_last_action()
             plt.draw()
         elif event.key in ["1", "2", "3"]:
             if event.key == "1":
@@ -244,6 +273,10 @@ class _PairMarker:
         elif event.key == "z":
             toolbar = plt.get_current_fig_manager().toolbar
             toolbar.zoom()
+        elif event.key in ("enter", "return"):
+            # confirm without reaching for the window's close button; closing
+            # is what run()'s blocking show() waits for either way
+            plt.close(self.fig)
 
     # -------------------------------------------------------------------- run
     def run(self):
@@ -257,7 +290,8 @@ def mark_pairs(x, y, title=None, instructions=SELECTION_INSTRUCTIONS):
     Returns one entry per marked pair, each a list of the pair's peak records
     (see peak_record()) in marking order: the 0th-order mode first, then the
     first-order mode. A trailing entry may hold a single peak, if the window
-    was closed halfway through a pair.
+    was closed halfway through a pair, and the list is empty when the window
+    was finished without anything marked at all.
     """
     return _PairMarker(x, y, title=title, instructions=instructions).run()
 
@@ -276,6 +310,10 @@ def _self_test():
                                  amplitude * np.pi * gamma, 0.0)
 
     marker = _PairMarker(x, y)
+    # the trace plus the span selector's two edge handles - what ax.lines
+    # holds before anything is marked, and what it must hold again once
+    # everything has been undone
+    bare_lines = len(marker.ax.lines)
 
     # mode 1: one dragged span per peak, two peaks per pair
     for k in range(2):
@@ -291,6 +329,7 @@ def _self_test():
         assert abs(pair[0]['y0'] - offset) < 1e-2, pair[0]
 
     # mode 3: the region first, then the two centre guesses
+    color_index_before_double = marker.color_index
     marker.mode = 'double'
     marker.onselect(2 * fsr - 10 * gamma, 2 * fsr + df + 10 * gamma)
     assert marker.double_span_stage == 1
@@ -301,13 +340,16 @@ def _self_test():
     assert abs(marker.pairs[2][1]['x0'] - (2 * fsr + df)) < 1e-8, marker.pairs[2]
     assert abs(marker.pairs[2][0]['height'] - height) < 1e-2, marker.pairs[2]
 
-    # 'd' undoes one peak at a time, and drops the pair it empties
+    # 'd' undoes one marking action - and the mode-3 pair fit is one action,
+    # two peaks under a single curve, so it goes as a whole and leaves the
+    # plot saying exactly what the marks say
     marker.mode = 'single'
     key_d = type('Event', (), {'key': 'd'})()
-    marker.on_key(key_d)
-    assert len(marker.pairs[-1]) == 1, marker.pairs[-1]
+    curves = len(marker.ax.lines)  # bare_lines plus one line per fit
     marker.on_key(key_d)
     assert len(marker.pairs) == 2, marker.pairs
+    assert len(marker.ax.lines) == curves - 1, len(marker.ax.lines)
+    assert marker.color_index == color_index_before_double, marker.color_index
 
     # and what the pairs script makes of the result
     positions, widths = positions_and_widths(marker.pairs)
@@ -315,6 +357,32 @@ def _self_test():
     summary = pair_summary(rows)
     assert abs(summary['df_over_fsr_mean'] - df / fsr) < 1e-5, summary
     assert abs(summary['fwhm_0_MHz_mean'] - 2 * gamma / fsr * 417.0) < 1e-2, summary
+
+    # the single-peak modes still undo one peak (and its curve) per press,
+    # dropping the pair a peak leaves empty
+    marker.on_key(key_d)
+    assert [len(pair) for pair in marker.pairs] == [2, 1], marker.pairs
+    marker.on_key(key_d)
+    assert [len(pair) for pair in marker.pairs] == [2], marker.pairs
+    assert len(marker.ax.lines) == curves - 3, len(marker.ax.lines)
+
+    # undoing everything gets the window back to how it started, colours
+    # included, and 'd' on an unmarked window does nothing
+    while marker.undo_stack:
+        marker.on_key(key_d)
+    marker.on_key(key_d)
+    assert marker.pairs == [[]], marker.pairs
+    assert marker.color_index == 0, marker.color_index
+    assert len(marker.ax.lines) == bare_lines, len(marker.ax.lines)
+
+    # Enter finishes the marking - it closes the window run() blocks on
+    marker.on_key(type('Event', (), {'key': 'enter'})())
+    assert not plt.fignum_exists(marker.fig.number)
+
+    # and a window finished with nothing marked yields the empty list that
+    # tells mode_map_2d to skip the file
+    assert _PairMarker(x, y).run() == []
+
     print(f"mode_marking self-test passed: df/FSR = "
           f"{summary['df_over_fsr_mean']:.4f} (expected {df / fsr:.4f}), "
           f"FWHM0 = {summary['fwhm_0_MHz_mean']:.4f} MHz")

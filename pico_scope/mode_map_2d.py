@@ -42,6 +42,12 @@ Marking is slow, so every file's marks are cached in a
 one, the run stops to ask whether to use that marking ('y') or to mark the file
 again ('n', which then replaces the sidecar); set REMARK_ALL, or list keys in
 REMARK_KEYS, to skip the question and mark those files again.
+
+Finishing a marking window without marking anything asks again which waveform
+buffer of that file to use - the usual reason for an unmarkable trace being
+that the wrong buffer was picked. Another buffer marks the file with that one
+instead; -1 skips the file, which is then left out of the map (and any sidecar
+it already had is left as it was).
 """
 
 # %% [Step 0] Imports and configuration -------------------------------------
@@ -63,14 +69,22 @@ import pandas as pd
 # sys.path, not the repo root the absolute imports assume).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pico_scope.mode_analysis import cavity_fsr_mhz  # noqa: E402
-from pico_scope.mode_marking import mark_pairs  # noqa: E402
-from utilities.utils import ask_long_arm_length, psdata_to_csv  # noqa: E402
+from pico_scope.mode_marking import (SELECTION_INSTRUCTIONS,  # noqa: E402
+                                     mark_pairs)
+from utilities.utils import (ask_long_arm_length,  # noqa: E402
+                             choose_buffer_csv, psdata_buffer_csvs,
+                             psdata_to_csv)
 
 # --- the measurements to map (this is the dictionary to edit) --------------
 # {y-axis value: PicoScope trace}. .psdata files are converted to CSV on the
 # fly (and you are asked which waveform buffer to use); .csv files are read as
 # they are. The keys need not be evenly spaced - the map keeps their spacing.
 MEASUREMENTS = {
+    33: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\33cm\04 44 33cm\without EOM 2.psdata",
+    34: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\34cm\04 44 34 cm\without EOM.psdata",
+    35: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\35cm\04 44 35\without EOM.psdata",
+    36: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\36cm\04 44 36\without EOM.psdata",
+    37: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\37cm\04 44 37cm\without EOM.psdata",
     38: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\38cm\04 44 38cm\without EOM-0002.psdata",
     40: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\40cm\04 44 40cm\without EOM.psdata",
     44: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-23\44cm\04 44 44cm\without EOM.psdata",
@@ -109,6 +123,12 @@ SAVE_OUTPUTS = True               # write the figure and the map arrays to disk
 REMARK_ALL = False                # mark every file again, without asking
 REMARK_KEYS = ()                  # ... or only these keys, e.g. (36.0,)
 
+# The marker's own instructions plus the way out of a file that cannot be
+# marked - only this script, which walks a whole dictionary, has a next file.
+MARKING_INSTRUCTIONS = (SELECTION_INSTRUCTIONS +
+                        "  Finish with nothing marked to pick another "
+                        "waveform buffer, or to skip this file.")
+
 CACHE_SUFFIX = '.modemarks.json'
 CACHE_VERSION = 1
 
@@ -144,6 +164,19 @@ def trace_csv_path(path):
     if path.suffix.lower() == '.psdata':
         return psdata_to_csv(path)
     return str(path)
+
+
+def csv_candidates(path):
+    """Every CSV that could be marked for `path`, in waveform-buffer order.
+
+    One entry unless `path` is a .psdata holding several waveform buffers -
+    and those are the alternatives offered when the buffer that was picked
+    turns out to be the wrong one (see analyse_file).
+    """
+    path = Path(path)
+    if path.suffix.lower() == '.psdata':
+        return [Path(csv) for csv in psdata_buffer_csvs(path)]
+    return [path]
 
 
 def load_trace(csv_path):
@@ -247,6 +280,12 @@ def analyse_file(key, data_path, default_long_arm, remark=False):
 
     Keys of the record: csv_path (which waveform buffer was used), long_arm_m,
     marks (as mode_marking.mark_pairs returns them), source_mtime.
+
+    Finishing the marking window without anything marked means the trace on
+    screen is not the one to analyse, so the waveform-buffer question is asked
+    again: another buffer marks this file with that buffer instead, -1 gives
+    up on the file. Giving up returns None - the file is then left out of the
+    map and its sidecar, if it has one, is left untouched.
     """
     data_path = Path(data_path)
     if not data_path.is_file():
@@ -258,20 +297,38 @@ def analyse_file(key, data_path, default_long_arm, remark=False):
             print("  using the cached marks")
             return cached
 
-    csv_path = trace_csv_path(data_path)
-    x, y = load_trace(csv_path)
-    print(f"  loaded {len(x)} samples from '{SIGNAL_COLUMN}'")
+    candidates = csv_candidates(data_path)
+    csv_path = choose_buffer_csv(candidates)
+    while True:
+        x, y = load_trace(csv_path)
+        print(f"  loaded {len(x)} samples from '{SIGNAL_COLUMN}'")
 
-    long_arm = ask_long_arm_length(default_long_arm)
-    # the folder is part of the title too: the file names repeat across
-    # measurements, so the name alone does not say which trace this is
-    marks = mark_pairs(x, y, title=f"{Y_AXIS_LABEL} = {key:g}   |   "
-                                   f"{data_path.parent.name}/{data_path.name}")
+        # the folder is part of the title too: the file names repeat across
+        # measurements, so the name alone does not say which trace this is
+        marks = mark_pairs(x, y, title=f"{Y_AXIS_LABEL} = {key:g}   |   "
+                                       f"{data_path.parent.name}/{data_path.name}",
+                           instructions=MARKING_INSTRUCTIONS)
+        if marks:
+            break
+        # nothing was marked: usually the wrong waveform buffer is on screen,
+        # so offer the others again rather than losing the file over it
+        print(f"  nothing was marked on '{Path(csv_path).name}'")
+        csv_path = choose_buffer_csv(candidates, allow_skip=True)
+        if csv_path is None:
+            return None
+
     marks = [pair for pair in marks if len(pair) == 2]
     if len(marks) < 2:
+        # something was marked, so this is a half-finished marking rather than
+        # a skip, and silently dropping the file would hide the mistake
         raise ValueError(
             f"{Y_AXIS_LABEL} = {key:g}: only {len(marks)} complete pair(s) were "
-            "marked; at least two consecutive ones are needed for the FSR.")
+            "marked; at least two consecutive ones are needed for the FSR. "
+            "Finish the marking window with nothing marked to pick another "
+            "waveform buffer, or to skip the file.")
+
+    # asked only now, so that skipping a file costs no answer
+    long_arm = ask_long_arm_length(default_long_arm)
 
     record = {'version': CACHE_VERSION,
               'key': float(key),
@@ -554,6 +611,9 @@ def main(measurements=None, y_label=None, normalize_to=None):
         record = analyse_file(
             key, path, default_long_arm,
             remark=REMARK_ALL or key in REMARK_KEYS)
+        if record is None:
+            print(f"  {y_label} = {key:g} skipped")
+            continue
         default_long_arm = record['long_arm_m']
 
         x, y = load_trace(resolve_csv(record, path))
@@ -568,6 +628,13 @@ def main(measurements=None, y_label=None, normalize_to=None):
               f"{', scan flipped' if row['flipped'] else ''}")
         keys.append(float(key))
         rows.append(row)
+
+    if not rows:
+        raise ValueError('every measurement was skipped - there is nothing to '
+                         'map. Mark at least two pairs in one file.')
+    if len(rows) < len(measurements):
+        print(f"\n{len(measurements) - len(rows)} of {len(measurements)} "
+              "measurements were skipped")
 
     keys, rows, centres, x_edges, y_edges, z = build_map(keys, rows)
     print_table(keys, rows, y_label=y_label)

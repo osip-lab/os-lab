@@ -172,17 +172,26 @@ def _sorted_buffer_csvs(out_dir):
     return sorted(out_dir.rglob('*.csv'), key=buffer_index)
 
 
-def _choose_buffer_csv(csv_files):
-    """Return the CSV to analyse, asking the user when the file has several."""
-    if len(csv_files) == 1:
+def choose_buffer_csv(csv_files, allow_skip=False):
+    """Return the CSV to analyse, asking the user when the file has several.
+
+    `allow_skip` is for a caller that is asking a second time - because the
+    buffer it got the first time turned out to be the wrong one - and can go on
+    without this file at all: it adds -1 (skip, returns None) to the choices,
+    and it makes the question be asked even when there is only one buffer,
+    where it means 'that one again' versus 'give up on this file'.
+    """
+    if len(csv_files) == 1 and not allow_skip:
         return str(csv_files[0])
 
-    print(f"The psdata file contains {len(csv_files)} waveform buffers:")
+    plural = '' if len(csv_files) == 1 else 's'
+    print(f"The psdata file contains {len(csv_files)} waveform buffer{plural}:")
     for i, p in enumerate(csv_files, start=1):
         print(f"  [{i}] {p.name}")
+    skip_hint = ', -1 to skip this file' if allow_skip else ''
     while True:
         raw_in = input(
-            f"Which waveform to use? 1-{len(csv_files)} "
+            f"Which waveform to use? 1-{len(csv_files)}{skip_hint} "
             f"[default {len(csv_files)} - the most recent]: "
         ).strip()
         if raw_in == '':
@@ -192,9 +201,13 @@ def _choose_buffer_csv(csv_files):
                 choice = int(raw_in)
             except ValueError:
                 choice = 0
+        if allow_skip and choice == -1:
+            print("Skipping this file.")
+            return None
         if 1 <= choice <= len(csv_files):
             break
-        print(f"  Please enter a number between 1 and {len(csv_files)}.")
+        print(f"  Please enter a number between 1 and {len(csv_files)}"
+              f"{skip_hint}.")
     print(f"Using waveform: {csv_files[choice - 1].name}")
     return str(csv_files[choice - 1])
 
@@ -217,8 +230,8 @@ def _prune_psdata_csv_cache(max_age_days=PSDATA_CSV_CACHE_MAX_AGE_DAYS):
             pass  # a cache we cannot tidy is no reason to fail the analysis
 
 
-def psdata_to_csv(psdata_path):
-    """Convert a PicoScope .psdata file to CSV; return the CSV path.
+def psdata_buffer_csvs(psdata_path):
+    """Convert a PicoScope .psdata file to CSV; return one CSV per buffer.
 
     Uses PicoScope 7's command-line `BatchConvert` mode, which produces a CSV
     identical to the GUI's "Save as CSV". BatchConvert operates on folders,
@@ -231,14 +244,19 @@ def psdata_to_csv(psdata_path):
     directly and no conversion is performed. Failing that, an earlier
     conversion of the same file cached under PSDATA_CSV_CACHE_DIR is reused -
     which also means a cached file can be re-analysed without PicoScope
-    installed. If the .psdata file holds several waveform buffers, the user is
-    asked which one to use (default: the last, i.e. most recent, capture).
+    installed.
+
+    The list is in buffer order (the most recent capture last) and holds a
+    single entry when the file has one waveform buffer. psdata_to_csv() picks
+    one of them; a caller that may have to come back and pick a different one
+    (pico_scope/mode_map_2d.py) keeps the list and re-runs choose_buffer_csv()
+    on it, which costs no second conversion.
     """
     psdata_path = Path(psdata_path)
     sibling_csv = psdata_path.with_suffix('.csv')
     if sibling_csv.is_file() and sibling_csv.stat().st_mtime >= psdata_path.stat().st_mtime:
         print(f"Using existing up-to-date CSV: {sibling_csv}")
-        return str(sibling_csv)
+        return [sibling_csv]
 
     _prune_psdata_csv_cache()
     cache_dir = _psdata_cache_dir(psdata_path)
@@ -247,7 +265,7 @@ def psdata_to_csv(psdata_path):
     if cached_csvs:
         print(f"Using cached conversion of '{psdata_path.name}' "
               f"({len(cached_csvs)} waveform buffer(s)) from {out_dir}")
-        return _choose_buffer_csv(cached_csvs)
+        return cached_csvs
 
     try:
         from local_config import PICOSCOPE_EXE
@@ -316,7 +334,17 @@ def psdata_to_csv(psdata_path):
     # worth keeping in the cache.
     shutil.rmtree(in_dir, ignore_errors=True)
 
-    return _choose_buffer_csv(csv_files)
+    return csv_files
+
+
+def psdata_to_csv(psdata_path):
+    """Convert a PicoScope .psdata file to CSV; return the CSV path.
+
+    psdata_buffer_csvs() does the conversion; when the file holds several
+    waveform buffers the user is asked which one to use (default: the last,
+    i.e. most recent, capture).
+    """
+    return choose_buffer_csv(psdata_buffer_csvs(psdata_path))
 
 
 def get_picoscope_trace_path_from_clipboard():
