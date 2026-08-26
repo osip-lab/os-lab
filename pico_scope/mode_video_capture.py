@@ -62,7 +62,11 @@ THROUGHPUT_BPS = 212_352_571    # the cameras' own default; 150 MB/s caps us at 
 ROI_WIDTH = 1024                # = full 2048 sensor columns at binning 2
 ROI_HEIGHT = 512                # = 1024 sensor rows
 ROI_OFFSET_X = 0
-ROI_OFFSET_Y = None             # None: found by locate_mode() at every run
+# None means locate_mode() finds it at every run, which is the right default -
+# the mode moves whenever the cavity is realigned. The number is the fallback
+# used by --no-locate: measured 2026-08-26, mode at binned rows 529-640 centred
+# on 584, so 584 - ROI_HEIGHT // 2. Re-run --locate after any realignment.
+ROI_OFFSET_Y = 328
 
 # --- what the capture is checked against -----------------------------------
 # The tightest 0th->1st spacing measured across the 2026-08-23 mode maps. Two
@@ -82,7 +86,34 @@ except ImportError:                                   # pragma: no cover
 
 
 # %% [Step 1] Finding the mode ----------------------------------------------
-def locate_mode(cam, n_frames=40, threshold=0.1):
+def _extent(profile, threshold, n_sigma=5.0):
+    """Where a 1-D profile rises above its own baseline, as (min, max) index.
+
+    A profile is the span image summed along one axis, not maximised along it:
+    summing averages the per-pixel noise down over a thousand pixels while the
+    mode adds coherently. The baseline is the median, so it is set by the empty
+    majority of the sensor rather than by the mode.
+
+    Even summed, the empty part of the sensor is not flat - it is a pedestal
+    with real scatter - so a threshold set purely as a fraction of the peak
+    dips into the noise and reports the mode as filling the sensor. The cut is
+    therefore the stricter of two: `threshold` of the way from baseline to peak,
+    and `n_sigma` robust standard deviations above the baseline.
+    """
+    profile = np.asarray(profile, dtype=float)
+    baseline = float(np.median(profile))
+    peak = float(profile.max())
+    if peak <= baseline:
+        return None
+    # median absolute deviation -> sigma, unaffected by the mode itself
+    sigma = 1.4826 * float(np.median(np.abs(profile - baseline)))
+    cut = max(baseline + threshold * (peak - baseline),
+              baseline + n_sigma * sigma)
+    lit = np.nonzero(profile > cut)[0]
+    return (int(lit.min()), int(lit.max())) if lit.size else None
+
+
+def locate_mode(cam, n_frames=150, threshold=0.1):
     """Where on the sensor does the transmitted mode sit?
 
     Takes a whole-sensor burst and looks at what *changes* during it, which
@@ -90,8 +121,19 @@ def locate_mode(cam, n_frames=40, threshold=0.1):
     answer moves whenever the cavity is realigned, so this runs before every
     capture rather than being written down as a constant.
 
+    Uses the same pixel format, gain and binning as the capture: in Mono12 the
+    read noise is resolved rather than truncated away, which moves the threshold
+    this has to clear.
+
+    The burst has to be long enough to catch the higher-order modes and not just
+    the 0th - they are larger and displaced, and they are the ones the ROI must
+    not clip. At the whole-sensor frame rate 150 frames covers a couple of
+    seconds, i.e. several free spectral ranges.
+
     Returns a dict in binned pixels; `centre_row` is what the ROI is centred on.
     """
+    cam.set_pixel_format(PIXEL_FORMAT)
+    cam.set_throughput_limit(THROUGHPUT_BPS)
     cam.set_binning(BINNING)
     cam.set_roi_full()
     cam.exposure_us = EXPOSURE_US
@@ -105,15 +147,23 @@ def locate_mode(cam, n_frames=40, threshold=0.1):
         raise RuntimeError(
             'nothing on the sensor changed during the reconnaissance burst - '
             'is the laser on and the cavity transmitting?')
-    rows = np.nonzero(span.max(axis=1) > threshold * span.max())[0]
-    cols = np.nonzero(span.max(axis=0) > threshold * span.max())[0]
+    rows = _extent(span.sum(axis=1), threshold)
+    cols = _extent(span.sum(axis=0), threshold)
+    if rows is None or cols is None:
+        raise RuntimeError(
+            'no part of the sensor stands out above the noise during the '
+            'sweep. Is the cavity transmitting, and does the burst cover a '
+            'resonance?')
     found = {
-        'row_min': int(rows.min()), 'row_max': int(rows.max()),
-        'col_min': int(cols.min()), 'col_max': int(cols.max()),
-        'centre_row': int((rows.min() + rows.max()) // 2),
-        'centre_col': int((cols.min() + cols.max()) // 2),
+        'row_min': rows[0], 'row_max': rows[1],
+        'col_min': cols[0], 'col_max': cols[1],
+        'centre_row': (rows[0] + rows[1]) // 2,
+        'centre_col': (cols[0] + cols[1]) // 2,
         'peak_pixel': int(frames.max()),
+        'saturation_level': int(cam.saturation_level),
+        'pixel_format': cam.pixel_format,
         'saturated_fraction': float((frames >= cam.saturation_level).mean()),
+        'span_max': float(span.max()),
     }
     found['height'] = found['row_max'] - found['row_min'] + 1
     found['width'] = found['col_max'] - found['col_min'] + 1
@@ -126,7 +176,8 @@ def report_mode_location(found, roi_height=ROI_HEIGHT):
           f"({found['height']} binned rows), cols {found['col_min']}-"
           f"{found['col_max']} ({found['width']} binned cols)")
     print(f"  centred at row {found['centre_row']}, col {found['centre_col']}")
-    print(f"  peak pixel {found['peak_pixel']}, saturated "
+    print(f"  peak pixel {found['peak_pixel']} of "
+          f"{found['saturation_level']} ({found['pixel_format']}), saturated "
           f"{found['saturated_fraction']:.3%}")
     margin = (roi_height - found['height']) // 2
     if margin < found['height']:
@@ -260,7 +311,14 @@ def capture(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
             print(f'\nStart the PicoScope recording now - it must run for '
                   f'longer than the {checks["burst_s"]:.2f} s burst and must '
                   f'already be running when the burst starts.')
-            input('Press Enter to record the burst... ')
+            try:
+                input('Press Enter to record the burst... ')
+            except EOFError:
+                raise RuntimeError(
+                    'no console to prompt on. Start the PicoScope recording '
+                    'first and re-run with --no-prompt, which records '
+                    'immediately - and give the scope record enough length to '
+                    'cover the delay before this starts.')
 
         print(f'recording {N_FRAMES} frames ...')
         tic = time.time()
@@ -357,6 +415,12 @@ def main():
                         help=f'camera serial number (default {SERIAL_NUMBER})')
     parser.add_argument('--frames', type=int, default=None,
                         help=f'frames to record (default {N_FRAMES})')
+    parser.add_argument('--no-prompt', action='store_true',
+                        help='record immediately instead of waiting for Enter; '
+                             'the PicoScope recording must already be running '
+                             'and long enough to cover the delay')
+    parser.add_argument('--no-locate', action='store_true',
+                        help='skip the reconnaissance and use ROI_OFFSET_Y')
     args = parser.parse_args()
 
     if args.self_test:
@@ -375,7 +439,8 @@ def main():
             cam.set_roi_full()
             cam.close()
         return
-    capture(args.serial)
+    capture(args.serial, locate=not args.no_locate,
+            prompt=not args.no_prompt)
 
 
 if __name__ == '__main__':
