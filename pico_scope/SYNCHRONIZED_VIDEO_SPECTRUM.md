@@ -1162,3 +1162,20 @@ per-frame timestamps and the offset live only in that file.
 
 Both writers now pass a `default=` converter for numpy scalars and arrays.
 Losing a session to a type is not a trade worth making.
+
+## And then it happened a second time
+
+The very next capture failed at the same place for a different reason:
+`check_light_level` returned `history[-1]` *and* put `history` inside it, so the
+dict contained itself and `json.dumps` raised "Circular reference detected" -
+again after 94 MB of frames had been written.
+
+Two failures at the same step is a design fault, not two bugs. `save_session`
+now **serialises the metadata before writing any array**. The metadata is both
+the fragile part (assembled from a dozen measurements, any of which can carry a
+type json refuses) and the irreplaceable part (the per-frame timestamps and the
+offset exist nowhere else). Failing before the arrays exist costs a rerun;
+failing after costs the data.
+
+The self-test now asserts that property directly: metadata that cannot be
+serialised must leave no `.npy` behind.

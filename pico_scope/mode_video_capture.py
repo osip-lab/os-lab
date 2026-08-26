@@ -431,9 +431,13 @@ def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
                   f'range is unused. About '
                   f'{TARGET_PEAK_FRACTION / level["peak_fraction"]:.1f}x more '
                   f'light would improve the brightness SNR.')
-    level.update({'ok': ok, 'advice': advice, 'history': history,
-                  'expected_worst': expected_worst})
-    return level
+    # A copy, because `level` *is* history[-1]: putting `history` into it would
+    # make the dict contain itself, which json.dumps rejects as a circular
+    # reference - and it did, after the frames had been written.
+    result = dict(level)
+    result.update({'ok': ok, 'advice': advice, 'history': history,
+                   'expected_worst': expected_worst})
+    return result
 
 
 # %% [Step 2] Configuring the camera ----------------------------------------
@@ -518,10 +522,7 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     mask = varying_pixel_mask(frames, MASK_THRESHOLD)
-
     frames_name, mask_name = f'{stem}_frames.npy', f'{stem}_mask.npy'
-    np.save(folder / frames_name, frames)
-    np.save(folder / mask_name, mask)
 
     session = {
         'created': datetime.now().isoformat(timespec='seconds'),
@@ -551,9 +552,18 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
         'brightness_full': frame_brightness(frames).tolist(),
         'brightness_masked': frame_brightness(frames, mask).tolist(),
     }
+    # Serialise before writing anything large. The metadata is the fragile
+    # part - it is assembled from a dozen measurements, any of which can carry
+    # a type json refuses - and it is also the irreplaceable part, since the
+    # per-frame timestamps and the offset exist nowhere else. Twice now a
+    # capture has written 94 MB of frames and then failed here, leaving arrays
+    # nothing could interpret. Failing before the arrays exist costs a rerun;
+    # failing after costs the data.
+    text = json.dumps(session, indent=1, default=_json_default)
+    np.save(folder / frames_name, frames)
+    np.save(folder / mask_name, mask)
     session_path = folder / f'{stem}_session.json'
-    session_path.write_text(json.dumps(session, indent=1, default=_json_default),
-                            encoding='utf-8')
+    session_path.write_text(text, encoding='utf-8')
     return session_path, mask
 
 
@@ -804,6 +814,32 @@ def _self_test():
         # cannot be removed until the frames are released.
         release_frames(loaded)
     print('  session round-trips, both brightness series present')
+
+    # numpy scalars must survive, and a cycle must not be constructible: both
+    # have cost a capture its session file after the frames were written
+    with tempfile.TemporaryDirectory() as folder:
+        numpy_checks = {'peak_max': np.int64(3), 'worst': np.float64(4.0),
+                        'covers': np.bool_(True), 'peaks': np.arange(3)}
+        path, _ = save_session(folder, 'np', frames, meta, timing,
+                               numpy_checks, {'serial_number': 'x'}, None)
+        stored = json.loads(path.read_text())['checks']
+        assert stored == {'peak_max': 3, 'worst': 4.0, 'covers': True,
+                          'peaks': [0, 1, 2]}, stored
+
+    # and when the metadata cannot be written, nothing large is left behind
+    with tempfile.TemporaryDirectory() as folder:
+        try:
+            save_session(folder, 'bad', frames, meta, timing,
+                         {'unserialisable': object()}, {'serial_number': 'x'},
+                         None)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError('unserialisable metadata should have raised')
+        leftovers = list(Path(folder).glob('*.npy'))
+        assert not leftovers, f'frames written despite failed metadata: {leftovers}'
+    print('  numpy metadata survives, and a metadata failure leaves no orphan '
+          'arrays')
 
     # the configured frame rate must actually resolve the closest peaks
     period = 1.0 / FRAME_RATE_HZ
