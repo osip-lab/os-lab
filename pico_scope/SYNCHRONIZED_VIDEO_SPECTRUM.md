@@ -836,3 +836,85 @@ width costs nothing.
 
 This is per-alignment, not a constant — re-run the reconnaissance whenever the
 cavity is realigned.
+
+---
+
+# Phases 1b and 1c — done (2026-08-26)
+
+Two new modules, both with `--self-test`:
+
+- **`pico_scope/mode_video_capture.py`** — locates the mode, configures the
+  camera, prints the check-5 and check-6 numbers, waits for you to start the
+  PicoScope recording, records the burst and writes a session folder.
+- **`pico_scope/mode_video_sync.py`** — pure and hardware-free: loads the scope
+  CSV and the session, and fits the one unknown offset.
+
+## The protocol, in full
+
+1. Start the PicoScope 7 recording (longer than the burst, and started first).
+2. `python pico_scope/mode_video_capture.py`, press Enter when it asks.
+3. Save the PicoScope recording as `.psdata`.
+4. `python pico_scope/mode_video_sync.py --session <folder> --scope <file>.psdata`
+
+Nothing has to be started at a known instant. The only requirement is that the
+burst sits **inside** the scope record.
+
+## Departures from the Phase 1c brief
+
+The brief was written for the sync-cable design, so its three functions assumed
+a pulse train. They are all still there — `frame_windows_from_sync`,
+`align_frames`, `frame_at_time` — and self-tested, because they are what a cable
+would give and remain the best independent check if one is ever made up. But the
+optical route needed different primitives alongside them:
+
+- `frame_start_times(meta)` replaces the pulse train as the source of frame
+  timing. The camera's chunk timestamps are better than edges for this: they are
+  applied at exposure rather than on arrival, and a dropped frame leaves a real
+  gap instead of silently shifting everything after it.
+- `fit_time_offset` is the new core. It slides the frame grid along the trace and
+  compares boxcar-integrated signal against measured brightness, marginalising
+  gain and dark level analytically at every candidate — only the *shape* of the
+  sequence carries timing.
+- `OffsetFit.margin` is the quality flag a cable does not provide: how much worse
+  the best rival minimum is. `trustworthy` is `margin > 1.5`.
+
+**`load_scope_csv` reads the units row rather than skipping it.** The repo's
+existing loaders use `pd.read_csv(..., skiprows=[1, 2])`, and exports in this lab
+disagree about whether `Time` is seconds or milliseconds — a silent factor of
+1000 would put every frame in the wrong place. Where `t = 0` sits still does not
+matter, exactly as the brief said, because the fitted offset is expressed in the
+CSV's own coordinate.
+
+## Verification
+
+`--self-test` on `mode_video_sync.py`, against a synthetic sweep with a
+deliberately dropped frame:
+
+| brightness noise | offset error | margin |
+| --- | --- | --- |
+| 1% | 0.003 ms | 4384× |
+| 3% | 0.053 ms | 562× |
+| 10% | 0.031 ms | 41× |
+
+It also checks that the confidence flag fires when it should: a burst spanning
+only one FSR collapses to 2.6× (from 4384×), and a featureless burst — beam
+blocked, or the sweep missed — gives exactly 1.00× and `trustworthy=False`.
+Plus window-edge behaviour for `frame_at_time`, BlockID gap detection, pulse-train
+recovery, and the ms→s / mV→V unit conversion.
+
+**End-to-end dry run**, no hardware: a synthetic scope CSV in ms/mV, a synthetic
+session whose frames really were exposed against that trace at a known offset,
+then the same `fit_session()` the real capture uses. Recovered the offset to
+**−6.6 µs** (0.0007 of an exposure), margins 8557× masked and 1884× full, the two
+series agreeing to 6 µs — and the brightest peak inside the burst mapped to
+frame 17, which is the frame that actually lit up.
+
+One Windows detail worth knowing: `load_session` memory-maps the frame stack, so
+the session folder stays locked until `release_frames()` is called or the process
+exits. Pass `mmap=False` to read it into memory instead.
+
+## Still to do
+
+**Phase 1d, the viewer** (`mode_video_sync_show.py`) — hover a peak, see the
+frame. Everything it needs is now in place: `fit_session` returns the windows,
+and `frame_at_time` / `nearest_frame` do the lookup.
