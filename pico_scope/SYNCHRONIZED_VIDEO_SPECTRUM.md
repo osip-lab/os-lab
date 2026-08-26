@@ -1095,3 +1095,34 @@ at exactly one exposure wide.
 Against the real capture of 2026-08-26 20:08:53: hovering the strongest
 resonance selects frame 76, whose window 973.19-983.09 ms contains that peak,
 and whose brightness is the largest in the burst.
+
+---
+
+# First fully automatic capture (2026-08-26 20:53) — the feature works
+
+One command, both instruments, no PicoScope 7 and no manual step:
+
+    python pico_scope/mode_video_capture.py --scope
+
+- light level **54.1% of full scale**, 0.000% saturated - the pre-flight passed
+  on its own after the laser was attenuated
+- ROI chosen by the reconnaissance: **1024x384 at offset_y 402**, 99.1 Hz
+- **120 frames, 0 dropped**, period 10.0786 ms ± 0.0000
+- scope block 1.800 s, 180 000 samples, no overflow
+- `t0` from the calibrated host clock: 198.53 ms
+
+`--refine` then moved it by **+2.4 ms — 0.245 of a frame.** The calibrated host
+clock alone put every frame within a quarter of an exposure of the truth, which
+settles the question the whole of Phase 2 was for: **the fine alignment really
+is optional.**
+
+## What it shows
+
+The five resonances of a single free spectral range, each a plainly different
+transverse pattern: three stacked lobes at −81 ms, a clean two-lobe at −40 ms,
+a compact multi-lobe at the strongest peak, and two higher-order patterns at
++50 and +101 ms.
+
+That is the discrimination the spectrum alone cannot give, and the reason this
+was built. From a trace of five peaks there is no way to say which is the 0th
+order and which the 1st; from the frames there is.
