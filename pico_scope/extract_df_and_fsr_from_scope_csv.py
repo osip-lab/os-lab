@@ -1,9 +1,11 @@
+from pathlib import Path
+
 import pandas as pd
 import matplotlib
 
 matplotlib.use('Qt5Agg')
 from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
-                             get_picoscope_trace_path_from_clipboard)
+                             wait_for_path_from_clipboard)
 import matplotlib.pyplot as plt
 
 # All the math (models, pair fit, df/FSR extraction, NA interpolators) lives in
@@ -13,6 +15,13 @@ import matplotlib.pyplot as plt
 from pico_scope.mode_analysis import (cavity_fsr_mhz, get_na_interpolators,
                                       pair_positions_results, pair_summary)
 from pico_scope.mode_marking import mark_pairs, positions_and_widths
+# The marking is saved as a '<data file>.modemarks.json' sidecar next to the
+# data and read back here and by pico_scope/mode_map_2d.py - so the marking
+# done at the bench, while the measurement is being taken, is the one the 2D
+# map reuses instead of asking for it all over again.
+from pico_scope.mode_marks_cache import (ask_use_cached_marks, complete_pairs,
+                                         load_cached_marks, make_record,
+                                         save_marks, trace_csv_path)
 
 # --- the cavity being measured (edit this when the setup changes) ----------
 # Element names come from the cavity-design catalog; list them in optical order.
@@ -28,39 +37,61 @@ MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
 
-# The long arm changes between measurements, so it is asked for on every run
-# rather than configured. It feeds both the FSR and the NA simulation, so it
-# has to be answered before either is built.
-long_arm_length = ask_long_arm_length()  # [m], prompted in cm
-
-L = long_arm_length + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
-FSR_MHZ = cavity_fsr_mhz(long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH,
-                         short_arm=SHORT_ARM_LENGTH)
+TIME_COLUMN = 'Time'        # x-axis column in the PicoScope CSV
+SIGNAL_COLUMN = 'Channel D'  # intensity column to analyze
 
 # The NA mapping is NOT built here: the cavity-design simulation is run at the end of the
 # script, once every pair has been fitted, so that the measured mode spacing can be handed
 # to it and come back marked on its dependency plot.
 # %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
-specific_file_path, input_path = get_picoscope_trace_path_from_clipboard()
-
-df = pd.read_csv(specific_file_path, skiprows=[1, 2])
-df = df.loc[:, ['Time', 'Channel D']]
-data_numpy = df.to_numpy()
-
-x = data_numpy[:, 0]  # Time column
-y = data_numpy[:, 1]  # Channel B column
+# The path that is copied is the one the sidecar and the results line belong
+# to, so the .psdata is kept as it is here and converted only when the trace
+# actually has to be drawn - a file that is already marked never is.
+input_path = wait_for_path_from_clipboard(filetype=('csv', 'psdata'))
 
 
 # %% Mark the mode pairs -----------------------------------------------------
 # Drag the 0th-order mode and the first-order mode that follows it, for
 # consecutive longitudinal mode numbers; two pairs are the minimum (their
 # spacing is the FSR). See mode_marking for the keys the window understands.
-marks = mark_pairs(x, y)
-complete = [pair for pair in marks if len(pair) == 2]
-if len(complete) != len(marks):
-    print(f"Ignoring {len(marks) - len(complete)} incomplete pair(s).")
-lorentzian_positions, lorentzian_widths = positions_and_widths(complete)
+#
+# The long arm changes between measurements, so it is asked for rather than
+# configured - but only for a file being marked now: a file that was marked
+# before was measured with the long arm its sidecar holds, and typing it again
+# could only disagree with the marks. It feeds both the FSR and the NA
+# simulation, so it is settled before either is built.
+cached = load_cached_marks(input_path, min_pairs=2, signal_column=SIGNAL_COLUMN)
+if cached is not None and ask_use_cached_marks(cached, input_path):
+    print("  using the cached marks")
+    marks = cached['marks']
+    long_arm_length = cached['long_arm_m']  # [m]
+    print(f"Long arm length: {long_arm_length * 100:.4g} cm (from the sidecar)")
+else:
+    csv_path = trace_csv_path(input_path)
+    df = pd.read_csv(csv_path, skiprows=[1, 2])
+    df = df.loc[:, [TIME_COLUMN, SIGNAL_COLUMN]].dropna()
+    data_numpy = df.to_numpy()
+
+    x = data_numpy[:, 0]  # Time column
+    y = data_numpy[:, 1]  # intensity column
+
+    raw_marks = mark_pairs(x, y, title=Path(input_path).name)
+    marks = complete_pairs(raw_marks)
+    if len(marks) != len(raw_marks):
+        print(f"Ignoring {len(raw_marks) - len(marks)} incomplete pair(s).")
+    long_arm_length = ask_long_arm_length()  # [m], prompted in cm
+    if marks:
+        # next to the data, for this script's next run and for the 2D map
+        save_marks(input_path, make_record(input_path, csv_path, marks,
+                                           long_arm_length,
+                                           signal_column=SIGNAL_COLUMN))
+
+lorentzian_positions, lorentzian_widths = positions_and_widths(marks)
 print("Marked pairs:", lorentzian_positions)
+
+L = long_arm_length + MID_ARM_LENGTH + SHORT_ARM_LENGTH  # Cavity length in meters, sets the FSR via FSR = c / (2 * L)
+FSR_MHZ = cavity_fsr_mhz(long_arm=long_arm_length, mid_arm=MID_ARM_LENGTH,
+                         short_arm=SHORT_ARM_LENGTH)
 
 # %%
 if len(lorentzian_positions) < 2:

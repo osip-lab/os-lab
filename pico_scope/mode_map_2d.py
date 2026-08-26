@@ -38,10 +38,14 @@ Usage
                                                            no GUI/files
 
 Marking is slow, so every file's marks are cached in a
-'<data file>.modemarks.json' sidecar next to the data. When a file already has
-one, the run stops to ask whether to use that marking ('y') or to mark the file
-again ('n', which then replaces the sidecar); set REMARK_ALL, or list keys in
-REMARK_KEYS, to skip the question and mark those files again.
+'<data file>.modemarks.json' sidecar next to the data - the same sidecar
+pico_scope/extract_df_and_fsr_from_scope_csv.py writes, so a file already
+marked there while the measurement was being taken needs no marking here at
+all. When a file already has one, the run stops to ask whether to use that
+marking ('y') or to mark the file again ('n', which then replaces the
+sidecar); set REMARK_ALL, or list keys in REMARK_KEYS, to skip the question
+and mark those files again. A marking with fewer than the two consecutive
+pairs a map row needs for its FSR is marked again without asking.
 
 Finishing a marking window without marking anything asks again which waveform
 buffer of that file to use - the usual reason for an unmarkable trace being
@@ -51,7 +55,6 @@ it already had is left as it was).
 """
 
 # %% [Step 0] Imports and configuration -------------------------------------
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -71,9 +74,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pico_scope.mode_analysis import cavity_fsr_mhz  # noqa: E402
 from pico_scope.mode_marking import (SELECTION_INSTRUCTIONS,  # noqa: E402
                                      mark_pairs)
+# The sidecar itself lives in pico_scope.mode_marks_cache, shared with
+# pico_scope/extract_df_and_fsr_from_scope_csv.py - a file marked there while
+# the measurement was being taken is reused here rather than marked again.
+from pico_scope.mode_marks_cache import (ask_use_cached_marks,  # noqa: E402
+                                         complete_pairs, load_cached_marks,
+                                         make_record, resolve_csv, save_marks,
+                                         trace_csv_path)
 from utilities.utils import (ask_long_arm_length,  # noqa: E402
-                             choose_buffer_csv, psdata_buffer_csvs,
-                             psdata_to_csv)
+                             choose_buffer_csv, psdata_buffer_csvs)
 
 # --- the measurements to map (this is the dictionary to edit) --------------
 # {y-axis value: PicoScope trace}. .psdata files are converted to CSV on the
@@ -127,9 +136,6 @@ MARKING_INSTRUCTIONS = (SELECTION_INSTRUCTIONS +
                         "  Finish with nothing marked to pick another "
                         "waveform buffer, or to skip this file.")
 
-CACHE_SUFFIX = '.modemarks.json'
-CACHE_VERSION = 1
-
 # The accepted values of NORMALIZE_TO, and how each one is named to the reader
 NORMALIZATION_REFERENCES = {'zeroth': '0th-order', 'first': '1st-order'}
 
@@ -155,15 +161,6 @@ def normalize_to_from_argv(argv=None):
 
 
 # %% [Step 1] Loading, marking and caching one file --------------------------
-def trace_csv_path(path):
-    """The readable CSV for `path`; .psdata is converted (and its waveform
-    buffer chosen) by the same helper the other scope scripts use."""
-    path = Path(path)
-    if path.suffix.lower() == '.psdata':
-        return psdata_to_csv(path)
-    return str(path)
-
-
 def csv_candidates(path):
     """Every CSV that could be marked for `path`, in waveform-buffer order.
 
@@ -186,98 +183,14 @@ def load_trace(csv_path):
             raw[SIGNAL_COLUMN].to_numpy(dtype=float))
 
 
-def cache_file(data_path):
-    """The marks sidecar for a data file: '<stem>.modemarks.json' beside it."""
-    data_path = Path(data_path)
-    return data_path.with_name(data_path.stem + CACHE_SUFFIX)
-
-
-def load_cached_marks(data_path):
-    """The cached marking of `data_path`, or None if there is no usable one.
-
-    A cache made before the data file was last written is ignored - it belongs
-    to a different measurement that happened to have the same name.
-    """
-    path = cache_file(data_path)
-    if not path.is_file():
-        return None
-    try:
-        record = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError) as error:
-        print(f"  ignoring unreadable {path.name}: {error}")
-        return None
-    if record.get('version') != CACHE_VERSION:
-        return None
-    if record.get('source_mtime') != Path(data_path).stat().st_mtime:
-        print(f"  {Path(data_path).name} changed since {path.name} was written "
-              "- marking it again.")
-        return None
-    return record
-
-
-def ask_use_cached_marks(record, data_path):
-    """Ask whether to reuse a cached marking, or to mark the file again.
-
-    Marking is the slow part of a run, so the cache is what one usually wants
-    and is the default here - but a marking one is no longer happy with can
-    only be replaced by hand, and deleting the sidecar (or setting REMARK_KEYS
-    and starting over) is a detour. A run with no console to answer from keeps
-    the cache; REMARK_ALL is how such a run asks for the other choice.
-    """
-    path = cache_file(data_path)
-    marked = datetime.fromtimestamp(path.stat().st_mtime)
-    print(f"  {path.name} holds a marking of this file: "
-          f"{len(record['marks'])} pairs, long arm "
-          f"{record['long_arm_m'] * 100:.4g} cm, marked {marked:%Y-%m-%d %H:%M}")
-    while True:
-        try:
-            answer = input("  Use it? y = yes, n = mark the file again "
-                           "[default y]: ").strip().lower()
-        except EOFError:
-            return True
-        if answer in ('', 'y', 'yes'):
-            return True
-        if answer in ('n', 'no'):
-            print("  marking it again - the new marks replace the cached ones")
-            return False
-        print("  Please answer 'y' or 'n'.")
-
-
-def save_marks(data_path, record):
-    path = cache_file(data_path)
-    path.write_text(json.dumps(record, indent=1), encoding='utf-8')
-    print(f"  marks cached in {path.name}")
-
-
-def resolve_csv(record, data_path):
-    """The CSV a cached marking was made on, reconverting it if it is gone.
-
-    The psdata -> CSV cache expires (PSDATA_CSV_CACHE_MAX_AGE_DAYS), while the
-    marks sidecar does not. The marks are positions on one waveform buffer, so
-    a reconversion is only usable if it yields the same buffer file.
-    """
-    csv_path = Path(record['csv_path'])
-    if csv_path.is_file():
-        return str(csv_path)
-    print(f"  the CSV this marking was made on is gone ({csv_path.name}) "
-          "- converting again")
-    new_path = Path(trace_csv_path(data_path))
-    if new_path.name != csv_path.name:
-        raise RuntimeError(
-            f"the marks in {cache_file(data_path).name} were made on waveform "
-            f"buffer '{csv_path.name}', but '{new_path.name}' was chosen - "
-            "rerun and pick the same buffer, or delete the sidecar to mark the "
-            "file again.")
-    record['csv_path'] = str(new_path)
-    save_marks(data_path, record)
-    return str(new_path)
-
-
 def analyse_file(key, data_path, remark=False):
     """Return the marking record for one measurement, marking it if needed.
 
-    Keys of the record: csv_path (which waveform buffer was used), long_arm_m,
-    marks (as mode_marking.mark_pairs returns them), source_mtime.
+    The record is the '<data file>.modemarks.json' sidecar (see
+    pico_scope.mode_marks_cache), so a file already marked at the bench with
+    pico_scope/extract_df_and_fsr_from_scope_csv.py needs no marking here. A
+    map row needs two consecutive pairs for its FSR, which is more than that
+    script needs, so a cached marking with fewer is marked again.
 
     Finishing the marking window without anything marked means the trace on
     screen is not the one to analyse, so the waveform-buffer question is asked
@@ -290,7 +203,8 @@ def analyse_file(key, data_path, remark=False):
         raise FileNotFoundError(f"{Y_AXIS_LABEL} = {key:g}: no such file: {data_path}")
 
     if not remark:
-        cached = load_cached_marks(data_path)
+        cached = load_cached_marks(data_path, min_pairs=2,
+                                   signal_column=SIGNAL_COLUMN)
         if cached is not None and ask_use_cached_marks(cached, data_path):
             print("  using the cached marks")
             return cached
@@ -315,7 +229,7 @@ def analyse_file(key, data_path, remark=False):
         if csv_path is None:
             return None
 
-    marks = [pair for pair in marks if len(pair) == 2]
+    marks = complete_pairs(marks)
     if len(marks) < 2:
         # something was marked, so this is a half-finished marking rather than
         # a skip, and silently dropping the file would hide the mistake
@@ -328,13 +242,8 @@ def analyse_file(key, data_path, remark=False):
     # asked only now, so that skipping a file costs no answer
     long_arm = ask_long_arm_length()
 
-    record = {'version': CACHE_VERSION,
-              'key': float(key),
-              'source_name': data_path.name,
-              'source_mtime': data_path.stat().st_mtime,
-              'csv_path': str(csv_path),
-              'long_arm_m': float(long_arm),
-              'marks': marks}
+    record = make_record(data_path, csv_path, marks, long_arm,
+                         signal_column=SIGNAL_COLUMN, key=key)
     save_marks(data_path, record)
     return record
 
