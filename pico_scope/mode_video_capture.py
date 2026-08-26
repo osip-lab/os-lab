@@ -65,6 +65,14 @@ THROUGHPUT_BPS = 212_352_571    # the cameras' own default; 150 MB/s caps us at 
 # whole sensor width and spend the budget on rows.
 ROI_WIDTH = 1024                # = full 2048 sensor columns at binning 2
 ROI_HEIGHT = 384                # = 768 sensor rows; 99.1 Hz in Mono12
+# ROI_HEIGHT is only the fallback for --no-locate. Normally choose_roi() picks
+# the height from the mode it just measured, because the camera gets moved and
+# the mode's size and position move with it.
+ROI_HEIGHT_CANDIDATES = (128, 192, 256, 320, 384, 448, 512, 640, 768, 1024)
+# The higher orders are larger than the 0th and are the ones that must not be
+# clipped, so the margin around what was actually seen is at least as wide as
+# the mode itself, and never less than this.
+ROI_MIN_MARGIN_ROWS = 48
 ROI_OFFSET_X = 0
 # None means locate_mode() finds it at every run, which is the right default -
 # the mode moves whenever the cavity is realigned. The number is the fallback
@@ -166,10 +174,15 @@ def locate_mode(cam, n_frames=150, threshold=0.1):
     rows = _extent(span.sum(axis=1), threshold)
     cols = _extent(span.sum(axis=0), threshold)
     if rows is None or cols is None:
+        saturation = cam.saturation_level
         raise RuntimeError(
-            'no part of the sensor stands out above the noise during the '
-            'sweep. Is the cavity transmitting, and does the burst cover a '
-            'resonance?')
+            f'no part of the sensor stands out above the noise during the '
+            f'sweep. The brightest pixel reached {int(frames.max())} of '
+            f'{saturation} ({frames.max() / saturation:.1%} of full scale) and '
+            f'the largest change during the burst was {span.max():.0f} counts. '
+            f'Either the cavity is not transmitting, or the light is too far '
+            f'attenuated - aim for a peak near '
+            f'{TARGET_PEAK_FRACTION:.0%} of full scale.')
     found = {
         'row_min': rows[0], 'row_max': rows[1],
         'col_min': cols[0], 'col_max': cols[1],
@@ -184,6 +197,88 @@ def locate_mode(cam, n_frames=150, threshold=0.1):
     found['height'] = found['row_max'] - found['row_min'] + 1
     found['width'] = found['col_max'] - found['col_min'] + 1
     return found
+
+
+def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES):
+    """Pick the ROI height and vertical offset from the mode just measured.
+
+    Two constraints pull against each other. The height must cover the mode
+    with room for the larger higher orders, and it must be small enough that
+    the sensor still reads out at the target rate - readout is paced per row,
+    so rows are exactly what frame rate costs.
+
+    Resolves them by preferring the smallest height that covers the mode, then
+    checking it against the camera's own ResultingFrameRate; if nothing that
+    covers the mode is fast enough, it takes the largest height that *is* fast
+    enough and says so, rather than silently dropping either requirement.
+
+    Returns a dict with `height`, `offset_y`, `covers` and `resulting_hz`.
+    """
+    target_hz = FRAME_RATE_HZ if target_hz is None else target_hz
+    max_width, max_height = cam.max_frame_size
+    margin = max(found['height'], ROI_MIN_MARGIN_ROWS)
+    needed = found['height'] + 2 * margin
+
+    def place(height):
+        height = min(height, max_height)
+        offset = int(np.clip(found['centre_row'] - height // 2,
+                             0, max_height - height))
+        return height, offset
+
+    def rate_for(height, offset):
+        cam.set_roi(ROI_WIDTH, height, ROI_OFFSET_X, offset)
+        cam.exposure_us = EXPOSURE_US
+        cam.frame_rate_hz = target_hz
+        return cam.resulting_frame_rate
+
+    usable = [h for h in sorted(candidates) if h <= max_height]
+    fast_enough, covering = [], []
+    for candidate in usable:
+        height, offset = place(candidate)
+        rate = rate_for(height, offset)
+        covers = (offset <= found['row_min']
+                  and offset + height >= found['row_max'] + 1)
+        if rate >= target_hz * 0.98:
+            fast_enough.append((height, offset, rate, covers))
+        if covers and height >= needed:
+            covering.append((height, offset, rate, covers))
+
+    both = [c for c in fast_enough if c[0] >= needed and c[3]]
+    if both:
+        height, offset, rate, covers = min(both, key=lambda c: c[0])
+        note = None
+    elif fast_enough:
+        height, offset, rate, covers = max(fast_enough, key=lambda c: c[0])
+        note = (f'no height that both covers the mode with its margin '
+                f'({needed} binned rows) and sustains {target_hz:g} Hz; took '
+                f'the tallest that keeps the rate. '
+                + ('The mode still fits, with less margin than wanted.'
+                   if covers else
+                   'THE MODE DOES NOT FIT - it will be clipped. Move the '
+                   'camera so the mode sits nearer the sensor centre, or '
+                   'accept a lower frame rate.'))
+    else:
+        raise RuntimeError(
+            f'no ROI height sustains {target_hz:g} Hz at '
+            f'{cam.pixel_format}. Lower FRAME_RATE_HZ, or use Mono8, whose '
+            f'readout is about 2.4x faster per row.')
+
+    cam.set_roi(ROI_WIDTH, height, ROI_OFFSET_X, offset)
+    cam.exposure_us = EXPOSURE_US
+    cam.frame_rate_hz = target_hz
+    result = {'height': height, 'offset_y': offset, 'covers': covers,
+              'resulting_hz': cam.resulting_frame_rate, 'needed_rows': needed,
+              'margin_rows': min(found['row_min'] - offset,
+                                 offset + height - found['row_max'] - 1),
+              'note': note}
+    print(f'  -> ROI {ROI_WIDTH}x{height} at offset_y {offset} '
+          f'(binned rows {offset}-{offset + height}), '
+          f'{result["resulting_hz"]:.1f} Hz')
+    print(f'     mode occupies {found["row_min"]}-{found["row_max"]}, '
+          f'{result["margin_rows"]} rows of margin')
+    if note:
+        print(f'     ! {note}')
+    return result
 
 
 def report_mode_location(found, roi_height=ROI_HEIGHT):
@@ -273,12 +368,13 @@ def check_light_level(cam, n_frames=60, adjust_gain=True):
 
 
 # %% [Step 2] Configuring the camera ----------------------------------------
-def configure(cam, offset_y):
+def configure(cam, offset_y, roi_height=None):
     """Apply the capture settings and print every check worth failing on."""
+    roi_height = ROI_HEIGHT if roi_height is None else roi_height
     cam.set_pixel_format(PIXEL_FORMAT)
     cam.set_throughput_limit(THROUGHPUT_BPS)
     binning_info = cam.set_binning(BINNING)
-    roi = cam.set_roi(ROI_WIDTH, ROI_HEIGHT, ROI_OFFSET_X, offset_y)
+    roi = cam.set_roi(ROI_WIDTH, roi_height, ROI_OFFSET_X, offset_y)
     cam.exposure_us = EXPOSURE_US
     cam.gain_db = GAIN_DB
     cam.frame_rate_hz = FRAME_RATE_HZ
@@ -382,12 +478,12 @@ def capture(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
             report_mode_location(mode_location)
-            offset_y = int(np.clip(
-                mode_location['centre_row'] - ROI_HEIGHT // 2,
-                0, cam.max_frame_size[1] - ROI_HEIGHT))
-            print(f'  -> ROI offset_y {offset_y} (binned)')
+            cam.set_pixel_format(PIXEL_FORMAT)
+            cam.set_binning(BINNING)
+            roi_choice = choose_roi(cam, mode_location)
+            offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
 
-        checks = configure(cam, offset_y)
+        checks = configure(cam, offset_y, roi_height)
 
         if prompt:
             print(f'\nStart the PicoScope recording now - it must run for '
@@ -463,11 +559,12 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
             report_mode_location(mode_location)
-            offset_y = int(np.clip(
-                mode_location['centre_row'] - ROI_HEIGHT // 2,
-                0, cam.max_frame_size[1] - ROI_HEIGHT))
-            print(f'  -> ROI offset_y {offset_y} (binned)')
-        checks = configure(cam, offset_y)
+            cam.set_pixel_format(PIXEL_FORMAT)
+            cam.set_binning(BINNING)
+            roi_choice = choose_roi(cam, mode_location)
+            offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
+        checks = configure(cam, offset_y, roi_height)
+        checks['roi_choice'] = roi_choice
         burst_s = n_frames / FRAME_RATE_HZ
 
         print('\n--- light level ---')
@@ -616,6 +713,59 @@ def _self_test():
           f'{TIGHTEST_PEAK_SPACING_S / period:.1f} frames between the closest '
           f'orders, exposure {EXPOSURE_US / 1e3:.1f} ms < period '
           f'{period * 1e3:.1f} ms')
+    # --- the ROI chooser, against a stand-in camera ------------------------
+    # Rows are what frame rate costs, so a fake camera whose rate is inversely
+    # proportional to ROI height exercises the real trade-off without hardware.
+    class _FakeCam:
+        max_frame_size = (1024, 1024)
+        pixel_format = 'Mono12'
+        exposure_us = EXPOSURE_US
+
+        def __init__(self, seconds_per_row=1.29e-5):
+            self.seconds_per_row = seconds_per_row
+            self.height = None
+            self.offset_y = None
+
+        def set_roi(self, width, height, offset_x, offset_y):
+            self.height, self.offset_y = height, offset_y
+            return {'width': width, 'height': height, 'offset_y': offset_y}
+
+        frame_rate_hz = property(lambda self: 0.0, lambda self, value: None)
+
+        @property
+        def resulting_frame_rate(self):
+            return 1.0 / (self.height * self.seconds_per_row)
+
+    def _found(row_min, row_max):
+        return {'row_min': row_min, 'row_max': row_max,
+                'centre_row': (row_min + row_max) // 2,
+                'height': row_max - row_min + 1}
+
+    # a small central mode: the smallest height that still covers it wins
+    small_mode = _found(480, 560)
+    choice = choose_roi(_FakeCam(), small_mode, target_hz=100.0)
+    assert choice['covers'], choice
+    assert choice['resulting_hz'] >= 98.0, choice
+    assert choice['margin_rows'] >= small_mode['height'], choice
+    assert choice['note'] is None, choice
+
+    # a larger mode has to be given a taller ROI
+    bigger = choose_roi(_FakeCam(), _found(400, 640), target_hz=100.0)
+    assert bigger['height'] > choice['height'], (choice, bigger)
+
+    # a mode near the top edge is followed rather than centred, and still fits
+    edge = choose_roi(_FakeCam(), _found(20, 100), target_hz=100.0)
+    assert edge['offset_y'] == 0, edge
+    assert edge['covers'], edge
+
+    # when margin and frame rate cannot both be had, the rate is kept and the
+    # compromise is reported rather than made silently
+    tight = choose_roi(_FakeCam(), _found(300, 740), target_hz=100.0)
+    assert tight['note'] is not None, tight
+    assert tight['resulting_hz'] >= 98.0, 'the frame rate is the hard constraint'
+    print('  choose_roi: covers the mode, follows it to the sensor edge, and '
+          'reports the compromise when the rate and the margin conflict')
+
     print('self-test passed')
 
 
@@ -667,12 +817,15 @@ def main():
         cam = BaslerCamera(args.serial)
         cam.open()
         try:
-            offset_y = ROI_OFFSET_Y
+            offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
             if not args.no_locate:
-                offset_y = int(np.clip(
-                    locate_mode(cam)['centre_row'] - ROI_HEIGHT // 2,
-                    0, cam.max_frame_size[1] - ROI_HEIGHT))
-            configure(cam, offset_y)
+                found = locate_mode(cam)
+                report_mode_location(found)
+                cam.set_pixel_format(PIXEL_FORMAT)
+                cam.set_binning(BINNING)
+                choice = choose_roi(cam, found)
+                offset_y, roi_height = choice['offset_y'], choice['height']
+            configure(cam, offset_y, roi_height)
             print('\n--- light level ---')
             level = check_light_level(cam)
             print(f"  {'OK' if level['ok'] else 'TOO BRIGHT'}: "
