@@ -1047,11 +1047,8 @@ changes.
 ## Still open
 
 - The light level drifts up over minutes and the capture is refused when it
-  clips. Peak brightness also varies ~2.3x between bursts at a *fixed* level,
-  because it depends on which resonance each burst happens to catch - so the
-  pre-flight check, which judges from one short burst, can pass and let the real
-  capture clip. It should average several bursts or carry a safety factor.
-- Phase 1d, the viewer.
+  clips. (The pre-flight check that catches this was strengthened - see
+  *The pre-flight, from several bursts* below.)
 
 ---
 
@@ -1126,3 +1123,42 @@ a compact multi-lobe at the strongest peak, and two higher-order patterns at
 That is the discrimination the spectrum alone cannot give, and the reason this
 was built. From a trace of five peaks there is no way to say which is the 0th
 order and which the 1st; from the frames there is.
+
+---
+
+# The pre-flight, from several bursts (2026-08-26)
+
+The light check judged from one burst, and that is not enough. At a *fixed*
+light level the peak varies about 2.3x from burst to burst, because it depends
+on which resonance that burst happened to catch - measured over 12 bursts, peak
+1778 to 4095 while the mean stayed within 27-32. A single-burst check therefore
+passes on a lucky draw and lets the real capture clip, which happened twice.
+
+`check_light_level` now takes **4 bursts** and forms its verdict from the
+**worst** of them, allowing a further **1.3x** for a capture brighter than
+anything measured - the capture is one more draw from the same spread. It
+reports the spread as well as the worst case, so a wandering level is visible.
+
+Two details that mattered:
+
+- **When the peak is pinned at full scale the measurement is censored.** How far
+  over the level is cannot be known, so the computed gain step understates it
+  and the trim loop stalls. It now backs off by a fixed 6 dB stride while the
+  peak is pinned, and only computes a step once it can see the peak.
+- **A dim level is reported too**, rather than only a bright one: below 10% of
+  full scale the capture works but wastes most of the range.
+
+Caught immediately on the real setup: peaks `[2094, 2542, 4095, 4007]` - two of
+four bursts at full scale where a single-burst check could easily have sampled
+2094 and passed.
+
+## A session file lost to a numpy scalar
+
+The same run exposed a worse bug. `save_session` writes the frame stack, then
+the mask, then the JSON - and `json.dumps` raises on a numpy integer, which the
+measurements produce freely. One capture therefore left 94 MB of frames and a
+mask with **nothing describing them**, which cannot be reconstructed: the
+per-frame timestamps and the offset live only in that file.
+
+Both writers now pass a `default=` converter for numpy scalars and arrays.
+Losing a session to a type is not a trade worth making.

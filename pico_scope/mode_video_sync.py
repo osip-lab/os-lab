@@ -772,7 +772,12 @@ def refine_session(session_path, window_s=0.25, verbose=True):
     })
     json_path = (session_path if session_path.suffix == '.json'
                  else sorted(session_path.glob('*_session.json'))[0])
-    json_path.write_text(json.dumps(session, indent=1), encoding='utf-8')
+    # numpy scalars reach here through the fit results; a default converter
+    # keeps one of them from costing the whole session file
+    json_path.write_text(
+        json.dumps(session, indent=1,
+                   default=lambda v: v.item() if hasattr(v, 'item') else str(v)),
+        encoding='utf-8')
     if verbose:
         print(f'  wrote t0_fitted_s to {json_path.name}')
     return {'session': session, 'frames': frames, 'trace': trace,

@@ -317,10 +317,51 @@ def report_mode_location(found, roi_height=ROI_HEIGHT):
 # is not, so the gate is set well below that.
 MAX_SATURATED_FRACTION = 0.001   # 0.1% of pixel samples
 TARGET_PEAK_FRACTION = 0.7       # aim the brightest pixel here, of full scale
+# One burst is not enough to judge the level. At a fixed light level the peak
+# varies about 2.3x from burst to burst, because it depends on which resonance
+# that burst happened to catch - measured over 12 bursts on 2026-08-26, peak
+# 1778 to 4095 while the mean stayed within 27-32. A check made from a single
+# burst therefore passes and then lets the real capture clip, which is exactly
+# what happened twice. So several bursts are taken and the verdict is formed
+# from the worst of them, with headroom for a future burst brighter still.
+LEVEL_BURSTS = 4
+LEVEL_BURST_FRAMES = 40
+LEVEL_SAFETY = 1.3               # margin above the brightest burst yet seen
+LEVEL_TOO_DIM_FRACTION = 0.10    # below this the capture works but wastes range
+LEVEL_CLIPPED_STEP_DB = 6.0      # blind back-off while the peak is censored
 
 
-def check_light_level(cam, n_frames=60, adjust_gain=True):
-    """Measure the peak level and trim the gain until it is safe, or explain.
+def measure_light_level(cam, n_bursts=LEVEL_BURSTS,
+                       n_frames=LEVEL_BURST_FRAMES):
+    """Peak and saturation statistics over several independent bursts.
+
+    Returns the per-burst peaks along with the summary the verdict uses. The
+    figure that matters is the *worst* burst, not the average one: the capture
+    only has to clip once to be spoiled.
+    """
+    saturation = cam.saturation_level
+    peaks, fractions = [], []
+    for _ in range(n_bursts):
+        frames, _ = cam.record_burst(n_frames)
+        peaks.append(int(frames.max()))
+        fractions.append(float((frames >= saturation).mean()))
+    peaks = np.array(peaks)
+    return {
+        'gain_db': cam.gain_db,
+        'saturation_level': saturation,
+        'peaks': peaks.tolist(),
+        'peak_max': int(peaks.max()),
+        'peak_median': float(np.median(peaks)),
+        'peak_fraction': float(peaks.max() / saturation),
+        'peak_spread': float(peaks.max() / max(peaks.min(), 1)),
+        'saturated_fraction': float(max(fractions)),
+        'n_bursts': n_bursts,
+    }
+
+
+def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
+                      n_frames=LEVEL_BURST_FRAMES):
+    """Measure the light level over several bursts and trim gain, or explain.
 
     Runs before the real capture, because a saturated burst cannot be rescued
     afterwards. Gain is the only knob this may touch: the exposure is pinned to
@@ -328,52 +369,71 @@ def check_light_level(cam, n_frames=60, adjust_gain=True):
     1.5 ms resonance disappears entirely), and the pixel format is chosen for
     headroom already.
 
+    The verdict allows LEVEL_SAFETY of headroom above the brightest burst seen,
+    since the capture itself is one more draw from the same spread and may land
+    higher than anything measured here.
+
     Returns a dict describing the level. When the light is too bright even at
-    minimum gain, `ok` is False and `advice` says what has to change in the
-    optics - there is no software fix at that point.
+    minimum gain, `ok` is False and `advice` says by what factor the optics
+    have to be attenuated - there is no software fix at that point.
     """
-    low, high = cam.gain_limits_db
-    saturation = cam.saturation_level
+    low, _high = cam.gain_limits_db
     history = []
-    for _ in range(4):
-        frames, _ = cam.record_burst(n_frames)
-        peak = int(frames.max())
-        fraction = float((frames >= saturation).mean())
-        history.append({'gain_db': cam.gain_db, 'peak': peak,
-                        'peak_fraction': peak / saturation,
-                        'saturated_fraction': fraction})
-        print(f'  gain {cam.gain_db:5.1f} dB -> peak {peak:5d}/{saturation} '
-              f'({peak / saturation:5.1%}), saturated {fraction:.4%}')
-        if fraction <= MAX_SATURATED_FRACTION:
+    for _ in range(5):
+        level = measure_light_level(cam, n_bursts, n_frames)
+        history.append(level)
+        print(f'  gain {level["gain_db"]:5.1f} dB -> peaks '
+              f'{level["peaks"]} of {level["saturation_level"]} '
+              f'({level["peak_fraction"]:.1%} worst, '
+              f'{level["peak_spread"]:.1f}x spread), saturated '
+              f'{level["saturated_fraction"]:.4%}')
+        expected_worst = level['peak_max'] * LEVEL_SAFETY
+        if (expected_worst < level['saturation_level']
+                and level['saturated_fraction'] <= MAX_SATURATED_FRACTION):
             break
         if not adjust_gain or cam.gain_db <= low + 1e-6:
             break
-        # drop the gain by the ratio needed to bring the peak to target
-        overshoot = max(peak / (TARGET_PEAK_FRACTION * saturation), 1.01)
-        cam.gain_db = max(low, cam.gain_db - 20 * np.log10(overshoot))
+        if level['peak_max'] >= level['saturation_level']:
+            # Pinned at full scale: the measurement is censored, so how far
+            # over we are is unknown and the computed step would understate it.
+            # Back off by a fixed stride instead and measure again.
+            cam.gain_db = max(low, cam.gain_db - LEVEL_CLIPPED_STEP_DB)
+        else:
+            overshoot = expected_worst / (TARGET_PEAK_FRACTION
+                                          * level['saturation_level'])
+            cam.gain_db = max(low,
+                              cam.gain_db - 20 * np.log10(max(overshoot, 1.01)))
 
-    last = history[-1]
-    # Both tests matter, and the fraction alone is not enough: a peak pinned at
-    # full scale means the brightest resonances are clipped through their cores,
-    # flattening exactly the features the alignment fit reads, even when only a
-    # handful of pixels are involved.
-    ok = (last['saturated_fraction'] <= MAX_SATURATED_FRACTION
-          and last['peak_fraction'] < 0.99)
+    level = history[-1]
+    saturation = level['saturation_level']
+    expected_worst = level['peak_max'] * LEVEL_SAFETY
+    ok = (expected_worst < saturation
+          and level['saturated_fraction'] <= MAX_SATURATED_FRACTION)
     advice = None
     if not ok:
         at_min = cam.gain_db <= low + 1e-6
+        reduce_by = expected_worst / (TARGET_PEAK_FRACTION * saturation)
         advice = (
-            f'the peak sits at {last["peak_fraction"]:.1%} of full scale with '
-            f'{last["saturated_fraction"]:.3%} of pixels saturated'
-            + (f' at the minimum gain of {low:.1f} dB' if at_min else '')
-            + '. Nothing in software can fix this: the exposure is pinned to '
-              f'{cam.exposure_us / 1000:.1f} ms by the {1e6 / cam.exposure_us:.0f} Hz '
-              'frame rate, and shortening it would open dead time in which a '
-              'resonance can hide. Attenuate the light reaching the camera - an '
-              'ND filter, or a weaker split off the transmission.')
-    return {'ok': ok, 'history': history, 'advice': advice,
-            'gain_db': cam.gain_db, 'saturation_level': saturation,
-            **last}
+            f'the worst of {level["n_bursts"]} bursts peaked at '
+            f'{level["peak_max"]} of {saturation} '
+            f'({level["peak_fraction"]:.1%} of full scale) with '
+            f'{level["saturated_fraction"]:.3%} of pixels saturated'
+            + (f', at the minimum gain of {low:.1f} dB' if at_min else '')
+            + f'. Allowing {LEVEL_SAFETY:.1f}x for a brighter burst than any '
+              f'seen, that clips. Attenuate the light by about '
+              f'{reduce_by:.1f}x - the exposure is pinned to '
+              f'{cam.exposure_us / 1000:.1f} ms by the frame rate, and '
+              f'shortening it would open dead time in which a resonance can '
+              f'hide.')
+    elif level['peak_fraction'] < LEVEL_TOO_DIM_FRACTION:
+        advice = (f'usable, but dim: the brightest burst reached only '
+                  f'{level["peak_fraction"]:.1%} of full scale, so most of the '
+                  f'range is unused. About '
+                  f'{TARGET_PEAK_FRACTION / level["peak_fraction"]:.1f}x more '
+                  f'light would improve the brightness SNR.')
+    level.update({'ok': ok, 'advice': advice, 'history': history,
+                  'expected_worst': expected_worst})
+    return level
 
 
 # %% [Step 2] Configuring the camera ----------------------------------------
@@ -431,6 +491,27 @@ def configure(cam, offset_y, roi_height=None):
 
 
 # %% [Step 3] Recording and saving -------------------------------------------
+def _json_default(value):
+    """Make numpy scalars and arrays serialisable.
+
+    Without this a single numpy integer anywhere in the metadata - and they
+    arrive from every measurement - raises part-way through writing the session
+    file, after the frame stack has already been saved. The capture then leaves
+    a folder of arrays with nothing describing them, which is unrecoverable.
+    Losing a session to a type is not a trade worth making.
+    """
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f'{type(value).__name__} is not JSON serialisable')
+
+
+
 def save_session(folder, stem, frames, meta, timing, checks, camera_info,
                  mode_location):
     """Write the frame stack, the mask and the session record."""
@@ -471,7 +552,8 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
         'brightness_masked': frame_brightness(frames, mask).tolist(),
     }
     session_path = folder / f'{stem}_session.json'
-    session_path.write_text(json.dumps(session, indent=1), encoding='utf-8')
+    session_path.write_text(json.dumps(session, indent=1, default=_json_default),
+                            encoding='utf-8')
     return session_path, mask
 
 
@@ -672,7 +754,8 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
                        'frame on its own; mode_video_sync.py --refine takes it '
                        'to a hundredth of one.',
     })
-    session_path.write_text(json.dumps(session, indent=1), encoding='utf-8')
+    session_path.write_text(json.dumps(session, indent=1, default=_json_default),
+                            encoding='utf-8')
     print(f'  mask covers {int(mask.sum())} of {mask.size} pixels '
           f'({mask.mean():.2%})')
     print(f'  saved {session_path}')
@@ -784,6 +867,68 @@ def _self_test():
     assert tight['resulting_hz'] >= 98.0, 'the frame rate is the hard constraint'
     print('  choose_roi: covers the mode, follows it to the sensor edge, and '
           'reports the compromise when the rate and the margin conflict')
+
+    # --- the light-level pre-flight, against a stand-in camera -------------
+    # The camera this mimics is the real failure: burst peaks that vary about
+    # 2.3x at a fixed light level, so no single burst clips while the next one
+    # well might. A one-burst check passes here; the multi-burst one must not.
+    class _LevelCam:
+        exposure_us = EXPOSURE_US
+
+        def __init__(self, base_peaks, saturation=4095, gain_db=0.0):
+            self.base_peaks = list(base_peaks)
+            self._saturation = saturation
+            self.gain_db = gain_db
+            self._next = 0
+
+        gain_limits_db = property(lambda self: (0.0, 23.1))
+        saturation_level = property(lambda self: self._saturation)
+
+        def record_burst(self, n_frames):
+            base = self.base_peaks[self._next % len(self.base_peaks)]
+            self._next += 1
+            value = min(base * 10 ** (self.gain_db / 20.0), self._saturation)
+            frame = np.zeros((n_frames, 10, 10), dtype=np.uint16)
+            frame[:, 5, 5] = int(round(value))
+            return frame, None
+
+    # peaks that never clip on their own, but leave no headroom for the next
+    marginal = _LevelCam([1800, 3300, 2600, 4000])
+    verdict = check_light_level(marginal, adjust_gain=False, n_bursts=4,
+                                n_frames=4)
+    assert max(verdict['peaks']) < verdict['saturation_level'], \
+        'the premise: no single burst actually clips'
+    assert verdict['saturated_fraction'] == 0.0
+    assert not verdict['ok'], 'no headroom for a brighter burst - must refuse'
+    assert 'Attenuate' in verdict['advice']
+    assert verdict['peak_spread'] > 2.0, verdict['peak_spread']
+
+    # comfortable level: passes
+    comfortable = _LevelCam([1500, 1800, 1650, 2000])
+    good = check_light_level(comfortable, adjust_gain=False, n_bursts=4,
+                             n_frames=4)
+    assert good['ok'] and good['advice'] is None, good
+
+    # far too dim: usable, but said so
+    faint = _LevelCam([180, 260, 210, 300])
+    dim = check_light_level(faint, adjust_gain=False, n_bursts=4, n_frames=4)
+    assert dim['ok'] and dim['advice'] and 'dim' in dim['advice'], dim
+
+    # gain is trimmed when it can help, and the verdict then passes
+    # safe at 0 dB, clipping at 12 dB: exactly the case gain can rescue
+    hot = _LevelCam([700, 1200, 1000, 1500], gain_db=12.0)
+    trimmed = check_light_level(hot, adjust_gain=True, n_bursts=4, n_frames=4)
+    assert hot.gain_db < 12.0, 'gain should have been reduced'
+    assert trimmed['ok'], trimmed['advice']
+
+    # at minimum gain there is nothing left to try, and it says so
+    pinned = _LevelCam([4095, 4095, 4095, 4095], gain_db=0.0)
+    stuck = check_light_level(pinned, adjust_gain=True, n_bursts=2, n_frames=4)
+    assert not stuck['ok']
+    assert 'minimum gain' in stuck['advice'], stuck['advice']
+    print('  the pre-flight judges from the worst of several bursts, so a level '
+          'that no single burst clips at is still refused when it has no '
+          'headroom')
 
     print('self-test passed')
 
