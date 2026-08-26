@@ -1052,3 +1052,46 @@ changes.
   pre-flight check, which judges from one short burst, can pass and let the real
   capture clip. It should average several bursts or carry a safety factor.
 - Phase 1d, the viewer.
+
+---
+
+# Phase 1d — the viewer (2026-08-26)
+
+`pico_scope/mode_video_sync_show.py`. Spectrum on top, per-frame brightness
+under it, mode image below.
+
+    python pico_scope/mode_video_sync_show.py --session <capture folder>
+    python pico_scope/mode_video_sync_show.py --session <folder> --scope <file>.psdata
+
+Moving the cursor over the spectrum shows the frame whose exposure covers that
+instant; clicking pins it; arrow keys step (shift steps ten). The frame's own
+10 ms window is highlighted on the trace, which is what makes the granularity
+concrete - a peak narrower than the red band went into that one image whole.
+Frame boundaries are shaded faintly throughout, legible once zoomed.
+
+A Phase 2 capture needs nothing else: it carries its own scope trace and offset,
+preferring `t0_fitted_s` when `--refine` has been run and falling back to the
+calibrated host clock otherwise. A Phase 1 capture takes `--scope` and is
+aligned by fitting.
+
+## Snap to brightest
+
+On by default, toggled with **b**. The calibrated host clock is good to about a
+frame, which is enough to show the dark neighbour of a resonance instead of the
+resonance, so the viewer takes the brightest frame within +-1 of the one the
+offset names. It invents nothing - a resonance genuinely brighter than both its
+neighbours is the frame that was meant - and it makes the un-refined offset
+usable, which is what "fine alignment is optional" needs in practice.
+
+## Verified
+
+`--self-test` runs under Agg and drives the handlers with synthetic events:
+frame lookup exact inside windows and clamping outside, snapping bounded to one
+frame and never moving to a dimmer one, motion over the spectrum moving the
+image while motion elsewhere does not, click pinning and releasing, arrow keys
+stepping and clamping at both ends, and the highlighted band tracking the frame
+at exactly one exposure wide.
+
+Against the real capture of 2026-08-26 20:08:53: hovering the strongest
+resonance selects frame 76, whose window 973.19-983.09 ms contains that peak,
+and whose brightness is the largest in the burst.
