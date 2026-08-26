@@ -80,27 +80,57 @@ class OffsetFit:
     """Result of fit_time_offset.
 
     `t0` is when frame 0's exposure began, in the scope's time coordinate.
-    `margin` is how much worse the best rival minimum far from `t0` is; it is
-    the fit's own quality flag, and a value near 1 means the answer is not
-    distinguishable from an alias and should not be trusted.
+
+    Two separate questions have to be asked about it, and conflating them is
+    misleading - which the first real capture demonstrated:
+
+    `depth` = median residual / best residual. **Did the fit find the sweep at
+    all?** A featureless burst - beam blocked, or the burst missing the sweep -
+    gives a depth near 1. Anything above a few means the frame grid really did
+    lock onto the cavity's structure.
+
+    `margin` = best rival residual / best residual, where the rival must lie
+    more than a few frame periods away. **Is that offset unique?** A cavity
+    sweep repeats every free spectral range, so a long scope record contains
+    many positions that fit almost as well and the margin collapses towards 1 -
+    even when the alignment is perfectly correct. A short record has few such
+    aliases and a high margin.
+
+    So `locked and not unique` is the normal outcome for a long record: the
+    alignment within the sweep is right, but which repetition it was is
+    undetermined. For identifying a transverse mode that is usually harmless,
+    since equivalent positions in the sweep carry equivalent mode content.
     """
 
-    def __init__(self, t0, residual, margin, gain, offset, grid, residuals):
+    def __init__(self, t0, residual, margin, gain, offset, grid, residuals,
+                 depth=None):
         self.t0 = t0
         self.residual = residual
         self.margin = margin
+        self.depth = depth
         self.gain = gain
         self.offset = offset
         self.grid = grid
         self.residuals = residuals
 
     @property
-    def trustworthy(self):
+    def locked(self):
+        """The frame grid found the sweep's structure."""
+        return self.depth is not None and self.depth > 3.0
+
+    @property
+    def unique(self):
+        """No rival offset a free spectral range away fits nearly as well."""
         return self.margin > 1.5
 
+    @property
+    def trustworthy(self):
+        """Locked onto the sweep and unambiguous about where."""
+        return self.locked and self.unique
+
     def __repr__(self):
-        return (f'OffsetFit(t0={self.t0:.6f} s, margin={self.margin:.1f}x, '
-                f'gain={self.gain:.4g})')
+        return (f'OffsetFit(t0={self.t0:.6f} s, depth={self.depth:.1f}x, '
+                f'margin={self.margin:.1f}x, gain={self.gain:.4g})')
 
 
 # ------------------------------------------------------------------ loading
@@ -337,9 +367,18 @@ def fit_time_offset(frame_starts, exposure_s, brightness, trace,
     if alias_guard is None:
         alias_guard = 3 * period
 
+    # A long scope record makes this grid large - 20 s at 0.2 ms is 10^5
+    # candidates - and the model matrix is (candidates x frames), so it is
+    # evaluated in chunks rather than all at once.
     grid = np.arange(low, high, coarse_step)
-    model = predicted_brightness(grid, frame_starts, exposure_s, t, cumulative)
-    residuals, gains = _residuals_after_linear_fit(model, brightness)
+    residuals = np.empty(grid.size)
+    chunk = max(1, int(4e6 // max(frame_starts.size, 1)))
+    for start in range(0, grid.size, chunk):
+        piece = grid[start:start + chunk]
+        model = predicted_brightness(piece, frame_starts, exposure_s, t,
+                                     cumulative)
+        residuals[start:start + chunk] = _residuals_after_linear_fit(
+            model, brightness)[0]
     best = int(np.argmin(residuals))
 
     fine = np.linspace(max(low, grid[best] - coarse_step),
@@ -356,11 +395,14 @@ def fit_time_offset(frame_starts, exposure_s, brightness, trace,
     margin = float(residuals[far].min() / residual) if far.any() and residual > 0 \
         else float('inf')
 
+    depth = float(np.median(residuals) / residual) if residual > 0 \
+        else float('inf')
     gain = float(fine_gains[fine_best])
     model_best = predicted_brightness(np.array([t0]), frame_starts, exposure_s,
                                       t, cumulative)[0]
     offset = float(brightness.mean() - gain * model_best.mean())
-    return OffsetFit(t0, residual, margin, gain, offset, grid, residuals)
+    return OffsetFit(t0, residual, margin, gain, offset, grid, residuals,
+                     depth=depth)
 
 
 # ------------------------------------------------- the sync-cable path
@@ -468,7 +510,9 @@ def _self_test():
         fit = fit_time_offset(starts, exposure, observed, trace)
         error = abs(fit.t0 - true_t0)
         print(f'  noise {noise_frac:>5.0%}: t0 error {error * 1e3:7.4f} ms, '
-              f'margin {fit.margin:6.1f}x, gain {fit.gain:.3f}')
+              f'depth {fit.depth:7.1f}x, margin {fit.margin:6.1f}x, '
+              f'gain {fit.gain:.3f}')
+        assert fit.locked, f'should have locked on at {noise_frac:.0%}'
         assert error < tolerance, f'{noise_frac:.0%}: {error * 1e3:.4f} ms'
         assert fit.trustworthy, f'margin {fit.margin} at {noise_frac:.0%}'
         assert fit.gain > 0, 'gain should recover positive'
@@ -506,10 +550,30 @@ def _self_test():
     #    better than any other.
     flat = np.full(starts.size, 40.0) + rng.normal(0, 0.05, starts.size)
     flat_fit = fit_time_offset(starts, exposure, flat, trace)
-    print(f'  featureless burst: margin {flat_fit.margin:.2f}x, '
-          f'trustworthy={flat_fit.trustworthy}')
-    assert not flat_fit.trustworthy, \
-        f'a featureless burst must not be trusted (margin {flat_fit.margin})'
+    print(f'  featureless burst: depth {flat_fit.depth:.2f}x, margin '
+          f'{flat_fit.margin:.2f}x, locked={flat_fit.locked}, '
+          f'unique={flat_fit.unique}')
+    assert not flat_fit.locked, \
+        f'a featureless burst must not read as locked (depth {flat_fit.depth})'
+    assert not flat_fit.trustworthy
+
+    # 3. A long record of a repeating sweep: locked on, but not unique. This is
+    #    the situation the first real capture landed in, and the two flags have
+    #    to separate it from the featureless case above rather than lumping
+    #    both under "not trusted" - here the alignment is right and only the
+    #    choice of repetition is open.
+    long_trace = _synthetic_trace(duration=12.0, regular=True)
+    long_clean = predicted_brightness(
+        np.array([4.0]), starts, exposure, long_trace.t,
+        _cumulative(long_trace.t, long_trace.signal))[0]
+    long_observed = long_clean + rng.normal(
+        0, 0.02 * (long_clean.max() - long_clean.min()), long_clean.size)
+    long_fit = fit_time_offset(starts, exposure, long_observed, long_trace)
+    print(f'  long regular record: depth {long_fit.depth:.1f}x, margin '
+          f'{long_fit.margin:.2f}x, locked={long_fit.locked}, '
+          f'unique={long_fit.unique}')
+    assert long_fit.locked, 'it did find the sweep'
+    assert not long_fit.unique, 'but a repeating sweep leaves it aliased'
 
     # a burst longer than the record cannot be placed
     try:
@@ -601,7 +665,7 @@ def _self_test():
 
 
 def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
-                verbose=True):
+                verbose=True, buffer=None):
     """Align a capture folder with a scope recording; return everything found.
 
     `scope_path` may be a `.psdata` - it is converted through the same helper
@@ -613,19 +677,22 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
     margin is the one to believe, and a disagreement between them is worth
     looking at rather than averaging away.
     """
-    from utilities.utils import psdata_to_csv
+    from utilities.utils import psdata_buffer_csvs
 
     scope_path = Path(scope_path)
-    csv = (psdata_to_csv(scope_path) if scope_path.suffix.lower() == '.psdata'
-           else scope_path)
-    trace = load_scope_csv(csv, signal_column=signal_column)
+    if scope_path.suffix.lower() == '.psdata':
+        csvs = [Path(c) for c in psdata_buffer_csvs(scope_path)]
+    else:
+        csvs = [scope_path]
+    if buffer is not None:
+        csvs = [csvs[buffer - 1]]
+
     session, frames = load_session(session_path)
 
     starts = frame_start_times(session['meta'])
     exposure = float(session['exposure_s'])
     drops = dropped_frames(session['meta'])
     if verbose:
-        print(f'{trace}')
         print(f'session {session["frames_shape"]} {session["frames_dtype"]}, '
               f'exposure {exposure * 1e3:.2f} ms, '
               f'burst {starts[-1] + exposure:.3f} s')
@@ -633,14 +700,50 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
             print(f'  dropped frames: {drops} - the fit uses the camera '
                   f'timestamps, so this shifts nothing')
 
-    results = {}
-    for name in ('masked', 'full'):
-        brightness = np.array(session[f'brightness_{name}'], dtype=float)
-        fit = fit_time_offset(starts, exposure, brightness, trace)
-        results[name] = fit
+    # A .psdata can hold several waveform buffers and only one of them was
+    # rolling when the burst happened. Rather than ask, fit them all: a buffer
+    # that does not contain the burst has nothing to lock onto and reports a
+    # margin near 1, so the margin identifies the right one by itself.
+    per_buffer = {}
+    burst = float(starts[-1] + exposure)
+    for csv in csvs:
+        trace = load_scope_csv(csv, signal_column=signal_column)
+        if trace.duration < burst:
+            # A .psdata usually ends with a partial buffer, cut short when the
+            # recording was stopped. It cannot contain the burst; skip it
+            # rather than failing the whole fit.
+            if verbose:
+                print(f'  {csv.name}: {trace.duration:.3f} s - shorter than the '
+                      f'{burst:.3f} s burst, skipped')
+            continue
+        fits = {}
+        for name in ('masked', 'full'):
+            brightness = np.array(session[f'brightness_{name}'], dtype=float)
+            fits[name] = fit_time_offset(starts, exposure, brightness, trace)
+        per_buffer[csv.name] = {'trace': trace, 'fits': fits}
         if verbose:
-            print(f'  {name:>6}: t0 = {fit.t0:.6f} s, margin {fit.margin:8.1f}x, '
-                  f'{"trustworthy" if fit.trustworthy else "NOT TRUSTWORTHY"}')
+            print(f'  {csv.name}: {trace.t.size} samples, '
+                  f'{trace.duration:.2f} s')
+            for name, fit in fits.items():
+                flags = ('locked' if fit.locked else 'NOT LOCKED')
+                flags += ', unique' if fit.unique else ', aliased'
+                print(f'      {name:>6}: t0 = {fit.t0:10.6f} s, depth '
+                      f'{fit.depth:7.1f}x, margin {fit.margin:5.2f}x  [{flags}]')
+
+    # Rank buffers by depth, not margin: depth says how well the burst matches
+    # this record, while margin only says whether a rival offset within the same
+    # record fits too - which is a property of the sweep's periodicity, not of
+    # whether this is the right buffer.
+    if not per_buffer:
+        raise ValueError(
+            f'no waveform buffer is as long as the {burst:.3f} s burst. Record '
+            f'a longer scope trace, or fewer frames (--frames).')
+    winner = max(per_buffer,
+                 key=lambda k: max(f.depth for f in per_buffer[k]['fits'].values()))
+    trace = per_buffer[winner]['trace']
+    results = per_buffer[winner]['fits']
+    if verbose and len(per_buffer) > 1:
+        print(f'  -> buffer {winner} contains the burst')
 
     best_name = max(results, key=lambda k: results[k].margin)
     best = results[best_name]
@@ -652,15 +755,23 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
         if disagreement > 0.25 * exposure:
             print('  ! they disagree by more than a quarter of a frame. Check '
                   'whether a mode is falling outside the mask, or saturating.')
-        if not best.trustworthy:
-            print('  ! neither series gives a confident offset. Did the burst '
-                  'overlap the sweep, and did any resonance land in it?')
+        if not best.locked:
+            print('  ! the fit did not lock onto the sweep at all. Did the '
+                  'burst overlap the scope record, and did any resonance land '
+                  'in it?')
+        elif not best.unique:
+            print(f'  ! locked on, but {best.margin:.2f}x from the best rival '
+                  f'offset - the sweep repeats and this record is long enough '
+                  f'to contain many equally good positions. The alignment '
+                  f'within the sweep is still right; which repetition is not '
+                  f'pinned. Use a shorter scope record to remove the ambiguity.')
 
     windows = frame_windows(starts, exposure, best.t0)
     return {'trace': trace, 'session': session, 'frames': frames,
             'frame_starts': starts, 'exposure_s': exposure, 'fits': results,
             'best': best, 'best_series': best_name, 'windows': windows,
-            'disagreement_s': disagreement, 'dropped': drops}
+            'disagreement_s': disagreement, 'dropped': drops,
+            'buffer': winner, 'per_buffer': per_buffer}
 
 
 def main():
@@ -675,12 +786,17 @@ def main():
     parser.add_argument('--signal-column', default=SIGNAL_COLUMN,
                         help=f'scope column to align against '
                              f'(default {SIGNAL_COLUMN})')
+    parser.add_argument('--buffer', type=int, default=None,
+                        help='use only this waveform buffer of a .psdata '
+                             '(1-based); by default every buffer is fitted and '
+                             'the one whose margin is best is the one used')
     args = parser.parse_args()
     if args.self_test:
         _self_test()
         return
     if args.session and args.scope:
-        fit_session(args.session, args.scope, args.signal_column)
+        fit_session(args.session, args.scope, args.signal_column,
+                    buffer=args.buffer)
         return
     parser.print_help()
 

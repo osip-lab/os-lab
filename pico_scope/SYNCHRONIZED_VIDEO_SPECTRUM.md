@@ -918,3 +918,70 @@ exits. Pass `mmap=False` to read it into memory instead.
 **Phase 1d, the viewer** (`mode_video_sync_show.py`) — hover a peak, see the
 frame. Everything it needs is now in place: `fit_session` returns the windows,
 and `frame_at_time` / `nearest_frame` do the lookup.
+
+---
+
+# First real synchronized capture (2026-08-26) — it works, with one caveat
+
+Camera burst: 120 frames, 0 dropped, period 10.0406 ms ± 0.0000, masked
+brightness noise/span **0.96%**, 26 frames on resonances, 0.0017% saturated.
+Scope: 20 s record, Channel D, 100 kS/s.
+
+**The alignment is right.** The decisive check is amplitude-independent: at the
+fitted offset, take the 20 strongest resonance peaks in the scope trace and ask
+which camera frame each lands on. Mean brightness-rank of those frames: **9.4 out
+of 120, against 59.5 for chance** — and 20/20 of them land in the 30 brightest
+frames. The two brightness series (masked and full-frame) agree on the offset to
+**6 µs**, a thousandth of an exposure.
+
+## The caveat: a long record makes the offset ambiguous
+
+The residual against offset is a **comb of minima one FSR apart**. A cavity sweep
+repeats, so a 20 s record contains ~85 positions that fit almost as well, and the
+`margin` collapses towards 1 even though the alignment is correct.
+
+This forced a real correction to the design. One number cannot answer two
+questions, so `OffsetFit` now reports both:
+
+- **`depth`** = median residual / best residual. *Did the fit find the sweep?*
+  A featureless burst gives ~1. This capture gave 9-15.
+- **`margin`** = best rival / best. *Is the offset unique?* Long records alias.
+
+`locked and not unique` — the normal outcome for a long record — means the
+alignment within the sweep is right but which repetition is undetermined. For
+identifying a transverse mode that is usually harmless, since equivalent
+positions in the sweep carry equivalent mode content.
+
+## Which buffer, and why it was not obvious
+
+The `.psdata` held four waveform buffers (three of 20 s, one truncated at
+1.198 s), all genuinely different data (mutual correlation ~0). All three long
+ones scored near-perfectly on the peak-to-bright-frame test, because the sweep is
+that reproducible. Two independent lines picked buffer 1:
+
+- it had the best depth (14.0 vs 12.1 and 9.0) and the only margin above 1.5;
+- the host clock. Frame 0 was exposed 61.5 s before the `.psdata` was written.
+  Buffer 1 implies a 6.9 s gap between clicking Stop and the file being saved;
+  buffers 2 and 3 imply 26.6 s and 46.3 s. Only the first is a natural delay.
+
+`fit_session` now ranks buffers by **depth**, not margin — margin measures the
+sweep's periodicity, not which record the burst is in — and skips any buffer
+shorter than the burst instead of failing.
+
+## How long should the scope record be?
+
+Shorter than 20 s. The tension is exact:
+
+- the record must exceed the burst by at least the **latency** between starting
+  the scope and starting the camera;
+- every extra second of that slack adds ~4 more FSR aliases.
+
+So minimise the slack subject to covering the latency. Started by hand, that is
+1-2 s of slack: a **2-4 s record against a 0.6-1.2 s burst**. Twenty seconds was
+chosen to be safe against a multi-second delay and made the aliasing far worse
+than it needed to be.
+
+The way to remove the slack entirely is **Phase 2** — drive the scope from the
+same Python process, so both start together and the search range shrinks to
+milliseconds. Failing that, the beam-block marker of option B breaks the FSR
+degeneracy outright, since a dropout is not periodic.
