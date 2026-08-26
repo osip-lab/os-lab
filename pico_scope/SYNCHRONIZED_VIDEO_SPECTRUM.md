@@ -1179,3 +1179,31 @@ failing after costs the data.
 
 The self-test now asserts that property directly: metadata that cannot be
 serialised must leave no `.npy` behind.
+
+## The pre-flight must use capture-length bursts
+
+A 40-frame pre-flight burst spans 0.4 s and so samples fewer free spectral
+ranges than the 1.2 s capture it is meant to predict - fewer chances to catch a
+strong resonance, so the predicted peak comes out low. Measured at a fixed
+level, 120-frame bursts reach about 15% higher than 40-frame ones. The bursts
+now default to the capture's own length.
+
+A caution against over-attributing, since it was nearly done again: the capture
+where the fit failed had peaked at 91.9% of full scale but with **0.000%
+saturated**, and 1% clipped was measured to be harmless. Its real problem was
+visible elsewhere - only **10 of 120 frames caught a resonance**, against 19-26
+in the captures that worked. A sparse burst gives the fit little to lock onto,
+and that, not the level, is what `depth` was reporting.
+
+# The measurement, working (2026-08-26 21:10)
+
+Pre-flight `[1749, 1102, 1830, 1787]` of 4095, 44.7% worst; 120 frames, none
+dropped; refined correction **-6.1 ms, 0.62 of a frame**, locked.
+
+Eight resonances inside one free spectral range, each with a different
+transverse pattern - and at the centre of them the pair this whole feature
+exists to tell apart: a compact multi-lobed mode at the strongest peak, and a
+clean two-lobe **30 ms later**, against the 34.3 ms median 0th-to-1st spacing
+measured back in check 6.
+
+From the trace alone those eight peaks are eight indistinguishable spikes.

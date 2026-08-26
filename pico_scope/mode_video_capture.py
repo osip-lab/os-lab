@@ -325,20 +325,25 @@ TARGET_PEAK_FRACTION = 0.7       # aim the brightest pixel here, of full scale
 # what happened twice. So several bursts are taken and the verdict is formed
 # from the worst of them, with headroom for a future burst brighter still.
 LEVEL_BURSTS = 4
-LEVEL_BURST_FRAMES = 40
+# The pre-flight bursts must be as long as the capture. A shorter one samples
+# fewer free spectral ranges and so has fewer chances to catch a strong
+# resonance, which biases the predicted peak low: measured, 120-frame bursts
+# reach about 15% higher than 40-frame ones at the same light level. None means
+# "same as the capture".
+LEVEL_BURST_FRAMES = None
 LEVEL_SAFETY = 1.3               # margin above the brightest burst yet seen
 LEVEL_TOO_DIM_FRACTION = 0.10    # below this the capture works but wastes range
 LEVEL_CLIPPED_STEP_DB = 6.0      # blind back-off while the peak is censored
 
 
-def measure_light_level(cam, n_bursts=LEVEL_BURSTS,
-                       n_frames=LEVEL_BURST_FRAMES):
+def measure_light_level(cam, n_bursts=LEVEL_BURSTS, n_frames=None):
     """Peak and saturation statistics over several independent bursts.
 
     Returns the per-burst peaks along with the summary the verdict uses. The
     figure that matters is the *worst* burst, not the average one: the capture
     only has to clip once to be spoiled.
     """
+    n_frames = n_frames or LEVEL_BURST_FRAMES or N_FRAMES
     saturation = cam.saturation_level
     peaks, fractions = [], []
     for _ in range(n_bursts):
@@ -356,11 +361,12 @@ def measure_light_level(cam, n_bursts=LEVEL_BURSTS,
         'peak_spread': float(peaks.max() / max(peaks.min(), 1)),
         'saturated_fraction': float(max(fractions)),
         'n_bursts': n_bursts,
+        'n_frames': n_frames,
     }
 
 
 def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
-                      n_frames=LEVEL_BURST_FRAMES):
+                      n_frames=None):
     """Measure the light level over several bursts and trim gain, or explain.
 
     Runs before the real capture, because a saturated burst cannot be rescued
@@ -382,7 +388,8 @@ def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
     for _ in range(5):
         level = measure_light_level(cam, n_bursts, n_frames)
         history.append(level)
-        print(f'  gain {level["gain_db"]:5.1f} dB -> peaks '
+        print(f'  gain {level["gain_db"]:5.1f} dB, {level["n_frames"]}-frame '
+              f'bursts -> peaks '
               f'{level["peaks"]} of {level["saturation_level"]} '
               f'({level["peak_fraction"]:.1%} worst, '
               f'{level["peak_spread"]:.1f}x spread), saturated '
