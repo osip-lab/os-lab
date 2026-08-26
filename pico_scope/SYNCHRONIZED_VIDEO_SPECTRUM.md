@@ -775,15 +775,64 @@ ratio of 3.56 implies P ≈ 0.8 counts, which is a plausible dark offset.
 **This is the good outcome** — it is the 4× signal the plan hoped for, and the
 badly-coupled measurements this feature exists for are exactly the dim ones.
 
-## Still to measure, and it needs the laser
+## Measured on the live cavity, 2026-08-26 — Option A validated
 
-The one number the optical synchronization actually depends on: **the frame-to-frame
-brightness scatter on a live scene.** `burst_self_test()` prints it, but with the
-laser off the frames are black (mean 0.00) and the figure it reports is noise on
-noise. Point the camera at the cavity output, run
+Laser on, transmission good, camera 25173136 on the cavity output. One 1 s burst
+at 99.60 Hz, binning 2×2, 1024×512 frame, Mono8, exposure 9.9 ms, gain 0 dB:
 
-    python basler_cam/basler_cameras.py --burst-test 25173136
+- **0 dropped frames**, period 10.0406 ms ± 0.0000 ms
+- peak pixel **50 of 255**, saturation **0.000%** — plenty of headroom, and well
+  clear of the 5%-clipped regime that breaks the offset fit
+- **noise / span = 2.37%** on a plain full-frame mean
 
-and read off the two lines under *what the optical synchronization cares about*.
-Below ~3% scatter puts the offset fit in its sub-0.15 ms regime; above ~10% it
-starts mis-assigning frames. The saturated fraction wants to stay under ~1%.
+2.37% sits between the 1% and 3% rows of the offset-fit table, i.e. **~0.1 ms
+expected error with no wrong-frame assignments**. Option A works on this setup.
+
+The brightness sequence also validates itself against check 6 without involving
+the scope at all: the resonances come in **pairs 30–35 ms apart, with ~200 ms
+between pairs**, against the 34.3 ms median 0th→1st spacing and 179–287 ms FSR
+measured from the `.modemarks.json` sidecars. And the frames on different peaks
+show visibly different transverse patterns — a clean two-lobed 1st order next to
+compact higher-order structure — which is the whole point of the feature.
+
+### Mask the brightness; do not raise the gain
+
+The mode covers roughly 1% of the frame, so a full-frame mean spends 99% of its
+pixels accumulating noise with no signal in them. Restricting the sum to pixels
+that actually vary during the sweep (peak-to-peak above 15% of its maximum,
+~14 000 of 524 288 pixels) is worth **5–7×**. Gain, by contrast, makes things
+worse — the noise is shot-limited, not read-limited, so gain amplifies both and
+adds its own:
+
+| gain | peak pixel | saturated | full-frame noise/span | masked | gain from masking |
+| --- | --- | --- | --- | --- | --- |
+| **0 dB** | 49 | 0.000% | 2.17% | **0.40%** | 5.4× |
+| 6 dB | 104 | 0.000% | 3.54% | 0.51% | 6.9× |
+| 12 dB | 214 | 0.000% | 4.50% | 0.64% | 7.0× |
+| 18 dB | 255 | 0.001% | 3.68% | 1.25% | 2.9× |
+
+**Use gain 0 dB.** At 0.40% masked, the offset fit is better than the best row of
+the simulated table.
+
+One tension worth understanding rather than optimising away: masking improves the
+noise but slightly *breaks the model*, because the photodiode sums all transmitted
+light while a masked camera sum does not. If a mode ever falls outside the mask,
+the two sequences diverge — the same class of failure as saturation. Since the
+unmasked 2.37% is already comfortably good enough, the capture should **store both
+series** and let the fit report its margin for each, rather than committing to one.
+A generous mask (low threshold, dilated) gets most of the noise benefit with
+little of the mismatch risk.
+
+### The ROI needs a vertical offset — the mode is not centred
+
+Measured from a whole-sensor burst: the light that varies during the sweep occupies
+**sensor rows 1002–1358 and columns 1244–1462**, centred at sensor (1180, 1352)
+against a sensor centre of (1024, 1024).
+
+So the 2048×1024 sensor window is taken at **`offset_y = 334` in binned pixels**
+(sensor rows 668–1692), which centres it on the mode and leaves ~330 binned rows of
+margin on each side for the larger higher-order patterns. Full width is kept, since
+width costs nothing.
+
+This is per-alignment, not a constant — re-run the reconnaissance whenever the
+cavity is realigned.
