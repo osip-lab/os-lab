@@ -473,7 +473,8 @@ def capture(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
     cam.open()
     try:
         mode_location = None
-        offset_y = ROI_OFFSET_Y
+        # the --no-locate fallbacks; choose_roi() overrides both when it runs
+        offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
         if locate:
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
@@ -554,7 +555,8 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
     scope = PicoScope4000A(scope_serial)
     try:
         mode_location = None
-        offset_y = ROI_OFFSET_Y
+        # the --no-locate fallbacks; choose_roi() overrides both when it runs
+        offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
         if locate:
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
@@ -564,7 +566,8 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
             roi_choice = choose_roi(cam, mode_location)
             offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
         checks = configure(cam, offset_y, roi_height)
-        checks['roi_choice'] = roi_choice
+        if mode_location is not None:
+            checks['roi_choice'] = roi_choice
         burst_s = n_frames / FRAME_RATE_HZ
 
         print('\n--- light level ---')
