@@ -44,8 +44,16 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
 from basler_cameras import BaslerCamera, burst_timing  # noqa: E402
-from pico_scope.mode_video_sync import (frame_brightness,  # noqa: E402
-                                        varying_pixel_mask)
+from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
+                                        frame_brightness, varying_pixel_mask)
+
+# --- what happens when this file is run (edit these, then press Run) -------
+# Nothing here needs the command line; the arguments exist for scripting and
+# override these when given.
+ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
+DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
+LOCATE_FIRST = True     # find the mode before capturing; False reuses the ROI
+ALLOW_SATURATED = False # capture even when the light is too bright
 
 # --- the camera and how it is driven (this is the block to edit) -----------
 SERIAL_NUMBER = '25173136'      # the camera pointed at the cavity mode
@@ -111,11 +119,9 @@ MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as li
 PIXEL_SIZE_MM = 5.5 / 1000.0    # acA2040 pitch; effective pitch is this x binning
 
 # --- where captures are written --------------------------------------------
-try:
-    from local_config import PATH_DATA_LOCAL
-    OUTPUT_ROOT = Path(PATH_DATA_LOCAL) / 'mode_video'
-except ImportError:                                   # pragma: no cover
-    OUTPUT_ROOT = Path.cwd() / 'mode_video'
+# Shared with mode_video_sync, so that leaving its SESSION empty finds the
+# capture this script just wrote.
+OUTPUT_ROOT = SESSION_ROOT
 
 
 # %% [Step 1] Finding the mode ----------------------------------------------
@@ -973,6 +979,9 @@ def _self_test():
           'that no single burst clips at is still refused when it has no '
           'headroom')
 
+    # the run-button configuration has to name something this file can do
+    assert ACTION in ('capture', 'levels', 'locate', 'self-test'), ACTION
+    assert LEVEL_BURST_FRAMES is None or LEVEL_BURST_FRAMES > 0
     print('self-test passed')
 
 
@@ -1004,12 +1013,24 @@ def main():
                              'then be closed - only one program can own it)')
     args = parser.parse_args()
 
+    # No arguments: do what the block at the top of the file says.
+    action = ACTION
     if args.self_test:
-        _self_test()
-        return
+        action = 'self-test'
+    elif args.levels:
+        action = 'levels'
+    elif args.locate:
+        action = 'locate'
+    locate = LOCATE_FIRST and not args.no_locate
+    allow_saturated = ALLOW_SATURATED or args.allow_saturated
     if args.frames:
         globals()['N_FRAMES'] = args.frames
-    if args.locate:
+
+    if action == 'self-test':
+        _self_test()
+        return
+
+    if action == 'locate':
         cam = BaslerCamera(args.serial)
         cam.open()
         try:
@@ -1020,12 +1041,13 @@ def main():
             cam.set_roi_full()
             cam.close()
         return
-    if args.levels:
+
+    if action == 'levels':
         cam = BaslerCamera(args.serial)
         cam.open()
         try:
             offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
-            if not args.no_locate:
+            if locate:
                 found = locate_mode(cam)
                 report_mode_location(found)
                 cam.set_pixel_format(PIXEL_FORMAT)
@@ -1040,13 +1062,16 @@ def main():
         finally:
             cam.close()
         return
-    if args.scope:
-        capture_synchronized(args.serial, locate=not args.no_locate,
-                             require_level=not args.allow_saturated)
-    else:
-        capture(args.serial, locate=not args.no_locate,
-                prompt=not args.no_prompt)
 
+    if action != 'capture':
+        raise SystemExit(f'ACTION must be capture, levels, locate or '
+                         f'self-test, not {ACTION!r}')
+
+    if DRIVE_SCOPE or args.scope:
+        capture_synchronized(args.serial, locate=locate,
+                             require_level=not allow_saturated)
+    else:
+        capture(args.serial, locate=locate, prompt=not args.no_prompt)
 
 if __name__ == '__main__':
     main()

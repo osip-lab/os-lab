@@ -48,8 +48,24 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# --- what happens when this file is run (edit these, then press Run) -------
+# Nothing here needs the command line; the arguments exist for scripting and
+# override these when given.
+ACTION = 'refine'       # 'refine' | 'fit' | 'self-test'
+SESSION = ''            # capture folder; '' means the most recent one
+SCOPE_FILE = ''         # the .psdata of a Phase 1 capture; '' for Phase 2
+SEARCH_WINDOW_S = 0.25  # half-width of the offset search, when refining
+
 TIME_COLUMN = 'Time'
 SIGNAL_COLUMN = 'Channel D'      # cavity transmission, as in mode_map_2d.py
+
+# Where captures are written, shared with mode_video_capture.py so that an
+# empty SESSION can find the newest one.
+try:
+    from local_config import PATH_DATA_LOCAL
+    SESSION_ROOT = Path(PATH_DATA_LOCAL) / 'mode_video'
+except ImportError:                                   # pragma: no cover
+    SESSION_ROOT = Path.cwd() / 'mode_video'
 
 # The units row of a PicoScope export, e.g. "(s),(V),(mV)".
 TIME_UNITS = {'s': 1.0, 'ms': 1e-3, 'us': 1e-6, 'µs': 1e-6, 'ns': 1e-9}
@@ -182,6 +198,22 @@ def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN):
     return ScopeTrace(frame[time_column].to_numpy(float) * time_scale,
                       frame[signal_column].to_numpy(float) * signal_scale,
                       units[time_column], units[signal_column], path)
+
+
+def latest_session(root=None):
+    """The most recently written capture folder under `root`.
+
+    So that pressing Run analyses the capture just taken, without a path
+    having to be pasted in first - which is the point of leaving SESSION
+    empty.
+    """
+    root = Path(SESSION_ROOT if root is None else root)
+    folders = [q.parent for q in root.glob('*/*_session.json')]
+    if not folders:
+        raise FileNotFoundError(
+            f'no capture with a session file under {root} - run '
+            f'pico_scope/mode_video_capture.py first, or set SESSION')
+    return max(folders, key=lambda q: q.stat().st_mtime)
 
 
 def load_session(path, mmap=True):
@@ -676,6 +708,8 @@ def _self_test():
         assert np.allclose(load_scope_csv(path).t, [0.0, 1.0])
     print('  CSV units row honoured: ms -> s and mV -> V')
 
+    # the run-button configuration has to name something this file can do
+    assert ACTION in ('refine', 'fit', 'self-test'), ACTION
     print('self-test passed')
 
 
@@ -749,18 +783,26 @@ def refine_session(session_path, window_s=0.25, verbose=True):
         print(f'  correction        : {correction * 1e3:+9.3f} ms '
               f'({abs(correction) / exposure:.3f} of an exposure)')
         frames_off = abs(correction) / exposure
-        if not best.locked:
-            print('  ! the fit did not lock onto the sweep - check that the '
-                  'burst caught resonances and that the camera sees the same '
-                  'light as channel D')
-        elif frames_off > 2.0:
-            print(f'  ! the correction is {frames_off:.1f} frames, far more '
-                  f'than the 0.78 frames of jitter the calibrated host clock '
-                  f'should show. Either the fit found an alias, or '
-                  f'HOST_T0_BIAS_S needs re-measuring.')
+        # Two independent estimates, so the useful question is whether they
+        # agree. A correction inside the calibrated clock's own jitter is
+        # mutual corroboration and settles it whatever `depth` says - depth
+        # measures how well the camera tracks the photodiode, not whether the
+        # offset is right, and on this setup it sits low for physical reasons.
+        if frames_off <= 2.0:
+            print(f'  the calibrated host clock and the fit agree to '
+                  f'{frames_off:.2f} of a frame'
+                  + ('' if best.locked else
+                     f' (depth is only {best.depth:.1f}x, but the two methods '
+                     f'agreeing is the stronger evidence)'))
+        elif not best.locked:
+            print(f'  ! the fit did not lock ({best.depth:.1f}x) and disagrees '
+                  f'with the host clock by {frames_off:.1f} frames - do not '
+                  f'trust it. Usually the burst caught too few resonances.')
         else:
-            print(f'  the calibrated host clock alone was within '
-                  f'{frames_off:.2f} of a frame')
+            print(f'  ! the fit locked ({best.depth:.1f}x) but disagrees with '
+                  f'the host clock by {frames_off:.1f} frames, far more than '
+                  f'its 0.78 frames of jitter. Either the fit found an alias, '
+                  f'or HOST_T0_BIAS_S needs re-measuring.')
 
     session['sync'].update({
         't0_fitted_s': best.t0,
@@ -917,10 +959,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
-    parser.add_argument('--session',
-                        help='capture folder or *_session.json from '
-                             'mode_video_capture.py')
-    parser.add_argument('--scope',
+    parser.add_argument('--session', default=SESSION or None,
+                        help='capture folder or *_session.json; defaults to '
+                             'SESSION in this file, or the newest capture')
+    parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata or .csv recorded at the same time')
     parser.add_argument('--signal-column', default=SIGNAL_COLUMN,
                         help=f'scope column to align against '
@@ -928,7 +970,7 @@ def main():
     parser.add_argument('--refine', action='store_true',
                         help='refine a Phase 2 capture that recorded its own '
                              'scope trace; no --scope needed')
-    parser.add_argument('--window', type=float, default=0.25,
+    parser.add_argument('--window', type=float, default=SEARCH_WINDOW_S,
                         help='half-width in seconds of the search around the '
                              'host-clock offset when refining (default 0.25)')
     parser.add_argument('--buffer', type=int, default=None,
@@ -936,19 +978,36 @@ def main():
                              '(1-based); by default every buffer is fitted and '
                              'the one whose margin is best is the one used')
     args = parser.parse_args()
+
+    # No arguments: do what the block at the top of the file says.
+    action = ACTION
     if args.self_test:
+        action = 'self-test'
+    elif args.refine:
+        action = 'refine'
+    elif args.scope:
+        action = 'fit'
+
+    if action == 'self-test':
         _self_test()
         return
-    if args.refine:
-        if not args.session:
-            parser.error('--refine needs --session')
-        refine_session(args.session, window_s=args.window)
-        return
-    if args.session and args.scope:
-        fit_session(args.session, args.scope, args.signal_column,
+
+    session = args.session or latest_session()
+    print(f'session: {session}')
+    if action == 'refine':
+        refine_session(session, window_s=args.window)
+    elif action == 'fit':
+        if not args.scope:
+            raise SystemExit(
+                'fitting against a separately recorded scope file needs '
+                'SCOPE_FILE set at the top of this file (or --scope). A '
+                'capture made by mode_video_capture.py with DRIVE_SCOPE '
+                'carries its own trace - use ACTION = refine for those.')
+        fit_session(session, args.scope, args.signal_column,
                     buffer=args.buffer)
-        return
-    parser.print_help()
+    else:
+        raise SystemExit(f'ACTION must be refine, fit or self-test, '
+                         f'not {ACTION!r}')
 
 
 if __name__ == '__main__':

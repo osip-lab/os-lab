@@ -21,6 +21,26 @@ answers are written down.
 Everything below this section is the design record - why it is built the way it
 is, and what was measured along the way. This section is how to run it.
 
+## Press Run
+
+Each of the three scripts is driven by a block at the top of its own file, in
+the same style as `pico_scope/mode_map_2d.py`. Open the file, edit the block,
+press Run in PyCharm. No arguments, no run configuration.
+
+| file | block | what Run does by default |
+| --- | --- | --- |
+| `mode_video_capture.py` | `ACTION`, `DRIVE_SCOPE`, `LOCATE_FIRST` | captures, driving both instruments |
+| `mode_video_sync.py` | `ACTION`, `SESSION` | refines the newest capture |
+| `mode_video_sync_show.py` | `ACTION`, `SESSION` | opens the newest capture in the viewer |
+
+**Leaving `SESSION = ''` means "the most recent capture"**, so the usual round
+trip is: Run the capture, Run the viewer. No paths to copy.
+
+`ACTION` selects what the file does - `'capture'`, `'levels'`, `'locate'` or
+`'self-test'` for the capture script, `'refine'` or `'fit'` for the sync,
+`'show'` for the viewer. The command-line flags still work and override the
+block, for scripting.
+
 ## Before the first capture of a session
 
 **Close PicoScope 7.** Only one program can own the scope.
@@ -28,7 +48,8 @@ is, and what was measured along the way. This section is how to run it.
 Then check the light, because the transmission drifts enough between sessions
 that yesterday's setting is not reliable:
 
-    python pico_scope/mode_video_capture.py --levels
+    ACTION = 'levels'    # then press Run
+    # or: python pico_scope/mode_video_capture.py --levels
 
 It reports the peak of four capture-length bursts. You want the **worst burst
 near 50-70% of full scale**. It will tell you if the light is too bright (and by
@@ -38,9 +59,10 @@ optical - an ND filter, or a weaker split off the transmission.
 
 ## Capturing
 
-    python pico_scope/mode_video_capture.py --scope
+    ACTION = 'capture'   # DRIVE_SCOPE = True, then press Run
+    # or: python pico_scope/mode_video_capture.py --scope
 
-One command drives both instruments. It finds the mode on the sensor, sizes the
+One Run drives both instruments. It finds the mode on the sensor, sizes the
 ROI around it, checks the light, records 1.2 s of spectrum and 120 frames of
 video together, and writes a session folder under `<PATH_DATA_LOCAL>/mode_video/`.
 
@@ -57,7 +79,8 @@ Useful flags:
 
 ## Sharpening the alignment (optional)
 
-    python pico_scope/mode_video_sync.py --session <folder> --refine
+    ACTION = 'refine'    # SESSION = '' takes the newest capture; press Run
+    # or: python pico_scope/mode_video_sync.py --session <folder> --refine
 
 The capture's own offset is already good to about a frame. This takes it to a
 hundredth of one and, more usefully, reports whether the camera and the scope
@@ -65,12 +88,17 @@ actually saw the same thing. Look at two numbers:
 
 - **`locked`** - the fit found the sweep. If it says NOT LOCKED, do not trust
   the alignment: usually the burst caught too few resonances.
-- **`correction`** - how far the host clock was out. Expect under a frame;
-  much more than that means the fit found an alias or the calibration has moved.
+- **`correction`** - how far the host clock was out. Expect under a frame.
+
+The two are read together, and agreement between them outranks either alone:
+the host clock and the fit are independent estimates, so a correction inside
+the clock's own jitter settles the matter even when `depth` is low. Only a
+*disagreement* of more than two frames is a reason to distrust the alignment.
 
 ## Looking at the result
 
-    python pico_scope/mode_video_sync_show.py --session <folder>
+    ACTION = 'show'      # SESSION = '' takes the newest capture; press Run
+    # or: python pico_scope/mode_video_sync_show.py --session <folder>
 
 ## Choosing a peak and seeing its mode
 

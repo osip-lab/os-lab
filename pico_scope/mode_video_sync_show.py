@@ -38,8 +38,16 @@ import argparse
 import sys
 from pathlib import Path
 
+# --- what happens when this file is run (edit these, then press Run) -------
+# Nothing here needs the command line; the arguments exist for scripting.
+ACTION = 'show'      # 'show' | 'self-test'
+SESSION = ''         # capture folder; '' means the most recent one
+SCOPE_FILE = ''      # the .psdata of a Phase 1 capture; '' for Phase 2
+SNAP_TO_BRIGHTEST = True
+
 import matplotlib
-matplotlib.use('Agg' if '--self-test' in sys.argv else 'Qt5Agg')
+matplotlib.use('Agg' if (ACTION == 'self-test' or '--self-test' in sys.argv)
+               else 'Qt5Agg')
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -47,9 +55,9 @@ import numpy as np  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E402
                                         frame_brightness, frame_start_times,
-                                        frame_windows, load_session,
-                                        load_session_trace, nearest_frame,
-                                        release_frames)
+                                        frame_windows, latest_session,
+                                        load_session, load_session_trace,
+                                        nearest_frame, release_frames)
 
 SNAP_RADIUS = 1          # frames either side, when snapping to the brightest
 SHADE_ALPHA = 0.06      # faint: at 120 frames these are stripes until you zoom
@@ -371,6 +379,8 @@ def _self_test():
     print('  the highlighted band tracks the frame and is one exposure wide')
 
     plt.close(viewer.fig)
+    # the run-button configuration has to name something this file can do
+    assert ACTION in ('show', 'self-test'), ACTION
     print('self-test passed')
 
 
@@ -378,8 +388,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
-    parser.add_argument('--session', help='capture folder or *_session.json')
-    parser.add_argument('--scope',
+    parser.add_argument('--session', default=SESSION or None,
+                        help='capture folder or *_session.json; defaults to '
+                             'SESSION in this file, or the newest capture')
+    parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata recorded alongside a Phase 1 capture; '
                              'omit for a Phase 2 capture, which carries its own')
     parser.add_argument('--no-snap', action='store_true',
@@ -387,13 +399,16 @@ def main():
                              'to the brightest neighbour')
     args = parser.parse_args()
 
-    if args.self_test:
+    if args.self_test or ACTION == 'self-test':
         _self_test()
         return
-    if not args.session:
-        parser.print_help()
-        return
-    viewer = viewer_from_session(args.session, args.scope, snap=not args.no_snap)
+    if ACTION != 'show':
+        raise SystemExit(f'ACTION must be show or self-test, not {ACTION!r}')
+
+    session = args.session or latest_session()
+    print(f'session: {session}')
+    snap = SNAP_TO_BRIGHTEST and not args.no_snap
+    viewer = viewer_from_session(session, args.scope, snap=snap)
     plt.show()
     release_frames(viewer.frames)
 
