@@ -44,6 +44,14 @@ RING_CAPACITY_SECONDS = 70  # keep a bit more than the largest view window
 RING_CAPACITY_MAX = 8_000_000  # samples per channel (16 MB of int16)
 POLL_INTERVAL_S = 0.01
 
+# Block mode. Directions are the PS4000A_THRESHOLD_DIRECTION enum; 'NONE' with
+# a non-zero auto-trigger is how a block is made to start immediately, which is
+# what a synchronized capture wants - there is nothing to trigger on, the two
+# records are aligned afterwards from the light itself.
+TRIGGER_DIRECTIONS = {'above': 0, 'below': 1, 'rising': 2, 'falling': 3,
+                      'rising_or_falling': 4, 'none': 2}
+BLOCK_POLL_INTERVAL_S = 0.002
+
 
 def _check(status, what):
     if status != 0:
@@ -107,6 +115,7 @@ class PicoScope4000A:
         self._thread = None
         self._stopping = threading.Event()
         self.on_error = None  # optional callable(exception), from the thread
+        self._block = None  # in-flight block capture, see start_block()
 
     # ---------------------------------------------------------------- device
     @staticmethod
@@ -303,6 +312,203 @@ class PicoScope4000A:
                     self.on_error(error)
                 break
             time.sleep(POLL_INTERVAL_S)
+
+    # --------------------------------------------------------- block capture
+    # Streaming is for watching a slow signal indefinitely; a block is for
+    # capturing a known span at full rate, which is what a spectrum recording
+    # is. The two cannot run at once - start_streaming() must be stopped first.
+    def _range_index(self, name):
+        return next(i for i, v in sorted(RANGES.items())
+                    if v >= self.channels[name]['range_v'])
+
+    def _apply_channels(self):
+        """Push the channel configuration to the driver."""
+        enabled = []
+        for index, name in enumerate(CHANNEL_NAMES):
+            config = self.channels[name]
+            _check(ps.ps4000aSetChannel(
+                self._handle, index, int(config['enabled']),
+                COUPLINGS[config['coupling']], self._range_index(name), 0.0),
+                f'SetChannel {name}')
+            if config['enabled']:
+                enabled.append((index, name))
+        return enabled
+
+    def find_timebase(self, sample_interval_s, n_samples):
+        """Smallest timebase whose interval is at least `sample_interval_s`.
+
+        The 4000A timebase is an integer code, not a rate: for this family
+        interval = (timebase + 1) / 80 MHz. The driver is asked to confirm each
+        candidate rather than trusting the formula, because the achievable set
+        depends on how many channels are enabled.
+
+        Returns (timebase, actual_interval_s, max_samples).
+        """
+        wanted_ns = sample_interval_s * 1e9
+        interval_ns = ctypes.c_float()
+        max_samples = ctypes.c_int32()
+        best = None
+        timebase = 0
+        while timebase < 2 ** 30:
+            status = ps.ps4000aGetTimebase2(
+                self._handle, timebase, int(n_samples),
+                ctypes.byref(interval_ns), ctypes.byref(max_samples), 0)
+            if status == 0:
+                best = (timebase, interval_ns.value, max_samples.value)
+                if interval_ns.value >= wanted_ns:
+                    return timebase, interval_ns.value * 1e-9, max_samples.value
+                # step: intervals grow linearly, so jump straight to the target
+                step = max(1, int(wanted_ns / max(interval_ns.value, 1e-9)) - 1)
+                timebase += step
+            else:
+                timebase += 1
+            if timebase > 1_000_000:
+                break
+        if best is None:
+            raise RuntimeError(
+                f'no usable timebase for {n_samples} samples - the request may '
+                f'exceed the scope memory with these channels enabled')
+        return best[0], best[1] * 1e-9, best[2]
+
+    def configure_trigger(self, source='D', threshold_v=0.0, direction='rising',
+                          delay=0, auto_trigger_ms=1000, enabled=True):
+        """Set the simple trigger used by capture_block.
+
+        `auto_trigger_ms` is how long the scope waits before giving up and
+        capturing anyway; 0 means wait forever. For a synchronized capture pass
+        enabled=False, which arms nothing and starts the block immediately.
+        """
+        if enabled:
+            if source not in CHANNEL_NAMES:
+                raise ValueError(f'no channel {source!r}')
+            if direction not in TRIGGER_DIRECTIONS:
+                raise ValueError(f'direction must be one of '
+                                 f'{sorted(TRIGGER_DIRECTIONS)}')
+            full_scale = self.channels[source]['range_v']
+            adc = int(np.clip(threshold_v / full_scale, -1.0, 1.0) * self._max_adc)
+            _check(ps.ps4000aSetSimpleTrigger(
+                self._handle, 1, CHANNEL_NAMES.index(source), adc,
+                TRIGGER_DIRECTIONS[direction], int(delay),
+                int(auto_trigger_ms)), 'SetSimpleTrigger')
+        else:
+            _check(ps.ps4000aSetSimpleTrigger(self._handle, 0, 0, 0, 2, 0, 0),
+                   'SetSimpleTrigger (disable)')
+        self._trigger = {'enabled': bool(enabled), 'source': source,
+                         'threshold_v': threshold_v, 'direction': direction,
+                         'delay': int(delay),
+                         'auto_trigger_ms': int(auto_trigger_ms)}
+        return dict(self._trigger)
+
+    def start_block(self, duration_s, sample_interval_s, pre_fraction=0.0):
+        """Arm and start a block capture; returns immediately.
+
+        Split from the collection step on purpose: a synchronized capture has
+        to start the camera burst *while* the scope is recording, so the caller
+        needs the scope running and control back. Follow with
+        wait_block() and read_block(), or use capture_block() for both.
+        """
+        if self.is_streaming:
+            raise RuntimeError('stop streaming before starting a block capture')
+        n_samples = max(int(round(duration_s / sample_interval_s)), 2)
+        enabled = self._apply_channels()
+        if not enabled:
+            raise RuntimeError('no channel is enabled')
+        timebase, interval, max_samples = self.find_timebase(sample_interval_s,
+                                                             n_samples)
+        if n_samples > max_samples:
+            raise RuntimeError(
+                f'{n_samples} samples exceeds the {max_samples} the scope can '
+                f'hold with {len(enabled)} channel(s) enabled at '
+                f'{interval * 1e9:.0f} ns - shorten the capture, slow the '
+                f'sample rate, or disable a channel')
+        if not hasattr(self, '_trigger'):
+            self.configure_trigger(enabled=False)
+
+        pre = int(round(n_samples * float(np.clip(pre_fraction, 0.0, 1.0))))
+        post = n_samples - pre
+        self._block = {'pre': pre, 'post': post, 'n_samples': n_samples,
+                       'interval_s': interval, 'timebase': timebase,
+                       'enabled': enabled, 'host_start_s': time.time()}
+        _check(ps.ps4000aRunBlock(self._handle, pre, post, timebase, None, 0,
+                                  None, None), 'RunBlock')
+        return dict(self._block)
+
+    def wait_block(self, timeout_s=None):
+        """Block until the capture is complete; returns the wait in seconds."""
+        if getattr(self, '_block', None) is None:
+            raise RuntimeError('no block capture is running')
+        deadline = None if timeout_s is None else time.time() + timeout_s
+        ready = ctypes.c_int16(0)
+        tic = time.time()
+        while not ready.value:
+            _check(ps.ps4000aIsReady(self._handle, ctypes.byref(ready)),
+                   'IsReady')
+            if ready.value:
+                break
+            if deadline is not None and time.time() > deadline:
+                ps.ps4000aStop(self._handle)
+                raise TimeoutError(
+                    f'block capture did not complete within {timeout_s:.1f} s'
+                    + (' - the trigger never fired; pass auto_trigger_ms or '
+                       'configure_trigger(enabled=False)'
+                       if getattr(self, '_trigger', {}).get('enabled') else ''))
+            time.sleep(BLOCK_POLL_INTERVAL_S)
+        return time.time() - tic
+
+    def read_block(self):
+        """Collect the finished block: (t, {channel: volts}, info).
+
+        `t` has **zero at the trigger**, so a pre-trigger fraction gives
+        negative times. The legacy adc2mv path in pico_scope/__init__.py puts
+        zero at the first sample instead; that difference is a trap worth not
+        repeating.
+        """
+        info = getattr(self, '_block', None)
+        if info is None:
+            raise RuntimeError('no block capture to read')
+        n = info['n_samples']
+        buffers = {}
+        for index, name in info['enabled']:
+            maximum = np.zeros(n, dtype=np.int16)
+            minimum = np.zeros(n, dtype=np.int16)
+            buffers[name] = (maximum, minimum)
+            _check(ps.ps4000aSetDataBuffers(
+                self._handle, index,
+                maximum.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)),
+                minimum.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)),
+                n, 0, ps.PS4000A_RATIO_MODE['PS4000A_RATIO_MODE_NONE']),
+                f'SetDataBuffers {name}')
+        collected = ctypes.c_int32(n)
+        overflow = ctypes.c_int16()
+        _check(ps.ps4000aGetValues(self._handle, 0, ctypes.byref(collected),
+                                   1, ps.PS4000A_RATIO_MODE[
+                                       'PS4000A_RATIO_MODE_NONE'], 0,
+                                   ctypes.byref(overflow)), 'GetValues')
+        ps.ps4000aStop(self._handle)
+
+        count = collected.value
+        t = (np.arange(count) - info['pre']) * info['interval_s']
+        volts = {name: self.to_volts(name, maximum[:count])
+                 for name, (maximum, _) in buffers.items()}
+        overflowed = [name for index, name in info['enabled']
+                      if overflow.value & (1 << index)]
+        result = dict(info)
+        result.update({'n_collected': count, 'overflow_channels': overflowed,
+                       'host_end_s': time.time()})
+        result.pop('enabled', None)
+        if overflowed:
+            print(f'  ! channel(s) {overflowed} overflowed their range during '
+                  f'the block - widen them with configure_channel(range_v=...)')
+        self._block = None
+        return t, volts, result
+
+    def capture_block(self, duration_s, sample_interval_s, pre_fraction=0.0,
+                      timeout_s=None):
+        """Arm, wait and collect in one call: (t, {channel: volts}, info)."""
+        info = self.start_block(duration_s, sample_interval_s, pre_fraction)
+        self.wait_block(timeout_s=timeout_s
+                        if timeout_s is not None else duration_s * 3 + 10)
+        return self.read_block()
 
     # ---------------------------------------------------------------- data
     def read_window(self, seconds):

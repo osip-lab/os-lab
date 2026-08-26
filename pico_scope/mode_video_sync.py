@@ -664,6 +664,122 @@ def _self_test():
     print('self-test passed')
 
 
+def load_session_trace(session_path):
+    """The scope trace a Phase 2 capture recorded for itself, as a ScopeTrace.
+
+    Phase 1 captures have no such file - the scope side was a .psdata exported
+    by hand - and raise here, which is what tells the caller to pass --scope.
+    """
+    session_path = Path(session_path)
+    if session_path.is_dir():
+        candidates = sorted(session_path.glob('*_session.json'))
+        if len(candidates) != 1:
+            raise FileNotFoundError(
+                f'expected one *_session.json in {session_path}, '
+                f'found {len(candidates)}')
+        session_path = candidates[0]
+    session = json.loads(session_path.read_text(encoding='utf-8'))
+    if 'scope' not in session:
+        raise FileNotFoundError(
+            f'{session_path.name} has no scope trace of its own - it was made '
+            f'with PicoScope 7 driving the scope. Pass the .psdata with '
+            f'--scope instead.')
+    data = np.load(session_path.parent / session['scope']['file'])
+    return ScopeTrace(data['t'], data['signal'], 's', 'V', session_path)
+
+
+def refine_session(session_path, window_s=0.25, verbose=True):
+    """Improve a Phase 2 capture's host-clock offset with the optical fit.
+
+    Optional by design. Driving both instruments from one process already puts
+    frame 0 within a few milliseconds, which is a fraction of a frame and good
+    enough for most work; this earns the last two orders of magnitude, and -
+    more usefully - reports `depth`, which says whether the camera and the
+    scope actually saw the same thing at all.
+
+    Because `t0_host` is already close, the search is a narrow window around it
+    rather than the whole record, so the free-spectral-range aliasing that
+    plagues a blind search over a long trace does not arise.
+    """
+    session_path = Path(session_path)
+    trace = load_session_trace(session_path)
+    session, frames = load_session(session_path)
+    starts = frame_start_times(session['meta'])
+    exposure = float(session['exposure_s'])
+    t0_host = float(session['sync']['t0_host_s'])
+
+    burst = float(starts[-1] + exposure)
+    low = max(float(trace.t[0]), t0_host - window_s)
+    high = min(float(trace.t[-1] - burst), t0_host + window_s)
+    if high <= low:
+        raise ValueError(
+            f'the host offset {t0_host * 1e3:.1f} ms leaves no room for the '
+            f'{burst:.3f} s burst inside a {trace.duration:.3f} s block')
+
+    results = {}
+    for name in ('masked', 'full'):
+        brightness = np.array(session[f'brightness_{name}'], dtype=float)
+        results[name] = fit_time_offset(starts, exposure, brightness, trace,
+                                        search=(low, high))
+    best_name = max(results, key=lambda k: results[k].depth)
+    best = results[best_name]
+    correction = best.t0 - t0_host
+
+    if verbose:
+        print(f'{trace}')
+        print(f'  host-clock offset : {t0_host * 1e3:9.3f} ms')
+        for name, fit in results.items():
+            print(f'  {name:>6} fit       : {fit.t0 * 1e3:9.3f} ms  '
+                  f'depth {fit.depth:7.1f}x  margin {fit.margin:6.2f}x')
+        print(f'  correction        : {correction * 1e3:+9.3f} ms '
+              f'({abs(correction) / exposure:.3f} of an exposure)')
+        if not best.locked:
+            print('  ! the fit did not lock onto the sweep - check that the '
+                  'burst caught resonances and that the camera sees the same '
+                  'light as channel D')
+        elif abs(correction) > 0.5 * exposure:
+            print('  ! the correction exceeds half a frame, so the host clock '
+                  'alone would have picked the wrong frame. Keep refining.')
+        else:
+            print(f'  the host clock alone was within '
+                  f'{abs(correction) / exposure:.2f} of a frame')
+
+    session['sync'].update({
+        't0_fitted_s': best.t0,
+        't0_correction_s': correction,
+        'fit_series': best_name,
+        'fit_depth': best.depth,
+        'fit_margin': best.margin,
+        'fit_locked': bool(best.locked),
+    })
+    json_path = (session_path if session_path.suffix == '.json'
+                 else sorted(session_path.glob('*_session.json'))[0])
+    json_path.write_text(json.dumps(session, indent=1), encoding='utf-8')
+    if verbose:
+        print(f'  wrote t0_fitted_s to {json_path.name}')
+    return {'session': session, 'frames': frames, 'trace': trace,
+            'fits': results, 'best': best, 'best_series': best_name,
+            't0_host': t0_host, 'correction': correction,
+            'windows': frame_windows(starts, exposure, best.t0)}
+
+
+def session_windows(session_path, prefer_fitted=True):
+    """Frame exposure windows in the scope's timebase, for a Phase 2 capture.
+
+    Uses the refined offset when refine_session() has been run and the plain
+    host-clock one otherwise, so a viewer can work either way.
+    """
+    session_path = Path(session_path)
+    if session_path.is_dir():
+        session_path = sorted(session_path.glob('*_session.json'))[0]
+    session = json.loads(session_path.read_text(encoding='utf-8'))
+    sync = session['sync']
+    key = 't0_fitted_s' if (prefer_fitted and 't0_fitted_s' in sync) \
+        else 't0_host_s'
+    starts = frame_start_times(session['meta'])
+    return frame_windows(starts, float(session['exposure_s']), float(sync[key])), key
+
+
 def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
                 verbose=True, buffer=None):
     """Align a capture folder with a scope recording; return everything found.
@@ -786,6 +902,12 @@ def main():
     parser.add_argument('--signal-column', default=SIGNAL_COLUMN,
                         help=f'scope column to align against '
                              f'(default {SIGNAL_COLUMN})')
+    parser.add_argument('--refine', action='store_true',
+                        help='refine a Phase 2 capture that recorded its own '
+                             'scope trace; no --scope needed')
+    parser.add_argument('--window', type=float, default=0.25,
+                        help='half-width in seconds of the search around the '
+                             'host-clock offset when refining (default 0.25)')
     parser.add_argument('--buffer', type=int, default=None,
                         help='use only this waveform buffer of a .psdata '
                              '(1-based); by default every buffer is fitted and '
@@ -793,6 +915,11 @@ def main():
     args = parser.parse_args()
     if args.self_test:
         _self_test()
+        return
+    if args.refine:
+        if not args.session:
+            parser.error('--refine needs --session')
+        refine_session(args.session, window_s=args.window)
         return
     if args.session and args.scope:
         fit_session(args.session, args.scope, args.signal_column,

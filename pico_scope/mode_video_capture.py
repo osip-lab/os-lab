@@ -52,7 +52,11 @@ SERIAL_NUMBER = '25173136'      # the camera pointed at the cavity mode
 FRAME_RATE_HZ = 100.0           # see the peak-blending check below
 EXPOSURE_US = 9900.0            # just under the frame period, never equal to it
 N_FRAMES = 120                  # 1.2 s at 100 Hz
-PIXEL_FORMAT = 'Mono8'
+# Mono12, not Mono8: as the laser warms the transmission climbs, and a
+# clipped peak stops the camera tracking the photodiode - the one thing that
+# breaks the alignment fit. 12 bits buy 16x the headroom. It costs frame rate
+# (12-bit readout is slower per row), which is paid for by fewer ROI rows.
+PIXEL_FORMAT = 'Mono12'
 GAIN_DB = 0.0                   # measured: gain only makes the noise worse
 BINNING = 2                     # firmware mode is Sum on this model: 4x signal
 THROUGHPUT_BPS = 212_352_571    # the cameras' own default; 150 MB/s caps us at 74 Hz
@@ -60,13 +64,25 @@ THROUGHPUT_BPS = 212_352_571    # the cameras' own default; 150 MB/s caps us at 
 # ROI in BINNED pixels. Width is free - readout is paced per row - so keep the
 # whole sensor width and spend the budget on rows.
 ROI_WIDTH = 1024                # = full 2048 sensor columns at binning 2
-ROI_HEIGHT = 512                # = 1024 sensor rows
+ROI_HEIGHT = 384                # = 768 sensor rows; 99.1 Hz in Mono12
 ROI_OFFSET_X = 0
 # None means locate_mode() finds it at every run, which is the right default -
 # the mode moves whenever the cavity is realigned. The number is the fallback
 # used by --no-locate: measured 2026-08-26, mode at binned rows 529-640 centred
 # on 584, so 584 - ROI_HEIGHT // 2. Re-run --locate after any realignment.
-ROI_OFFSET_Y = 328
+ROI_OFFSET_Y = 406
+
+# --- the scope, when this script drives it too (Phase 2) -------------------
+# Only one program can own the scope, so PicoScope 7 must be closed. The block
+# is made just long enough to contain the burst plus the few tens of
+# milliseconds it takes to get from RunBlock to the first exposure: every extra
+# second of slack would add another ~4 free-spectral-range aliases for the
+# optional fine alignment to sort out.
+SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
+SCOPE_RANGE_V = 0.01            # +-10 mV; peaks sit around 1-2 mV
+SCOPE_COUPLING = 'DC'
+SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
+SCOPE_PAD_S = 0.30              # recorded before and after the burst
 
 # --- what the capture is checked against -----------------------------------
 # The tightest 0th->1st spacing measured across the 2026-08-23 mode maps. Two
@@ -188,6 +204,72 @@ def report_mode_location(found, roi_height=ROI_HEIGHT):
         print('  ! more than 1% of pixels are saturated. The offset fit '
               'degrades badly past ~5%; shorten the exposure or attenuate.')
     return margin
+
+
+# %% [Step 1b] Checking the light level --------------------------------------
+# A clipped peak is the one thing that reliably breaks the alignment fit: the
+# camera stops tracking the photodiode exactly where the signal is strongest.
+# Measured earlier on this setup, 1% of samples clipped is survivable and 5%
+# is not, so the gate is set well below that.
+MAX_SATURATED_FRACTION = 0.001   # 0.1% of pixel samples
+TARGET_PEAK_FRACTION = 0.7       # aim the brightest pixel here, of full scale
+
+
+def check_light_level(cam, n_frames=60, adjust_gain=True):
+    """Measure the peak level and trim the gain until it is safe, or explain.
+
+    Runs before the real capture, because a saturated burst cannot be rescued
+    afterwards. Gain is the only knob this may touch: the exposure is pinned to
+    just under the frame period (shortening it opens dead time in which a
+    1.5 ms resonance disappears entirely), and the pixel format is chosen for
+    headroom already.
+
+    Returns a dict describing the level. When the light is too bright even at
+    minimum gain, `ok` is False and `advice` says what has to change in the
+    optics - there is no software fix at that point.
+    """
+    low, high = cam.gain_limits_db
+    saturation = cam.saturation_level
+    history = []
+    for _ in range(4):
+        frames, _ = cam.record_burst(n_frames)
+        peak = int(frames.max())
+        fraction = float((frames >= saturation).mean())
+        history.append({'gain_db': cam.gain_db, 'peak': peak,
+                        'peak_fraction': peak / saturation,
+                        'saturated_fraction': fraction})
+        print(f'  gain {cam.gain_db:5.1f} dB -> peak {peak:5d}/{saturation} '
+              f'({peak / saturation:5.1%}), saturated {fraction:.4%}')
+        if fraction <= MAX_SATURATED_FRACTION:
+            break
+        if not adjust_gain or cam.gain_db <= low + 1e-6:
+            break
+        # drop the gain by the ratio needed to bring the peak to target
+        overshoot = max(peak / (TARGET_PEAK_FRACTION * saturation), 1.01)
+        cam.gain_db = max(low, cam.gain_db - 20 * np.log10(overshoot))
+
+    last = history[-1]
+    # Both tests matter, and the fraction alone is not enough: a peak pinned at
+    # full scale means the brightest resonances are clipped through their cores,
+    # flattening exactly the features the alignment fit reads, even when only a
+    # handful of pixels are involved.
+    ok = (last['saturated_fraction'] <= MAX_SATURATED_FRACTION
+          and last['peak_fraction'] < 0.99)
+    advice = None
+    if not ok:
+        at_min = cam.gain_db <= low + 1e-6
+        advice = (
+            f'the peak sits at {last["peak_fraction"]:.1%} of full scale with '
+            f'{last["saturated_fraction"]:.3%} of pixels saturated'
+            + (f' at the minimum gain of {low:.1f} dB' if at_min else '')
+            + '. Nothing in software can fix this: the exposure is pinned to '
+              f'{cam.exposure_us / 1000:.1f} ms by the {1e6 / cam.exposure_us:.0f} Hz '
+              'frame rate, and shortening it would open dead time in which a '
+              'resonance can hide. Attenuate the light reaching the camera - an '
+              'ND filter, or a weaker split off the transmission.')
+    return {'ok': ok, 'history': history, 'advice': advice,
+            'gain_db': cam.gain_db, 'saturation_level': saturation,
+            **last}
 
 
 # %% [Step 2] Configuring the camera ----------------------------------------
@@ -351,6 +433,138 @@ def capture(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
         cam.close()
 
 
+# %% [Step 3b] Driving both instruments (Phase 2) -----------------------------
+def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
+                         locate=True, n_frames=None, scope_serial=None,
+                         adjust_gain=True, require_level=True):
+    """Record the spectrum and the mode video from one process.
+
+    The camera is configured first and the scope block started last, so that as
+    little as possible happens between the scope beginning to record and the
+    first exposure. That gap is what `t0_host` estimates, and keeping it small
+    is what makes the fine alignment optional: the smaller the gap, the smaller
+    the window the fit has to search, and the better the nominal offset is on
+    its own.
+
+    Nothing is aligned here. The session records the scope trace, the frames,
+    and `t0_host` from the two host timestamps; `mode_video_sync.py` refines
+    that offset later if it is worth refining.
+    """
+    from pico_scope.ps4000a_scope import PicoScope4000A
+
+    n_frames = N_FRAMES if n_frames is None else n_frames
+    cam = BaslerCamera(serial_number)
+    cam.open()
+    scope = PicoScope4000A(scope_serial)
+    try:
+        mode_location = None
+        offset_y = ROI_OFFSET_Y
+        if locate:
+            print('--- locating the mode (whole sensor) ---')
+            mode_location = locate_mode(cam)
+            report_mode_location(mode_location)
+            offset_y = int(np.clip(
+                mode_location['centre_row'] - ROI_HEIGHT // 2,
+                0, cam.max_frame_size[1] - ROI_HEIGHT))
+            print(f'  -> ROI offset_y {offset_y} (binned)')
+        checks = configure(cam, offset_y)
+        burst_s = n_frames / FRAME_RATE_HZ
+
+        print('\n--- light level ---')
+        level = check_light_level(cam, adjust_gain=adjust_gain)
+        checks['light_level'] = level
+        if not level['ok']:
+            if require_level:
+                raise RuntimeError('too bright to capture: ' + level['advice'])
+            print(f'  ! {level["advice"]}')
+            print('  ! continuing anyway (--allow-saturated); the alignment '
+                  'fit will probably not lock.')
+
+        scope.open()
+        scope.configure_channel(SCOPE_CHANNEL, enabled=True,
+                                coupling=SCOPE_COUPLING, range_v=SCOPE_RANGE_V)
+        for name in ('A', 'B', 'C', 'D'):
+            if name != SCOPE_CHANNEL:
+                scope.configure_channel(name, enabled=False)
+        scope.configure_trigger(enabled=False)   # start immediately
+        duration = burst_s + 2 * SCOPE_PAD_S
+        print(f'\n--- scope {scope.variant} s/n {scope.serial} ---')
+        print(f'  channel {SCOPE_CHANNEL}, +-{SCOPE_RANGE_V * 1e3:g} mV '
+              f'{SCOPE_COUPLING}, {SCOPE_SAMPLE_INTERVAL_S * 1e6:g} us/sample')
+        print(f'  block {duration:.3f} s = {burst_s:.3f} s burst + '
+              f'2 x {SCOPE_PAD_S:.2f} s pad')
+
+        block = scope.start_block(duration, SCOPE_SAMPLE_INTERVAL_S)
+        host_scope_start = block['host_start_s']
+        print(f'  recording; starting the burst ...')
+        host_before_burst = time.time()
+        frames, meta = cam.record_burst(n_frames)
+        host_after_burst = time.time()
+        scope.wait_block(timeout_s=duration * 3 + 10)
+        t_scope, volts, block_info = scope.read_block()
+        # Read the camera's settings while it is still open - everything below
+        # happens after the finally clause has closed it.
+        camera_info = cam.describe()
+        scope_info = {'serial': scope.serial, 'variant': scope.variant}
+    finally:
+        scope.close()
+        cam.close()
+
+    timing = burst_timing(meta, expected_rate_hz=FRAME_RATE_HZ)
+    # Scope t = 0 is the trigger, i.e. the start of the block, so the host-clock
+    # estimate of where frame 0 sits is simply the delay between the two calls.
+    # It carries whatever latency RunBlock and StartGrabbing add, which is the
+    # error the fine alignment exists to remove.
+    t0_host = host_before_burst - host_scope_start
+    print(f'\n  {frames.shape} {frames.dtype}, dropped {timing["n_dropped"]}')
+    print(f'  frame period {timing["period_s_median"] * 1e3:.4f} ms '
+          f'+- {timing["period_s_std"] * 1e3:.4f} ms')
+    print(f'  scope {block_info["n_collected"]} samples at '
+          f'{block_info["interval_s"] * 1e9:.0f} ns, overflow '
+          f'{block_info["overflow_channels"] or "none"}')
+    print(f'  t0 from the host clocks: {t0_host * 1e3:.2f} ms into the block')
+
+    stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+    folder = Path(output_root) / stamp
+    session_path, mask = save_session(
+        folder, stamp, frames, meta, timing, checks, camera_info,
+        mode_location)
+
+    # the scope trace lives with the capture, so no .psdata is needed
+    signal = volts[SCOPE_CHANNEL]
+    np.savez_compressed(folder / f'{stamp}_scope.npz', t=t_scope, signal=signal)
+    session = json.loads(session_path.read_text(encoding='utf-8'))
+    session['scope'] = {
+        'file': f'{stamp}_scope.npz',
+        'channel': SCOPE_CHANNEL,
+        'range_v': SCOPE_RANGE_V,
+        'coupling': SCOPE_COUPLING,
+        'sample_interval_s': block_info['interval_s'],
+        'n_samples': block_info['n_collected'],
+        'duration_s': duration,
+        'overflow_channels': block_info['overflow_channels'],
+        'serial': scope_info['serial'],
+        'variant': scope_info['variant'],
+    }
+    session['sync'].update({
+        'method': 'host_clock',
+        't0_host_s': t0_host,
+        'host_scope_start_s': host_scope_start,
+        'host_before_burst_s': host_before_burst,
+        'host_after_burst_s': host_after_burst,
+        'description': 'both instruments driven from one process; t0_host is '
+                       'the delay between RunBlock and the burst starting. '
+                       'Refine with mode_video_sync.py --refine if needed.',
+    })
+    session_path.write_text(json.dumps(session, indent=1), encoding='utf-8')
+    print(f'  mask covers {int(mask.sum())} of {mask.size} pixels '
+          f'({mask.mean():.2%})')
+    print(f'  saved {session_path}')
+    print(f'\nOptional fine alignment:')
+    print(f'  python pico_scope/mode_video_sync.py --session "{folder}" --refine')
+    return session_path
+
+
 # %% [Step 4] Self-test -------------------------------------------------------
 def _self_test():
     """No hardware: check the session round-trips and the checks bite."""
@@ -421,6 +635,16 @@ def main():
                              'and long enough to cover the delay')
     parser.add_argument('--no-locate', action='store_true',
                         help='skip the reconnaissance and use ROI_OFFSET_Y')
+    parser.add_argument('--allow-saturated', action='store_true',
+                        help='capture even if the camera is clipping, instead '
+                             'of refusing; the alignment fit will likely fail')
+    parser.add_argument('--levels', action='store_true',
+                        help='measure the light level and exit, without '
+                             'capturing')
+    parser.add_argument('--scope', action='store_true',
+                        help='drive the scope from here too, instead of '
+                             'recording it by hand in PicoScope 7 (which must '
+                             'then be closed - only one program can own it)')
     args = parser.parse_args()
 
     if args.self_test:
@@ -439,8 +663,29 @@ def main():
             cam.set_roi_full()
             cam.close()
         return
-    capture(args.serial, locate=not args.no_locate,
-            prompt=not args.no_prompt)
+    if args.levels:
+        cam = BaslerCamera(args.serial)
+        cam.open()
+        try:
+            offset_y = ROI_OFFSET_Y
+            if not args.no_locate:
+                offset_y = int(np.clip(
+                    locate_mode(cam)['centre_row'] - ROI_HEIGHT // 2,
+                    0, cam.max_frame_size[1] - ROI_HEIGHT))
+            configure(cam, offset_y)
+            print('\n--- light level ---')
+            level = check_light_level(cam)
+            print(f"  {'OK' if level['ok'] else 'TOO BRIGHT'}: "
+                  f"{level['advice'] or 'peak is in range'}")
+        finally:
+            cam.close()
+        return
+    if args.scope:
+        capture_synchronized(args.serial, locate=not args.no_locate,
+                             require_level=not args.allow_saturated)
+    else:
+        capture(args.serial, locate=not args.no_locate,
+                prompt=not args.no_prompt)
 
 
 if __name__ == '__main__':
