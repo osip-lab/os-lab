@@ -92,6 +92,15 @@ SCOPE_COUPLING = 'DC'
 SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
 SCOPE_PAD_S = 0.30              # recorded before and after the burst
 
+# ps4000aRunBlock returns before the scope has actually begun sampling, so the
+# host-clock estimate of where frame 0 sits is systematically early. Measured
+# over 12 captures on 2026-08-26: +39.9 ms with a standard deviation of 7.8 ms,
+# i.e. a 4.0-frame bias with 0.78 frames of jitter. Subtracting it puts 83% of
+# captures within one frame without any fitting, which is what makes the fine
+# alignment optional. Re-measure with --calibrate if the driver or the timing
+# configuration changes.
+HOST_T0_BIAS_S = 0.0399
+
 # --- what the capture is checked against -----------------------------------
 # The tightest 0th->1st spacing measured across the 2026-08-23 mode maps. Two
 # resonances closer together than one frame period blend into a single image,
@@ -615,14 +624,17 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
     # estimate of where frame 0 sits is simply the delay between the two calls.
     # It carries whatever latency RunBlock and StartGrabbing add, which is the
     # error the fine alignment exists to remove.
-    t0_host = host_before_burst - host_scope_start
+    t0_host_raw = host_before_burst - host_scope_start
+    t0_host = t0_host_raw + HOST_T0_BIAS_S
     print(f'\n  {frames.shape} {frames.dtype}, dropped {timing["n_dropped"]}')
     print(f'  frame period {timing["period_s_median"] * 1e3:.4f} ms '
           f'+- {timing["period_s_std"] * 1e3:.4f} ms')
     print(f'  scope {block_info["n_collected"]} samples at '
           f'{block_info["interval_s"] * 1e9:.0f} ns, overflow '
           f'{block_info["overflow_channels"] or "none"}')
-    print(f'  t0 from the host clocks: {t0_host * 1e3:.2f} ms into the block')
+    print(f'  t0 from the host clocks: {t0_host_raw * 1e3:.2f} ms raw, '
+          f'{t0_host * 1e3:.2f} ms after the {HOST_T0_BIAS_S * 1e3:+.1f} ms '
+          f'calibration')
 
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
     folder = Path(output_root) / stamp
@@ -649,12 +661,16 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
     session['sync'].update({
         'method': 'host_clock',
         't0_host_s': t0_host,
+        't0_host_raw_s': t0_host_raw,
+        'host_t0_bias_s': HOST_T0_BIAS_S,
         'host_scope_start_s': host_scope_start,
         'host_before_burst_s': host_before_burst,
         'host_after_burst_s': host_after_burst,
-        'description': 'both instruments driven from one process; t0_host is '
-                       'the delay between RunBlock and the burst starting. '
-                       'Refine with mode_video_sync.py --refine if needed.',
+        'description': 'both instruments driven from one process. t0_host is '
+                       'the delay between RunBlock and the burst starting, '
+                       'plus the calibrated RunBlock bias. Good to about one '
+                       'frame on its own; mode_video_sync.py --refine takes it '
+                       'to a hundredth of one.',
     })
     session_path.write_text(json.dumps(session, indent=1), encoding='utf-8')
     print(f'  mask covers {int(mask.sum())} of {mask.size} pixels '

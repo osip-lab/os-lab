@@ -985,3 +985,70 @@ The way to remove the slack entirely is **Phase 2** — drive the scope from the
 same Python process, so both start together and the search range shrinks to
 milliseconds. Failing that, the beam-block marker of option B breaks the FSR
 degeneracy outright, since a dropout is not periodic.
+
+---
+
+# Why `depth` is low, and what it does and does not mean (2026-08-26)
+
+Fits kept reporting `depth` between 1.1 and 16 even with good camera SNR
+(0.6-1.0% noise/span) and no clipping. Two hypotheses were wrong before the
+right one:
+
+- **Not saturation.** With the peak at 58% of full scale and 0.000% of pixels
+  clipped, depth was still 1.1-4.3.
+- **Not light falling outside the ROI.** The frames with the largest residuals
+  turned out to be the *brightest* frames, not dark ones, and the mode sits well
+  inside the ROI - the edge rows carry 1-5% of the centre's intensity.
+- **Not the exposure window.** Fitting the integration duration as a free
+  parameter moved r² from 0.93936 to 0.93984. Nothing.
+
+**It is the camera and the photodiode measuring different quantities.** The
+photodiode integrates the whole transmitted beam; the camera weights it
+spatially over its ROI. Counts-per-volt therefore differs from one transverse
+mode to the next, and no single gain fits them all - which is exactly what the
+residuals show: sharp isolated peaks disagreeing in amplitude, sometimes camera
+high and sometimes scope high, with neighbouring frames compensating.
+
+## The consequence: depth is not accuracy
+
+Fitting all 14 sessions twice - once searching a 900 ms window, once a 50 ms
+window around the consensus - gave **the same offset in 12 of them**, to within
+microseconds, regardless of whether depth was 1.2 or 16. The two that moved were
+the two that had failed outright.
+
+So a depth of 1.5 with a consistent offset is a good fit of a mismatched model,
+not a bad fit. The `locked` threshold was lowered from 3.0 to 1.5, and the
+docstring now says plainly that depth measures model agreement, not alignment
+error. The old threshold was rejecting fits that were demonstrably correct.
+
+## The host-clock bias, calibrated
+
+`ps4000aRunBlock` returns before the scope starts sampling, so the host estimate
+of frame 0 is systematically early. Over the 12 consistent captures:
+
+| | value | in frames |
+| --- | --- | --- |
+| bias | **+39.88 ms** | +3.97 |
+| jitter (sd) | **7.80 ms** | 0.78 |
+
+`HOST_T0_BIAS_S = 0.0399` is now subtracted at capture time. Verified on fresh
+captures: every one that locked landed within **0.73 frames** without any
+fitting (+1.5, +5.2, +7.3 ms), and the one that did not lock was flagged rather
+than believed.
+
+**So the fine alignment is genuinely optional now**, as hoped: the calibrated
+host clock is good to about one frame, and `--refine` takes it to a hundredth of
+one. A viewer that snaps to the brightest frame within +-1 absorbs most of what
+is left.
+
+Re-measure the bias if the driver, the frame rate or the block configuration
+changes.
+
+## Still open
+
+- The light level drifts up over minutes and the capture is refused when it
+  clips. Peak brightness also varies ~2.3x between bursts at a *fixed* level,
+  because it depends on which resonance each burst happens to catch - so the
+  pre-flight check, which judges from one short burst, can pass and let the real
+  capture clip. It should average several bursts or carry a safety factor.
+- Phase 1d, the viewer.

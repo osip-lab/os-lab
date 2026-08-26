@@ -86,8 +86,18 @@ class OffsetFit:
 
     `depth` = median residual / best residual. **Did the fit find the sweep at
     all?** A featureless burst - beam blocked, or the burst missing the sweep -
-    gives a depth near 1. Anything above a few means the frame grid really did
-    lock onto the cavity's structure.
+    gives a depth near 1.
+
+    Do not read depth as accuracy. It is capped by how well the camera can
+    track the photodiode at all, and on this setup that ceiling is low: the
+    photodiode integrates the whole transmitted beam while the camera weights
+    it spatially, so the counts-per-volt differ from one transverse mode to the
+    next and no single gain fits them all. Measured over 14 captures, depth
+    ranged from 1.2 to 16 while the fitted offset stayed the same to within a
+    few microseconds - constraining the search to a 50 ms window changed the
+    answer in only 2 of them, and those two were the ones that failed outright.
+    A depth of 1.5 with a consistent offset is a good fit of a mismatched
+    model, not a bad fit.
 
     `margin` = best rival residual / best residual, where the rival must lie
     more than a few frame periods away. **Is that offset unique?** A cavity
@@ -115,8 +125,13 @@ class OffsetFit:
 
     @property
     def locked(self):
-        """The frame grid found the sweep's structure."""
-        return self.depth is not None and self.depth > 3.0
+        """The frame grid found the sweep's structure.
+
+        The threshold is deliberately low. Depth is limited by model mismatch
+        rather than by whether the offset is right (see the class docstring),
+        so a stricter gate rejects fits that are demonstrably correct.
+        """
+        return self.depth is not None and self.depth > 1.5
 
     @property
     def unique(self):
@@ -733,16 +748,19 @@ def refine_session(session_path, window_s=0.25, verbose=True):
                   f'depth {fit.depth:7.1f}x  margin {fit.margin:6.2f}x')
         print(f'  correction        : {correction * 1e3:+9.3f} ms '
               f'({abs(correction) / exposure:.3f} of an exposure)')
+        frames_off = abs(correction) / exposure
         if not best.locked:
             print('  ! the fit did not lock onto the sweep - check that the '
                   'burst caught resonances and that the camera sees the same '
                   'light as channel D')
-        elif abs(correction) > 0.5 * exposure:
-            print('  ! the correction exceeds half a frame, so the host clock '
-                  'alone would have picked the wrong frame. Keep refining.')
+        elif frames_off > 2.0:
+            print(f'  ! the correction is {frames_off:.1f} frames, far more '
+                  f'than the 0.78 frames of jitter the calibrated host clock '
+                  f'should show. Either the fit found an alias, or '
+                  f'HOST_T0_BIAS_S needs re-measuring.')
         else:
-            print(f'  the host clock alone was within '
-                  f'{abs(correction) / exposure:.2f} of a frame')
+            print(f'  the calibrated host clock alone was within '
+                  f'{frames_off:.2f} of a frame')
 
     session['sync'].update({
         't0_fitted_s': best.t0,
