@@ -1,9 +1,11 @@
 # Synchronized mode video + cavity spectrum
 
 **Status:** design, not yet implemented. Written 2026-08-25.
-**Part 1 was carried out on 2026-08-26** — see *Part 1 — results* near the end
-of this file. The approach is confirmed viable, but implementation is **blocked
-on one missing cable** (check 3). A few premises in Part 1 below turned out to be
+**Part 1 was carried out on 2026-08-26** — see *Part 1 — results* near the end of
+this file. The approach is confirmed viable. The sync cable of check 3 does not
+exist in the lab, so the `ExposureActive` wire was **replaced by an optical
+correlation** that fits the offset from the data itself — see *Synchronization
+method*. Nothing is blocked. Several premises in Part 1 below turned out to be
 different at the hardware; the results section says which, and supersedes them.
 
 **How to use this document:** Part 1 is for a human at the lab computer — checks
@@ -114,9 +116,10 @@ measurement.
 
 ### 3. Cabling
 
-> **Answered 2026-08-26: the cable does not exist and must be obtained — this
-> is the blocker.** The pull-up advice below is superseded: the chosen line
-> (Line3, GPIO) has an internal ≈2 kΩ pull-up and needs no external one.
+> **Answered 2026-08-26: no cable exists in the lab, and the design no longer
+> needs one** — see *Synchronization method*. Kept because a cable would still be a
+> useful independent check. The pull-up advice below is superseded: the line that
+> would be used (Line3, GPIO) has an internal ≈2 kΩ pull-up and needs no external one.
 
 Work out the physical connection from the camera's I/O connector to a scope BNC.
 Record what connector the camera uses and what adapter/cable is needed.
@@ -128,7 +131,8 @@ usually drive a level directly. Check which type your chosen line is.
 
 ### 4. See the pulse train on the scope — the real proof that this works
 
-> **Not done — blocked on check 3.**
+> **Not done, and no longer required** — the optical correlation replaces the pulse
+> train. Still the right first test if a cable is ever obtained.
 
 Configure the line as in check 1, set the camera free-running at ~50 fps with
 exposure ≈ 20 ms, and look at the sync channel on the PicoScope screen.
@@ -222,7 +226,8 @@ is better to know that before the code is written.
 
 ### 7. Bench-test parts (for the end-to-end check in Part 2)
 
-> **Deferred 2026-08-26** — behind the same cable blocker.
+> **Superseded 2026-08-26.** The LED bench test was there to prove the electrical
+> mapping. Its replacement is the beam-block marker of option B, which needs no parts.
 
 The verification below drives an LED from the Rigol generator and points the
 camera at it. Confirm you have an LED that can be driven from the generator and
@@ -443,7 +448,7 @@ not selectable — the mode is fixed in firmware and must be determined empirica
 (same scene at binning 1 vs 2; mean level ×4 means Sum, unchanged means Average).
 `set_binning(..., mode=...)` must tolerate the node's absence.
 
-## Camera — check 3: connector and cabling ❌ blocked
+## Camera — check 3: connector and cabling ⚠ no cable (worked around)
 
 - Camera receptacle: **Hirose HR10A-7R-6PB**; mating plug: **Hirose HR10A-7P-6S**.
 - Pinout (from the acA2040-90umNIR page of the pylon 8 docs):
@@ -479,7 +484,12 @@ reads back **50.6 fps at full frame 2048×2048 Mono8**.
 | --- | --- | --- |
 | 2048², Mono12 | 8.4 MB | 25 |
 | 2048², Mono8 | 4.2 MB | 51 |
-| 1024² (2×2 binned), Mono8 | 1.05 MB | 202 (sensor readout binds first) |
+| 1024² (2×2 binned), Mono8 | 1.05 MB | 202 on the link — but see below |
+
+⚠ **That last row is misleading, and the plan's whole bandwidth model with it.**
+Measured while implementing Phase 1a (2026-08-26): the link is *not* usually the
+constraint, and **binning does not raise the frame rate at all** on this sensor.
+See *Frame rate — what actually limits it* below.
 
 Exposure range 42 µs – 10 s, so a 10 ms exposure is well inside. Pixel formats:
 `Mono8`, `Mono12`, `Mono12p`.
@@ -518,8 +528,9 @@ ready to raise `Gain`.
 
 ## Check 7 — bench-test LED
 
-Deferred. Not needed until Phase 1 code exists, and it is behind the same cable
-blocker anyway.
+Superseded. The LED existed to validate the electrical frame-to-pulse mapping; with
+the optical method the equivalent end-to-end test is the beam-block marker of
+option B, which needs no parts at all.
 
 ## Decisions taken as a result of Part 1
 
@@ -531,17 +542,127 @@ Phase 1a/1b text above.
 | Which camera | s/n **25173136** | it is the one pointed at the cavity mode |
 | Which line | **Line3** (GPIO, pin 1), ground on pin 6 | internal ≈2 kΩ pull-up drives a 1 MΩ scope input unaided; Line2 (opto) would need an external pull-up and supply |
 | Which scope channel | **Channel A** | free and confirmed empty in real recordings; Channel D stays the signal |
-| Frame period / rate | **10 ms / 100 fps**, exposure 10 ms | the tightest measured 0th→1st spacing is 24.7 ms, so the plan's 30 ms end of the range would blend adjacent peaks |
+| Frame period / rate | **10 ms / ~99.6 fps**, exposure 9.9 ms | the tightest measured 0th→1st spacing is 24.7 ms, so the plan's 30 ms end of the range would blend adjacent peaks. Exposure must sit just *under* the period, or it becomes the cap itself |
 | Pixel format | **Mono8** | halves the payload; 8 bits is ample for telling a spot from two lobes |
-| Binning | **2×2**, mode not selectable | needed to reach 100 fps; the mode nodes do not exist on this model |
-| Throughput cap | **leave at the camera's 212 MB/s** | binning already gets us past 100 fps, and two cameras share the bus, so the caution at `basler_cameras.py:78-84` still stands |
-| Frames per capture | **~100**, covering the 1.000 s record | 1024×1024 uint8 → ~100 MB per session |
+| Binning | **2×2**, firmware mode measured to be **Sum** | 4× the signal, which the dim badly-coupled measurements need. It does *not* buy frame rate — see below |
+| ROI | **1024×512 binned = 2048×1024 sensor** | full sensor width, half its height. Height is the only dimension that costs frame rate |
+| Throughput cap | **raise to 212 MB/s** for the capture | the class default of 150 MB/s caps this configuration at 74.7 Hz. 212 MB/s is the cameras' own factory value, and only one camera streams during a capture |
+| Frames per capture | **~100**, covering the 1.000 s record | 1024×512 uint8 → 0.52 MB/frame, ~52 MB per session |
 
-## Blocker — the cable does not exist in the lab
+## Synchronization method — decided 2026-08-26: optical correlation, no cable
+
+**The cable is no longer on the critical path.** The offset between the two
+records is recovered from the data itself. This supersedes the "software
+timestamps only: not good enough" rejection in *Why not the other routes* — that
+argument was about *host* timestamps, and it is still correct about those. The
+route below is a different thing and was not considered when the plan was written.
+
+### The insight
+
+Without a wire, the only observable the camera and the scope share is **light** —
+every other channel (USB, host clock, PicoScope 7's start instant) carries
+millisecond latency, and PicoScope 7's record start is a human pressing a button
+in a GUI, so the host does not know it at all. There is therefore **no clock prior
+of any kind**, coarse or fine.
+
+That turns out not to matter, because the camera and the Channel D photodiode watch
+the *same cavity transmission*. Frame k's total brightness is, by construction, the
+Channel D trace boxcar-integrated over that frame's exposure window. The offset can
+be **fitted**.
+
+Note what the camera's own clock does and does not do here. `ChunkSelector =
+'Timestamp'` plus `BlockID` give exact *relative* frame times and independent
+dropped-frame detection — which collapses the problem to **one unknown scalar**,
+the offset between the two records. The optical fit supplies that scalar. Seen this
+way, the sync cable existed to measure a single number.
+
+### It works, on real data
+
+Tested by taking a real Channel D trace (2026-08-23, 33 cm), synthesising the
+brightness sequence a 100 fps camera would report, adding noise, and fitting the
+offset back with gain and dark level marginalised out (counts-per-volt is unknown,
+so only the *shape* of the sequence carries timing). The offset was searched blind
+over a full 400 ms window — no prior.
+
+| frame-brightness noise | RMS error | wrong frame | margin over rival |
+| --- | --- | --- | --- |
+| 1% | **0.050 ms** | 0.0% | 26× |
+| 3% | **0.134 ms** | 0.0% | 4.5× |
+| 10% | 0.478 ms | 4.0% | 1.7× |
+| 30% | 1.208 ms | 21.0% | 1.1× |
+
+"Wrong frame" is an error above half a frame period — the only error that matters.
+"Margin" is how much worse the best rival minimum more than 30 ms away is; above 1
+means the true offset wins.
+
+At ≤3% noise this is sub-0.15 ms with no failures — finer than the cable needs to
+be, and it carries its own quality flag (the margin), which the cable does not.
+
+It works because peaks that straddle a frame boundary split their light between two
+frames in a ratio that pins the offset hard, while the ~40 peaks that do not
+straddle each still assert "I am in frame *n*", and 40 such constraints at
+irregular spacings intersect to almost nothing.
+
+### The one real caveat: saturation
+
+The failure mode is *model mismatch* — the camera saturating while the photodiode
+does not. Measured by clipping only the synthesised camera response:
+
+| samples clipped | RMS error (1% noise) | wrong frame |
+| --- | --- | --- |
+| 0% | 0.043 ms | 0.0% |
+| 1% | 0.116 ms | 0.0% |
+| **5%** | 0.493 ms | **17%** |
+| 10% | 0.987 ms | 29% |
+
+A slightly clipped 0th order is survivable; a properly saturated one is not.
+Two fixes, both cheap:
+
+1. sum frame brightness over **unsaturated pixels only**; or
+2. apply the same clip to the model, with the cap a fitted parameter — the level is
+   known exactly (255 in Mono8). This turns mismatch back into a matched model.
+
+### Option B — an engineered optical marker (complement, not replacement)
+
+During the record, **block the beam once** with a card. Both the camera and
+Channel D see the same dropout edge, and cross-correlating just those two edges
+gives the offset directly — independent of peak structure and immune to saturation,
+since a dark edge cannot clip. Doing it at both ends of the record also gives the
+clock-rate ratio.
+
+Its value is as an *independent check* on the correlation fit, which is otherwise
+exactly what the cable would have been for.
+
+### What the cable would still buy, if one ever turns up
+
+- It works when the camera sees nothing at all (dark record, blocked beam,
+  misaligned cavity) — though then there is no video worth synchronizing.
+- It is independent of the science signal, where option A infers timing from it.
+- Option A degrades if the ROI clips the higher-order modes, i.e. precisely for the
+  modes this feature exists to identify. Keep the ROI generous.
+
+### Assumption to confirm at the bench
+
+That the camera and the Channel D photodiode look at the same transmitted beam (a
+split of it). Anti-correlation is fine — the fitted gain simply comes out negative.
+A genuinely different port would not be.
+
+### What still has to be measured
+
+Everything above is real on the scope side and synthetic on the camera side. The one
+number that decides which row of the table applies is the **actual per-frame
+brightness noise**. It needs no scope, no cable and no correlation: run the camera
+at 100 fps / 10 ms exposure, record a burst, plot total brightness per frame, and
+see whether the resonances stand out cleanly. The same session settles the two
+questions left over from Part 1 — whether the firmware binning is Sum or Average,
+and whether the frames are too dim.
+
+## The cable — wanted, but no longer blocking
 
 Checked 2026-08-26: there is no I/O cable for either camera, and the I/O
-connector has never been used. **Nothing downstream of check 4 can be validated
-until one is obtained.**
+connector has never been used. Since the optical route above was adopted this no
+longer blocks anything, but a cable would still be worth having as an independent
+check — see *What the cable would still buy*.
 
 What to obtain — one of:
 
@@ -581,3 +702,88 @@ produce the numbers above:
   `utilities.utils.psdata_buffer_csvs` purely to read the units row and confirm
   the `Time` column is in seconds — it is worth confirming per file, because other
   cached exports in the same tree use milliseconds.
+
+---
+
+# Phase 1a — done (2026-08-26)
+
+`basler_cam/basler_cameras.py` now carries everything the brief asked for:
+`frame_rate_hz` / `resulting_frame_rate`, `set_roi`, `set_roi_full`,
+`max_frame_size`, `set_binning`, `set_pixel_format`, `set_throughput_limit`,
+`set_exposure_active_output`, `enable_chunks`, `record_burst`,
+`max_frame_rate_for`, `assert_frame_rate_reachable` and `describe`, plus the
+module-level `burst_timing` and the node helpers `_snap` / `_clip` /
+`_entry_available`. `CameraStreamer` and `self_test()` are untouched, as required
+— the new checks live in `burst_self_test()` and `probe_binning_mode()`, reachable
+as `python basler_cam/basler_cameras.py --burst-test [serial]` and `--binning-mode`.
+
+## Frame rate — what actually limits it
+
+The plan assumed the link was the constraint and that binning relieved it. Both
+halves are wrong on this camera. Measured on 25173136, Mono8, exposure 1 ms, link
+cap 419 MB/s, sweeping the ROI:
+
+| ROI | resulting | ROI | resulting |
+| --- | --- | --- | --- |
+| 2048 × 2048 | 90.0 Hz | 2048 × 512 | 350.4 Hz |
+| 1024 × 2048 | 90.0 Hz | 1024 × 512 | 350.4 Hz |
+| 512 × 2048 | 90.0 Hz | 2048 × 256 | 676.1 Hz |
+| 2048 × 1024 | 178.4 Hz | 512 × 256 | 676.1 Hz |
+| 512 × 1024 | 178.4 Hz | 256 × 256 | 676.1 Hz |
+
+**Readout is paced per row — about 5.4 µs each — and depends on nothing else.**
+Width is free. And binning does *not* shorten it: 2×2 at 1024×1024 reads the same
+2048 sensor rows as 1×1 at 2048×2048 and runs at the same rate. Binning happens
+after readout on this sensor, so it reduces the payload but not the readout time.
+
+So there are three independent ceilings, and the useful thing is to know which one
+is low:
+
+1. **exposure** — the rate can never exceed 1/exposure, so a 10 ms exposure caps
+   at ~99 Hz. Set exposure just under the period, not equal to it.
+2. **readout** — set by ROI *height* alone; crop rows, keep columns.
+3. **link** — `DeviceLinkThroughputLimit` ÷ payload; the only one binning helps.
+
+`assert_frame_rate_reachable()` works out which of the three is binding and says
+so, instead of listing remedies that cannot help.
+
+## The chosen configuration, verified
+
+Binning 2×2, frame **1024×512** (= 2048×1024 sensor: full width, half height),
+Mono8, throughput cap 212 MB/s, exposure 9.9 ms, requested 100 Hz.
+`ResultingFrameRate` 99.6 Hz. A real 100-frame burst:
+
+- **0 dropped frames**
+- frame period from the camera's own timestamps: **10.0406 ms ± 0.0000 ms**
+  (99.60 Hz) — the camera's clock is essentially jitter-free over a second
+- timestamps confirmed to be in **nanoseconds**, by comparing the implied period
+  against the requested rate rather than assuming it
+- 0.52 MB per frame, ~52 MB for a 1 s capture
+
+## Binning mode: measured to be Sum
+
+`BinningHorizontalMode` / `BinningVerticalMode` do not exist on this model, so the
+mode cannot be read — but it can be measured, and `probe_binning_mode()` does:
+the same dark scene at binning 1 and binning 2, identical exposure and gain, gave
+mean levels of **5.79 and 20.61**, a ratio of **3.56**.
+
+That is Sum (which would give exactly 4), not Average (which would give 1). The
+shortfall from 4 is the black-level pedestal, which is added per *output* pixel and
+so does not multiply: with mean = S + P at binning 1 and 4S + P at binning 2, a
+ratio of 3.56 implies P ≈ 0.8 counts, which is a plausible dark offset.
+
+**This is the good outcome** — it is the 4× signal the plan hoped for, and the
+badly-coupled measurements this feature exists for are exactly the dim ones.
+
+## Still to measure, and it needs the laser
+
+The one number the optical synchronization actually depends on: **the frame-to-frame
+brightness scatter on a live scene.** `burst_self_test()` prints it, but with the
+laser off the frames are black (mean 0.00) and the figure it reports is noise on
+noise. Point the camera at the cavity output, run
+
+    python basler_cam/basler_cameras.py --burst-test 25173136
+
+and read off the two lines under *what the optical synchronization cares about*.
+Below ~3% scatter puts the offset fit in its sub-0.15 ms regime; above ~10% it
+starts mis-assigning frames. The saturated fraction wants to stay under ~1%.
