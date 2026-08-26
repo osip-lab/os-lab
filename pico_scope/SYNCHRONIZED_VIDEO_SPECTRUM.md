@@ -16,6 +16,113 @@ answers are written down.
 
 ---
 
+# How to use it
+
+Everything below this section is the design record - why it is built the way it
+is, and what was measured along the way. This section is how to run it.
+
+## Before the first capture of a session
+
+**Close PicoScope 7.** Only one program can own the scope.
+
+Then check the light, because the transmission drifts enough between sessions
+that yesterday's setting is not reliable:
+
+    python pico_scope/mode_video_capture.py --levels
+
+It reports the peak of four capture-length bursts. You want the **worst burst
+near 50-70% of full scale**. It will tell you if the light is too bright (and by
+what factor to attenuate) or too dim to use the range well. Gain is already at
+its minimum and the exposure is pinned by the frame rate, so the adjustment is
+optical - an ND filter, or a weaker split off the transmission.
+
+## Capturing
+
+    python pico_scope/mode_video_capture.py --scope
+
+One command drives both instruments. It finds the mode on the sensor, sizes the
+ROI around it, checks the light, records 1.2 s of spectrum and 120 frames of
+video together, and writes a session folder under `<PATH_DATA_LOCAL>/mode_video/`.
+
+Useful flags:
+
+| flag | what it does |
+| --- | --- |
+| `--locate` | find the mode and report, without capturing |
+| `--levels` | check the light and exit |
+| `--frames N` | record N frames instead of 120 |
+| `--no-locate` | reuse the last ROI, saving ~2 s |
+| `--allow-saturated` | capture even if the light is too bright |
+| *(omit `--scope`)* | Phase 1 mode: you drive PicoScope 7 by hand |
+
+## Sharpening the alignment (optional)
+
+    python pico_scope/mode_video_sync.py --session <folder> --refine
+
+The capture's own offset is already good to about a frame. This takes it to a
+hundredth of one and, more usefully, reports whether the camera and the scope
+actually saw the same thing. Look at two numbers:
+
+- **`locked`** - the fit found the sweep. If it says NOT LOCKED, do not trust
+  the alignment: usually the burst caught too few resonances.
+- **`correction`** - how far the host clock was out. Expect under a frame;
+  much more than that means the fit found an alias or the calibration has moved.
+
+## Looking at the result
+
+    python pico_scope/mode_video_sync_show.py --session <folder>
+
+## Choosing a peak and seeing its mode
+
+**Interactively**, in the viewer:
+
+- **move the mouse** along the spectrum - the image below follows, showing the
+  frame whose exposure covers that instant
+- **click** to pin that frame; click again to release
+- **left / right arrows** step one frame, **shift** ten
+- **b** toggles snap-to-brightest
+
+Zoom (the matplotlib magnifier) to see the frame bands. The **red band** on the
+trace is the 10 ms exposure of the frame on screen: everything inside it went
+into that one image.
+
+**Snap-to-brightest is on by default** and is worth understanding. The offset
+can be off by up to about a frame, which is enough to show a resonance's dark
+neighbour instead of the resonance. So the viewer takes the brightest frame
+within one either side of the one the offset names. Press **b** to see the raw
+mapping - if the two differ, the snapped one is almost always what you meant.
+
+**Programmatically**, if you have a peak time and want its frame:
+
+```python
+from pico_scope.mode_video_sync import (session_windows, frame_at_time,
+                                        load_session, release_frames)
+
+windows, which = session_windows(r'C:\data_bank\mode_video\2026-08-26_211037')
+session, frames = load_session(r'C:\data_bank\mode_video\2026-08-26_211037')
+
+index = frame_at_time(windows, 1.0303)   # a time in the scope record, seconds
+image = frames[index]                    # the transverse pattern at that peak
+release_frames(frames)                   # Windows keeps the file locked
+```
+
+`which` tells you whether the offset came from the fit (`t0_fitted_s`) or from
+the calibrated host clock (`t0_host_s`). `frame_at_time` returns `None` for an
+instant in the dead time between exposures; `nearest_frame` always returns one.
+
+## What a session folder holds
+
+    <stem>_frames.npy     the frame stack, uint16 (Mono12)
+    <stem>_mask.npy       the pixels the mode lit
+    <stem>_scope.npz      the spectrum: t and signal, seconds and volts
+    <stem>_session.json   camera settings, per-frame timestamps, the offset,
+                          both brightness series, and every check that ran
+
+The JSON is the irreplaceable part - the per-frame timestamps and the offset
+exist nowhere else.
+
+---
+
 ## The problem
 
 A measurement is currently two separate recordings: a mode video from the Pylon
