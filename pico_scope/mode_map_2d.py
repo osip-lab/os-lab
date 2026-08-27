@@ -17,7 +17,10 @@ over consecutive longitudinal mode numbers fixes all of that, because it gives
 both the FSR in scope-seconds and (from the cavity length) the FSR in MHz:
 
     1. MHz per scope-second = FSR [MHz] / FSR [s]  -> every row is stretched or
-       contracted so that 1 MHz is the same length on the x axis.
+       contracted so that 1 MHz is the same length on the x axis. The FSR in
+       seconds is the one of the pair the row is drawn around (step 4), not the
+       average over the record: a scan whose pace drifts over the record has a
+       different one in every FSR, and only its own gets that window right.
     2. The 0th order of the reference pair becomes x = 0 -> the 0th orders of
        all rows line up in one vertical ridge.
     3. The row is flipped when needed so the 1st order is to the RIGHT of the
@@ -89,21 +92,21 @@ from utilities.utils import (ask_long_arm_length,  # noqa: E402
 # fly (and you are asked which waveform buffer to use); .csv files are read as
 # they are. The keys need not be evenly spaced - the map keeps their spacing.
 MEASUREMENTS = {
-    33: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\33cm\without EOM-0014.psdata",
-    34: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\34cm\without EOM-0012.psdata",
-    35: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\35cm\without EOM-0012.psdata",
-    36: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\36cm\without EOM-0009.psdata",
-    37: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\37cm\without EOM-0008.psdata",
-    38: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\38cm\without EOM-0007.psdata",
-    39: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\39cm\without EOM-0006.psdata",
-    40: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\40cm\without EOM-0004.psdata",
-    41: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\41cm\without EOM-0003.psdata",
-    42: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\42cm\without EOM-0003.psdata",
-    43: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\43cm\without EOM-0002.psdata",
-    44: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\44cm\without EOM-3W.psdata",
-    45: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\45cm\without EOM-3W.psdata",
-    46: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\46cm\without EOM-3W-0002.psdata",
-    47: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\47cm\without EOM-3W.psdata",
+    33: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\33cm\without EOM-0014.psdata",
+    34: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\34cm\without EOM-0012.psdata",
+    35: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\35cm\without EOM-0012.psdata",
+    36: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\36cm\without EOM-0009.psdata",
+    37: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\37cm\without EOM-0008.psdata",
+    38: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\38cm\without EOM-0007.psdata",
+    39: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\39cm\without EOM-0006.psdata",
+    40: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\40cm\without EOM-0004.psdata",
+    41: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\41cm\without EOM-0003.psdata",
+    42: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\42cm\without EOM-0003.psdata",
+    43: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\43cm\without EOM-0002.psdata",
+    44: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\44cm\without EOM-3W.psdata",
+    45: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\45cm\without EOM-3W.psdata",
+    46: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\46cm\without EOM-3W-0002.psdata",
+    47: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\47cm\without EOM-3W.psdata",
 }
 Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
 
@@ -252,6 +255,19 @@ def analyse_file(key, data_path, remark=False):
 
 
 # %% [Step 2] One trace -> one row of the map --------------------------------
+def ran_away(peak):
+    """Whether this marked peak's fit landed on something that is not a peak.
+
+    mode_marking fits an area, so a fit that ran away - onto a trough, or onto
+    nothing at all - comes back with a negative area and with it a negative
+    height (and usually a nonsense width beside it). Taken at face value such a
+    fit divides the row by a negative number, turning that row of the map
+    upside down, so it counts here as no fit at all and the same mode's fits in
+    the other marked FSRs stand in for it.
+    """
+    return peak['height'] is not None and peak['height'] <= 0
+
+
 def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
               normalize_to=None):
     """Turn a marked trace into a frequency-aligned, normalized map row.
@@ -262,9 +278,15 @@ def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
     into a frequency axis. `normalize_to` ('zeroth' or 'first', NORMALIZE_TO by
     default) picks the mode whose peak height becomes 1.0.
 
+    Everything is measured on the reference pair - the one whose FSR the
+    trimmed row covers - so that the numbers describe what the row shows even
+    when the scan pace drifts over the record: 'fsr_s' is that pair's own FSR
+    and 'df_mhz' its own 0th->1st spacing. The averages over all the marked
+    pairs come along as 'fsr_s_mean' and 'df_mhz_mean' for comparison.
+
     Returns {'f': [MHz from the 0th order], 'i': [normalized intensity],
-             'df_mhz', 'fwhm_0_mhz', 'fwhm_1_mhz', 'fsr_mhz', 'fsr_s',
-             'mhz_per_s', 'flipped', 'normalized_to'}.
+             'df_mhz', 'df_mhz_mean', 'fwhm_0_mhz', 'fwhm_1_mhz', 'fsr_mhz',
+             'fsr_s', 'fsr_s_mean', 'mhz_per_s', 'flipped', 'normalized_to'}.
     """
     normalize_to = check_normalize_to(NORMALIZE_TO if normalize_to is None
                                       else normalize_to)
@@ -274,10 +296,9 @@ def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
         raise ValueError('need at least two marked pairs to get an FSR')
 
     t_zero = np.array([pair[0]['x0'] for pair in pairs], dtype=float)
-    fsr_s = float(np.mean(np.diff(t_zero)))  # FSR in scope-seconds
-    if fsr_s == 0:
+    intervals = np.diff(t_zero)  # one FSR each, in scope-seconds
+    if np.any(intervals == 0):
         raise ValueError('two pairs share the same 0th-order position')
-    mhz_per_s = fsr_mhz / abs(fsr_s)  # the scan pace, in MHz per scope-second
 
     # Which way the scan ran: +1 when the 1st order sits at a later time than
     # its 0th order. Unanimous in practice, so a majority vote is only a guard
@@ -289,19 +310,45 @@ def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
     # the trimmed window runs one FSR in that direction. With direction = +1
     # (frequency rising with time) that is the earliest pair, otherwise the
     # latest one.
-    reference_pair = pairs[0] if direction > 0 else pairs[-1]
+    reference_index = 0 if direction > 0 else len(pairs) - 1
+    reference_pair = pairs[reference_index]
     zeroth, first = reference_pair
 
-    gammas = [pair[0]['gamma'] for pair in pairs if pair[0]['gamma'] is not None]
-    gamma = zeroth['gamma'] if zeroth['gamma'] is not None else (
-        float(np.median(gammas)) if gammas else None)
+    # The pace is the reference pair's OWN FSR - the one the trimmed window
+    # covers - not the average over the whole record. The scan is not always
+    # linear: in a record whose pace drifts by several percent per FSR, an
+    # averaged pace puts this window's modes at the wrong detuning (and the
+    # 0th->1st spacing drawn over the map then misses the ridge it describes).
+    # The neighbour on the +f side is the next 0th order in time when the scan
+    # runs upward, the previous one when it runs downward.
+    fsr_s = float(intervals[reference_index if direction > 0
+                            else reference_index - 1])
+    fsr_s_mean = float(np.mean(intervals))
+    mhz_per_s = fsr_mhz / abs(fsr_s)  # the scan pace, in MHz per scope-second
+    drift = abs(fsr_s - fsr_s_mean) / abs(fsr_s_mean)
+    if drift > 0.02:
+        print(f"  the scan pace drifts: this window's FSR is {fsr_s:.4g} s "
+              f"against {fsr_s_mean:.4g} s averaged over the record "
+              f"({100 * drift:.1f}% apart) - the window's own pace is used")
+
+    # The width is signed only by accident (a Lorentzian is symmetric in it),
+    # so it is the magnitude that means anything.
+    def widths(index):
+        return [abs(pair[index]['gamma']) for pair in pairs
+                if pair[index]['gamma'] is not None and not ran_away(pair[index])]
+
+    gammas = widths(0)
+    gamma = (abs(zeroth['gamma'])
+             if zeroth['gamma'] is not None and not ran_away(zeroth)
+             else (float(np.median(gammas)) if gammas else None))
     if gamma is None:
         fwhm_0_mhz = fsr_mhz / 200.0
-        print("  no fitted 0th-order width (positions were clicked, not fitted)"
-              f" - trimming with a placeholder FWHM of {fwhm_0_mhz:.4g} MHz")
+        print("  no usable 0th-order width (the positions were clicked rather "
+              "than fitted, or the fits did not land on a peak) - trimming "
+              f"with a placeholder FWHM of {fwhm_0_mhz:.4g} MHz")
     else:
-        fwhm_0_mhz = 2.0 * abs(gamma) * mhz_per_s
-    gammas_1 = [pair[1]['gamma'] for pair in pairs if pair[1]['gamma'] is not None]
+        fwhm_0_mhz = 2.0 * gamma * mhz_per_s
+    gammas_1 = widths(1)
     fwhm_1_mhz = (2.0 * float(np.median(gammas_1)) * mhz_per_s
                   if gammas_1 else float('nan'))
 
@@ -318,23 +365,52 @@ def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
 
     # Normalization only rescales the row - nothing moves on the frequency
     # axis - so the reference is free to be either mode of the reference pair.
-    reference = zeroth if normalize_to == 'zeroth' else first
-    if reference['height'] and reference['y0'] is not None:
-        i_row = (i_row - reference['y0']) / reference['height']
+    order_index = 0 if normalize_to == 'zeroth' else 1
+    reference = reference_pair[order_index]
+    height, baseline = reference['height'], reference['y0']
+    if not height or ran_away(reference):
+        # This one fit is unusable, but the same mode was marked in the other
+        # FSRs of the same record and is the same height there, so those stand
+        # in rather than the row losing its common scale.
+        stand_ins = [pair[order_index] for pair in pairs
+                     if pair[order_index]['height'] is not None
+                     and pair[order_index]['height'] > 0
+                     and pair[order_index]['y0'] is not None]
+        height = (float(np.median([peak['height'] for peak in stand_ins]))
+                  if stand_ins else None)
+        baseline = (float(np.median([peak['y0'] for peak in stand_ins]))
+                    if stand_ins else None)
+        if height:
+            fit = ('no fitted height' if reference['height'] is None else
+                   f"a fitted height of {reference['height']:.4g}")
+            print(f"  the {NORMALIZATION_REFERENCES[normalize_to]} mode of this "
+                  f"row's own FSR has {fit} - normalizing by the median over "
+                  f"the {len(stand_ins)} marked FSR(s) that did fit "
+                  f"({height:.4g}) instead. Mark this file again when you can.")
+    if height and baseline is not None:
+        i_row = (i_row - baseline) / height
     else:
         span = float(np.ptp(i_row)) or 1.0
-        print(f"  no fitted {NORMALIZATION_REFERENCES[normalize_to]} height - "
-              "normalizing this row by its own min/max instead")
+        print(f"  no usable {NORMALIZATION_REFERENCES[normalize_to]} height "
+              "anywhere in this file - normalizing this row by its own min/max "
+              "instead")
         i_row = (i_row - float(np.min(i_row))) / span
 
-    df_mhz = float(np.mean([abs(pair[1]['x0'] - pair[0]['x0'])
-                            for pair in pairs])) * mhz_per_s
+    # The spacing of the reference pair, so that it describes the very FSR the
+    # row shows; the average over all the marked pairs is carried along beside
+    # it as a cross-check (print_table prints both), being the steadier number
+    # when the scan is linear and the marking noisy.
+    df_mhz = abs(first['x0'] - zeroth['x0']) * mhz_per_s
+    df_mhz_mean = float(np.mean([abs(pair[1]['x0'] - pair[0]['x0'])
+                                 for pair in pairs])) * mhz_per_s
     return {'f': f_row, 'i': i_row,
             'df_mhz': df_mhz,
+            'df_mhz_mean': df_mhz_mean,
             'fwhm_0_mhz': fwhm_0_mhz,
             'fwhm_1_mhz': fwhm_1_mhz,
             'fsr_mhz': fsr_mhz,
             'fsr_s': fsr_s,
+            'fsr_s_mean': fsr_s_mean,
             'mhz_per_s': mhz_per_s,
             'flipped': direction < 0,
             'normalized_to': normalize_to,
@@ -462,13 +538,18 @@ def plot_trends(keys, rows, y_label=Y_AXIS_LABEL):
 
 
 def print_table(keys, rows, y_label=Y_AXIS_LABEL):
-    header = (f"{y_label:>18} | {'df [MHz]':>10} | {'FWHM0 [MHz]':>11} | "
+    # 'df' is the row's own spacing, the one the map draws; '<df>' the average
+    # over every marked pair. They part company when the scan pace drifts, and
+    # seeing both is what says so.
+    header = (f"{y_label:>18} | {'df [MHz]':>10} | {'<df> [MHz]':>10} | "
+              f"{'FWHM0 [MHz]':>11} | "
               f"{'FWHM1 [MHz]':>11} | {'FSR [MHz]':>10} | {'MHz/s':>10} | scan")
     print()
     print(header)
     print('-' * len(header))
     for key, row in zip(keys, rows):
-        print(f"{key:>18g} | {row['df_mhz']:>10.4f} | {row['fwhm_0_mhz']:>11.4f} | "
+        print(f"{key:>18g} | {row['df_mhz']:>10.4f} | "
+              f"{row['df_mhz_mean']:>10.4f} | {row['fwhm_0_mhz']:>11.4f} | "
               f"{row['fwhm_1_mhz']:>11.4f} | {row['fsr_mhz']:>10.2f} | "
               f"{row['mhz_per_s']:>10.4g} | "
               f"{'down (flipped)' if row['flipped'] else 'up'}")
@@ -486,6 +567,7 @@ def save_outputs(folder, map_fig, trend_fig, keys, rows, centres, z):
     trend_fig.savefig(trend_path, dpi=200)
     np.savez(npz_path, keys=keys, f_mhz=centres, intensity=z.filled(np.nan),
              df_mhz=[row['df_mhz'] for row in rows],
+             df_mhz_mean=[row['df_mhz_mean'] for row in rows],
              fwhm_0_mhz=[row['fwhm_0_mhz'] for row in rows],
              fwhm_1_mhz=[row['fwhm_1_mhz'] for row in rows],
              fsr_mhz=[row['fsr_mhz'] for row in rows],
@@ -530,7 +612,8 @@ def main(measurements=None, y_label=None, normalize_to=None):
         row = build_row(x, y, record['marks'], fsr_mhz,
                         normalize_to=normalize_to)
         print(f"  {row['n_pairs']} pairs, FSR = {fsr_mhz:.2f} MHz "
-              f"({row['fsr_s']:.4g} s), df = {row['df_mhz']:.4f} MHz, "
+              f"({row['fsr_s']:.4g} s), df = {row['df_mhz']:.4f} MHz "
+              f"(averaged over the pairs: {row['df_mhz_mean']:.4f} MHz), "
               f"0th-order FWHM = {row['fwhm_0_mhz']:.4f} MHz"
               f"{', scan flipped' if row['flipped'] else ''}")
         keys.append(float(key))
@@ -557,24 +640,35 @@ def main(measurements=None, y_label=None, normalize_to=None):
 # %% [Step 6] Self-test (synthetic data; no scope, no GUI, no files) ---------
 def _synthetic_trace(fsr_mhz, df_mhz, fwhm_mhz, mhz_per_s, descending,
                      amplitude, offset, n_fsr=3, n_samples=40000,
-                     first_amplitude=1.0):
+                     first_amplitude=1.0, pace_drift=1.0):
     """A fake scan and its exact marks, as the marker would have fitted them.
 
     Returns (x, y, marks). The scan covers `n_fsr` free spectral ranges, runs
     up or down in frequency, and carries a 0th/1st-order Lorentzian pair per
     FSR - so the row builder gets everything it needs and the right answers are
     known exactly. `first_amplitude` scales the 1st order relative to the 0th,
-    which is what tells the two normalization references apart.
+    which is what tells the two normalization references apart. `pace_drift`
+    is how much longer each FSR takes than the one before it (1.0 = a perfectly
+    linear scan, `mhz_per_s` then being the pace everywhere); it is the drift
+    real records show, and what tells a per-window pace from an averaged one.
     """
     from pico_scope.mode_analysis import area_lorentzian
     from pico_scope.mode_marking import peak_record
 
     f_lin = np.linspace(-0.3 * fsr_mhz, (n_fsr - 0.5) * fsr_mhz, n_samples)
-    x = np.linspace(0.0, (f_lin[-1] - f_lin[0]) / mhz_per_s, n_samples)
+
+    def pace_at(f_mhz):
+        """The scan pace [MHz/s] where the scan is at `f_mhz`."""
+        return mhz_per_s / pace_drift ** (np.asarray(f_mhz) / fsr_mhz)
+
+    # time = the integral of 1 / pace over the frequencies already scanned,
+    # which for pace_drift = 1 is the plain linear (f - f[0]) / mhz_per_s
+    seconds_per_mhz = 1.0 / pace_at(f_lin)
+    x = np.concatenate(([0.0], np.cumsum(
+        0.5 * (seconds_per_mhz[1:] + seconds_per_mhz[:-1]) * np.diff(f_lin))))
     f_of_t = f_lin[::-1] if descending else f_lin
 
     gamma_mhz = fwhm_mhz / 2.0
-    gamma_s = gamma_mhz / mhz_per_s
     first_amp = amplitude * first_amplitude
     centres_mhz = [(k * fsr_mhz + shift, amp)
                    for k in range(n_fsr)
@@ -590,12 +684,18 @@ def _synthetic_trace(fsr_mhz, df_mhz, fwhm_mhz, mhz_per_s, descending,
     def time_of(centre_mhz):
         return float(np.interp(centre_mhz, f_sorted, t_sorted))
 
+    def width_at(centre_mhz):
+        """The peak's width in scope-seconds: MHz-wide, so pace-dependent."""
+        return gamma_mhz / float(pace_at(centre_mhz))
+
     marks = []
     for k in range(n_fsr):
-        pair = [peak_record(time_of(k * fsr_mhz), gamma_s,
-                            amplitude * np.pi * gamma_s, offset),
-                peak_record(time_of(k * fsr_mhz + df_mhz), gamma_s,
-                            first_amp * np.pi * gamma_s, offset)]
+        zeroth_mhz, first_mhz = k * fsr_mhz, k * fsr_mhz + df_mhz
+        gamma_0, gamma_1 = width_at(zeroth_mhz), width_at(first_mhz)
+        pair = [peak_record(time_of(zeroth_mhz), gamma_0,
+                            amplitude * np.pi * gamma_0, offset),
+                peak_record(time_of(first_mhz), gamma_1,
+                            first_amp * np.pi * gamma_1, offset)]
         marks.append(pair)
     if descending:
         marks.reverse()  # the marker returns them in scan (time) order
@@ -640,6 +740,50 @@ def _self_test():
 
     # both scans, however they ran, describe the same spectrum
     assert abs(rows[0]['df_mhz'] - rows[1]['df_mhz']) < 1e-6 * fsr_mhz
+
+    # --- a scan whose pace drifts -----------------------------------------
+    # Each FSR takes 8% longer than the one before, as the 38 cm record does.
+    # The row covers the first FSR alone, so its numbers have to be that FSR's
+    # own: with a pace averaged over the record the row would be stretched and
+    # the spacing drawn over the map would miss the ridge it describes.
+    drift = 1.08
+    x, y, marks = _synthetic_trace(fsr_mhz, df_mhz, fwhm_mhz, 1.0e5, False,
+                                   0.6, 0.0, pace_drift=drift)
+    drifting = build_row(x, y, marks, fsr_mhz)
+    intervals = np.diff([pair[0]['x0'] for pair in marks])
+    assert abs(drifting['fsr_s'] - intervals[0]) < 1e-9, drifting['fsr_s']
+    assert abs(drifting['fsr_s_mean'] - np.mean(intervals)) < 1e-9
+    assert drifting['fsr_s'] < 0.97 * drifting['fsr_s_mean'], 'the pace did not drift'
+
+    # the spacing the map draws sits on the row's own 1st-order ridge ...
+    sample_mhz = float(np.median(np.diff(drifting['f'])))
+    right = drifting['f'] > 0.5 * df_mhz
+    ridge_f = drifting['f'][right][np.argmax(drifting['i'][right])]
+    assert abs(ridge_f - drifting['df_mhz']) < 2 * sample_mhz,         (ridge_f, drifting['df_mhz'])
+    # ... which the average over the three FSRs, being ~8% wider per FSR, does
+    # not: that is the mismatch this reference-pair spacing exists to avoid.
+    assert drifting['df_mhz_mean'] - ridge_f > 0.01 * fsr_mhz,         drifting['df_mhz_mean']
+    # the row is still normalized and still starts at its 0th order
+    assert abs(drifting['i'].max() - 1.0) < 0.02, drifting['i'].max()
+    assert abs(drifting['f'][0] + TRIM_WIDTHS_BEFORE_ZEROTH
+               * drifting['fwhm_0_mhz']) < 2 * sample_mhz
+
+    # --- a fit that ran away ------------------------------------------------
+    # The 0th order of the row's own FSR fitted as a trough (a negative
+    # height), as one 43 cm record did. Normalizing by it would divide the row
+    # by a negative number and turn it upside down; the same mode's fits in the
+    # other marked FSRs have to stand in, giving back exactly the sound row.
+    x, y, marks = _synthetic_trace(fsr_mhz, df_mhz, fwhm_mhz, 1.0e5, False,
+                                   0.6, 0.05)
+    healthy = build_row(x, y, marks, fsr_mhz)
+    runaway = [[dict(peak) for peak in pair] for pair in marks]
+    runaway[0][0].update(height=-4.6, gamma=-runaway[0][0]['gamma'])
+    assert ran_away(runaway[0][0]) and not ran_away(marks[0][0])
+    guarded = build_row(x, y, runaway, fsr_mhz)
+    assert abs(guarded['i'].max() - 1.0) < 0.02, guarded['i'].max()
+    assert np.allclose(guarded['f'], healthy['f']), 'the trimming window moved'
+    assert np.allclose(guarded['i'], healthy['i']), 'the row was not restored'
+    assert abs(guarded['fwhm_0_mhz'] - fwhm_mhz) < 1e-6 * fsr_mhz
 
     # a third measurement, at a longer cavity (a smaller FSR): its row is
     # shorter than the others, so the map has to leave the rest of it blank
