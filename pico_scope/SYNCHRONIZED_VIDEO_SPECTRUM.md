@@ -16,6 +16,141 @@ answers are written down.
 
 ---
 
+# How to use it
+
+Everything below this section is the design record - why it is built the way it
+is, and what was measured along the way. This section is how to run it.
+
+## Press Run
+
+Each of the three scripts is driven by a block at the top of its own file, in
+the same style as `pico_scope/mode_map_2d.py`. Open the file, edit the block,
+press Run in PyCharm. No arguments, no run configuration.
+
+| file | block | what Run does by default |
+| --- | --- | --- |
+| `mode_video_capture.py` | `ACTION`, `DRIVE_SCOPE`, `LOCATE_FIRST` | captures, driving both instruments |
+| `mode_video_sync.py` | `ACTION`, `SESSION` | refines the newest capture |
+| `mode_video_sync_show.py` | `ACTION`, `SESSION` | opens the newest capture in the viewer |
+
+**Leaving `SESSION = ''` means "the most recent capture"**, so the usual round
+trip is: Run the capture, Run the viewer. No paths to copy.
+
+`ACTION` selects what the file does - `'capture'`, `'levels'`, `'locate'` or
+`'self-test'` for the capture script, `'refine'` or `'fit'` for the sync,
+`'show'` for the viewer. The command-line flags still work and override the
+block, for scripting.
+
+## Before the first capture of a session
+
+**Close PicoScope 7.** Only one program can own the scope.
+
+Then check the light, because the transmission drifts enough between sessions
+that yesterday's setting is not reliable:
+
+    ACTION = 'levels'    # then press Run
+    # or: python pico_scope/mode_video_capture.py --levels
+
+It reports the peak of four capture-length bursts. You want the **worst burst
+near 50-70% of full scale**. It will tell you if the light is too bright (and by
+what factor to attenuate) or too dim to use the range well. Gain is already at
+its minimum and the exposure is pinned by the frame rate, so the adjustment is
+optical - an ND filter, or a weaker split off the transmission.
+
+## Capturing
+
+    ACTION = 'capture'   # DRIVE_SCOPE = True, then press Run
+    # or: python pico_scope/mode_video_capture.py --scope
+
+One Run drives both instruments. It finds the mode on the sensor, sizes the
+ROI around it, checks the light, records 1.2 s of spectrum and 120 frames of
+video together, and writes a session folder under `<PATH_DATA_LOCAL>/mode_video/`.
+
+Useful flags:
+
+| flag | what it does |
+| --- | --- |
+| `--locate` | find the mode and report, without capturing |
+| `--levels` | check the light and exit |
+| `--frames N` | record N frames instead of 120 |
+| `--no-locate` | reuse the last ROI, saving ~2 s |
+| `--allow-saturated` | capture even if the light is too bright |
+| *(omit `--scope`)* | Phase 1 mode: you drive PicoScope 7 by hand |
+
+## Sharpening the alignment (optional)
+
+    ACTION = 'refine'    # SESSION = '' takes the newest capture; press Run
+    # or: python pico_scope/mode_video_sync.py --session <folder> --refine
+
+The capture's own offset is already good to about a frame. This takes it to a
+hundredth of one and, more usefully, reports whether the camera and the scope
+actually saw the same thing. Look at two numbers:
+
+- **`locked`** - the fit found the sweep. If it says NOT LOCKED, do not trust
+  the alignment: usually the burst caught too few resonances.
+- **`correction`** - how far the host clock was out. Expect under a frame.
+
+The two are read together, and agreement between them outranks either alone:
+the host clock and the fit are independent estimates, so a correction inside
+the clock's own jitter settles the matter even when `depth` is low. Only a
+*disagreement* of more than two frames is a reason to distrust the alignment.
+
+## Looking at the result
+
+    ACTION = 'show'      # SESSION = '' takes the newest capture; press Run
+    # or: python pico_scope/mode_video_sync_show.py --session <folder>
+
+## Choosing a peak and seeing its mode
+
+**Interactively**, in the viewer:
+
+- **move the mouse** along the spectrum - the image below follows, showing the
+  frame whose exposure covers that instant
+- **click** to pin that frame; click again to release
+- **left / right arrows** step one frame, **shift** ten
+- **b** toggles snap-to-brightest
+
+Zoom (the matplotlib magnifier) to see the frame bands. The **red band** on the
+trace is the 10 ms exposure of the frame on screen: everything inside it went
+into that one image.
+
+**Snap-to-brightest is on by default** and is worth understanding. The offset
+can be off by up to about a frame, which is enough to show a resonance's dark
+neighbour instead of the resonance. So the viewer takes the brightest frame
+within one either side of the one the offset names. Press **b** to see the raw
+mapping - if the two differ, the snapped one is almost always what you meant.
+
+**Programmatically**, if you have a peak time and want its frame:
+
+```python
+from pico_scope.mode_video_sync import (session_windows, frame_at_time,
+                                        load_session, release_frames)
+
+windows, which = session_windows(r'C:\data_bank\mode_video\2026-08-26_211037')
+session, frames = load_session(r'C:\data_bank\mode_video\2026-08-26_211037')
+
+index = frame_at_time(windows, 1.0303)   # a time in the scope record, seconds
+image = frames[index]                    # the transverse pattern at that peak
+release_frames(frames)                   # Windows keeps the file locked
+```
+
+`which` tells you whether the offset came from the fit (`t0_fitted_s`) or from
+the calibrated host clock (`t0_host_s`). `frame_at_time` returns `None` for an
+instant in the dead time between exposures; `nearest_frame` always returns one.
+
+## What a session folder holds
+
+    <stem>_frames.npy     the frame stack, uint16 (Mono12)
+    <stem>_mask.npy       the pixels the mode lit
+    <stem>_scope.npz      the spectrum: t and signal, seconds and volts
+    <stem>_session.json   camera settings, per-frame timestamps, the offset,
+                          both brightness series, and every check that ran
+
+The JSON is the irreplaceable part - the per-frame timestamps and the offset
+exist nowhere else.
+
+---
+
 ## The problem
 
 A measurement is currently two separate recordings: a mode video from the Pylon
@@ -918,3 +1053,292 @@ exits. Pass `mmap=False` to read it into memory instead.
 **Phase 1d, the viewer** (`mode_video_sync_show.py`) — hover a peak, see the
 frame. Everything it needs is now in place: `fit_session` returns the windows,
 and `frame_at_time` / `nearest_frame` do the lookup.
+
+---
+
+# First real synchronized capture (2026-08-26) — it works, with one caveat
+
+Camera burst: 120 frames, 0 dropped, period 10.0406 ms ± 0.0000, masked
+brightness noise/span **0.96%**, 26 frames on resonances, 0.0017% saturated.
+Scope: 20 s record, Channel D, 100 kS/s.
+
+**The alignment is right.** The decisive check is amplitude-independent: at the
+fitted offset, take the 20 strongest resonance peaks in the scope trace and ask
+which camera frame each lands on. Mean brightness-rank of those frames: **9.4 out
+of 120, against 59.5 for chance** — and 20/20 of them land in the 30 brightest
+frames. The two brightness series (masked and full-frame) agree on the offset to
+**6 µs**, a thousandth of an exposure.
+
+## The caveat: a long record makes the offset ambiguous
+
+The residual against offset is a **comb of minima one FSR apart**. A cavity sweep
+repeats, so a 20 s record contains ~85 positions that fit almost as well, and the
+`margin` collapses towards 1 even though the alignment is correct.
+
+This forced a real correction to the design. One number cannot answer two
+questions, so `OffsetFit` now reports both:
+
+- **`depth`** = median residual / best residual. *Did the fit find the sweep?*
+  A featureless burst gives ~1. This capture gave 9-15.
+- **`margin`** = best rival / best. *Is the offset unique?* Long records alias.
+
+`locked and not unique` — the normal outcome for a long record — means the
+alignment within the sweep is right but which repetition is undetermined. For
+identifying a transverse mode that is usually harmless, since equivalent
+positions in the sweep carry equivalent mode content.
+
+## Which buffer, and why it was not obvious
+
+The `.psdata` held four waveform buffers (three of 20 s, one truncated at
+1.198 s), all genuinely different data (mutual correlation ~0). All three long
+ones scored near-perfectly on the peak-to-bright-frame test, because the sweep is
+that reproducible. Two independent lines picked buffer 1:
+
+- it had the best depth (14.0 vs 12.1 and 9.0) and the only margin above 1.5;
+- the host clock. Frame 0 was exposed 61.5 s before the `.psdata` was written.
+  Buffer 1 implies a 6.9 s gap between clicking Stop and the file being saved;
+  buffers 2 and 3 imply 26.6 s and 46.3 s. Only the first is a natural delay.
+
+`fit_session` now ranks buffers by **depth**, not margin — margin measures the
+sweep's periodicity, not which record the burst is in — and skips any buffer
+shorter than the burst instead of failing.
+
+## How long should the scope record be?
+
+Shorter than 20 s. The tension is exact:
+
+- the record must exceed the burst by at least the **latency** between starting
+  the scope and starting the camera;
+- every extra second of that slack adds ~4 more FSR aliases.
+
+So minimise the slack subject to covering the latency. Started by hand, that is
+1-2 s of slack: a **2-4 s record against a 0.6-1.2 s burst**. Twenty seconds was
+chosen to be safe against a multi-second delay and made the aliasing far worse
+than it needed to be.
+
+The way to remove the slack entirely is **Phase 2** — drive the scope from the
+same Python process, so both start together and the search range shrinks to
+milliseconds. Failing that, the beam-block marker of option B breaks the FSR
+degeneracy outright, since a dropout is not periodic.
+
+---
+
+# Why `depth` is low, and what it does and does not mean (2026-08-26)
+
+Fits kept reporting `depth` between 1.1 and 16 even with good camera SNR
+(0.6-1.0% noise/span) and no clipping. Two hypotheses were wrong before the
+right one:
+
+- **Not saturation.** With the peak at 58% of full scale and 0.000% of pixels
+  clipped, depth was still 1.1-4.3.
+- **Not light falling outside the ROI.** The frames with the largest residuals
+  turned out to be the *brightest* frames, not dark ones, and the mode sits well
+  inside the ROI - the edge rows carry 1-5% of the centre's intensity.
+- **Not the exposure window.** Fitting the integration duration as a free
+  parameter moved r² from 0.93936 to 0.93984. Nothing.
+
+**It is the camera and the photodiode measuring different quantities.** The
+photodiode integrates the whole transmitted beam; the camera weights it
+spatially over its ROI. Counts-per-volt therefore differs from one transverse
+mode to the next, and no single gain fits them all - which is exactly what the
+residuals show: sharp isolated peaks disagreeing in amplitude, sometimes camera
+high and sometimes scope high, with neighbouring frames compensating.
+
+## The consequence: depth is not accuracy
+
+Fitting all 14 sessions twice - once searching a 900 ms window, once a 50 ms
+window around the consensus - gave **the same offset in 12 of them**, to within
+microseconds, regardless of whether depth was 1.2 or 16. The two that moved were
+the two that had failed outright.
+
+So a depth of 1.5 with a consistent offset is a good fit of a mismatched model,
+not a bad fit. The `locked` threshold was lowered from 3.0 to 1.5, and the
+docstring now says plainly that depth measures model agreement, not alignment
+error. The old threshold was rejecting fits that were demonstrably correct.
+
+## The host-clock bias, calibrated
+
+`ps4000aRunBlock` returns before the scope starts sampling, so the host estimate
+of frame 0 is systematically early. Over the 12 consistent captures:
+
+| | value | in frames |
+| --- | --- | --- |
+| bias | **+39.88 ms** | +3.97 |
+| jitter (sd) | **7.80 ms** | 0.78 |
+
+`HOST_T0_BIAS_S = 0.0399` is now subtracted at capture time. Verified on fresh
+captures: every one that locked landed within **0.73 frames** without any
+fitting (+1.5, +5.2, +7.3 ms), and the one that did not lock was flagged rather
+than believed.
+
+**So the fine alignment is genuinely optional now**, as hoped: the calibrated
+host clock is good to about one frame, and `--refine` takes it to a hundredth of
+one. A viewer that snaps to the brightest frame within +-1 absorbs most of what
+is left.
+
+Re-measure the bias if the driver, the frame rate or the block configuration
+changes.
+
+## Still open
+
+- The light level drifts up over minutes and the capture is refused when it
+  clips. (The pre-flight check that catches this was strengthened - see
+  *The pre-flight, from several bursts* below.)
+
+---
+
+# Phase 1d — the viewer (2026-08-26)
+
+`pico_scope/mode_video_sync_show.py`. Spectrum on top, per-frame brightness
+under it, mode image below.
+
+    python pico_scope/mode_video_sync_show.py --session <capture folder>
+    python pico_scope/mode_video_sync_show.py --session <folder> --scope <file>.psdata
+
+Moving the cursor over the spectrum shows the frame whose exposure covers that
+instant; clicking pins it; arrow keys step (shift steps ten). The frame's own
+10 ms window is highlighted on the trace, which is what makes the granularity
+concrete - a peak narrower than the red band went into that one image whole.
+Frame boundaries are shaded faintly throughout, legible once zoomed.
+
+A Phase 2 capture needs nothing else: it carries its own scope trace and offset,
+preferring `t0_fitted_s` when `--refine` has been run and falling back to the
+calibrated host clock otherwise. A Phase 1 capture takes `--scope` and is
+aligned by fitting.
+
+## Snap to brightest
+
+On by default, toggled with **b**. The calibrated host clock is good to about a
+frame, which is enough to show the dark neighbour of a resonance instead of the
+resonance, so the viewer takes the brightest frame within +-1 of the one the
+offset names. It invents nothing - a resonance genuinely brighter than both its
+neighbours is the frame that was meant - and it makes the un-refined offset
+usable, which is what "fine alignment is optional" needs in practice.
+
+## Verified
+
+`--self-test` runs under Agg and drives the handlers with synthetic events:
+frame lookup exact inside windows and clamping outside, snapping bounded to one
+frame and never moving to a dimmer one, motion over the spectrum moving the
+image while motion elsewhere does not, click pinning and releasing, arrow keys
+stepping and clamping at both ends, and the highlighted band tracking the frame
+at exactly one exposure wide.
+
+Against the real capture of 2026-08-26 20:08:53: hovering the strongest
+resonance selects frame 76, whose window 973.19-983.09 ms contains that peak,
+and whose brightness is the largest in the burst.
+
+---
+
+# First fully automatic capture (2026-08-26 20:53) — the feature works
+
+One command, both instruments, no PicoScope 7 and no manual step:
+
+    python pico_scope/mode_video_capture.py --scope
+
+- light level **54.1% of full scale**, 0.000% saturated - the pre-flight passed
+  on its own after the laser was attenuated
+- ROI chosen by the reconnaissance: **1024x384 at offset_y 402**, 99.1 Hz
+- **120 frames, 0 dropped**, period 10.0786 ms ± 0.0000
+- scope block 1.800 s, 180 000 samples, no overflow
+- `t0` from the calibrated host clock: 198.53 ms
+
+`--refine` then moved it by **+2.4 ms — 0.245 of a frame.** The calibrated host
+clock alone put every frame within a quarter of an exposure of the truth, which
+settles the question the whole of Phase 2 was for: **the fine alignment really
+is optional.**
+
+## What it shows
+
+The five resonances of a single free spectral range, each a plainly different
+transverse pattern: three stacked lobes at −81 ms, a clean two-lobe at −40 ms,
+a compact multi-lobe at the strongest peak, and two higher-order patterns at
++50 and +101 ms.
+
+That is the discrimination the spectrum alone cannot give, and the reason this
+was built. From a trace of five peaks there is no way to say which is the 0th
+order and which the 1st; from the frames there is.
+
+---
+
+# The pre-flight, from several bursts (2026-08-26)
+
+The light check judged from one burst, and that is not enough. At a *fixed*
+light level the peak varies about 2.3x from burst to burst, because it depends
+on which resonance that burst happened to catch - measured over 12 bursts, peak
+1778 to 4095 while the mean stayed within 27-32. A single-burst check therefore
+passes on a lucky draw and lets the real capture clip, which happened twice.
+
+`check_light_level` now takes **4 bursts** and forms its verdict from the
+**worst** of them, allowing a further **1.3x** for a capture brighter than
+anything measured - the capture is one more draw from the same spread. It
+reports the spread as well as the worst case, so a wandering level is visible.
+
+Two details that mattered:
+
+- **When the peak is pinned at full scale the measurement is censored.** How far
+  over the level is cannot be known, so the computed gain step understates it
+  and the trim loop stalls. It now backs off by a fixed 6 dB stride while the
+  peak is pinned, and only computes a step once it can see the peak.
+- **A dim level is reported too**, rather than only a bright one: below 10% of
+  full scale the capture works but wastes most of the range.
+
+Caught immediately on the real setup: peaks `[2094, 2542, 4095, 4007]` - two of
+four bursts at full scale where a single-burst check could easily have sampled
+2094 and passed.
+
+## A session file lost to a numpy scalar
+
+The same run exposed a worse bug. `save_session` writes the frame stack, then
+the mask, then the JSON - and `json.dumps` raises on a numpy integer, which the
+measurements produce freely. One capture therefore left 94 MB of frames and a
+mask with **nothing describing them**, which cannot be reconstructed: the
+per-frame timestamps and the offset live only in that file.
+
+Both writers now pass a `default=` converter for numpy scalars and arrays.
+Losing a session to a type is not a trade worth making.
+
+## And then it happened a second time
+
+The very next capture failed at the same place for a different reason:
+`check_light_level` returned `history[-1]` *and* put `history` inside it, so the
+dict contained itself and `json.dumps` raised "Circular reference detected" -
+again after 94 MB of frames had been written.
+
+Two failures at the same step is a design fault, not two bugs. `save_session`
+now **serialises the metadata before writing any array**. The metadata is both
+the fragile part (assembled from a dozen measurements, any of which can carry a
+type json refuses) and the irreplaceable part (the per-frame timestamps and the
+offset exist nowhere else). Failing before the arrays exist costs a rerun;
+failing after costs the data.
+
+The self-test now asserts that property directly: metadata that cannot be
+serialised must leave no `.npy` behind.
+
+## The pre-flight must use capture-length bursts
+
+A 40-frame pre-flight burst spans 0.4 s and so samples fewer free spectral
+ranges than the 1.2 s capture it is meant to predict - fewer chances to catch a
+strong resonance, so the predicted peak comes out low. Measured at a fixed
+level, 120-frame bursts reach about 15% higher than 40-frame ones. The bursts
+now default to the capture's own length.
+
+A caution against over-attributing, since it was nearly done again: the capture
+where the fit failed had peaked at 91.9% of full scale but with **0.000%
+saturated**, and 1% clipped was measured to be harmless. Its real problem was
+visible elsewhere - only **10 of 120 frames caught a resonance**, against 19-26
+in the captures that worked. A sparse burst gives the fit little to lock onto,
+and that, not the level, is what `depth` was reporting.
+
+# The measurement, working (2026-08-26 21:10)
+
+Pre-flight `[1749, 1102, 1830, 1787]` of 4095, 44.7% worst; 120 frames, none
+dropped; refined correction **-6.1 ms, 0.62 of a frame**, locked.
+
+Eight resonances inside one free spectral range, each with a different
+transverse pattern - and at the centre of them the pair this whole feature
+exists to tell apart: a compact multi-lobed mode at the strongest peak, and a
+clean two-lobe **30 ms later**, against the 34.3 ms median 0th-to-1st spacing
+measured back in check 6.
+
+From the trace alone those eight peaks are eight indistinguishable spikes.

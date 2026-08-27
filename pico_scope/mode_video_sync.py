@@ -48,8 +48,24 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# --- what happens when this file is run (edit these, then press Run) -------
+# Nothing here needs the command line; the arguments exist for scripting and
+# override these when given.
+ACTION = 'refine'       # 'refine' | 'fit' | 'self-test'
+SESSION = ''            # capture folder; '' means the most recent one
+SCOPE_FILE = ''         # the .psdata of a Phase 1 capture; '' for Phase 2
+SEARCH_WINDOW_S = 0.25  # half-width of the offset search, when refining
+
 TIME_COLUMN = 'Time'
 SIGNAL_COLUMN = 'Channel D'      # cavity transmission, as in mode_map_2d.py
+
+# Where captures are written, shared with mode_video_capture.py so that an
+# empty SESSION can find the newest one.
+try:
+    from local_config import PATH_DATA_LOCAL
+    SESSION_ROOT = Path(PATH_DATA_LOCAL) / 'mode_video'
+except ImportError:                                   # pragma: no cover
+    SESSION_ROOT = Path.cwd() / 'mode_video'
 
 # The units row of a PicoScope export, e.g. "(s),(V),(mV)".
 TIME_UNITS = {'s': 1.0, 'ms': 1e-3, 'us': 1e-6, 'µs': 1e-6, 'ns': 1e-9}
@@ -80,27 +96,72 @@ class OffsetFit:
     """Result of fit_time_offset.
 
     `t0` is when frame 0's exposure began, in the scope's time coordinate.
-    `margin` is how much worse the best rival minimum far from `t0` is; it is
-    the fit's own quality flag, and a value near 1 means the answer is not
-    distinguishable from an alias and should not be trusted.
+
+    Two separate questions have to be asked about it, and conflating them is
+    misleading - which the first real capture demonstrated:
+
+    `depth` = median residual / best residual. **Did the fit find the sweep at
+    all?** A featureless burst - beam blocked, or the burst missing the sweep -
+    gives a depth near 1.
+
+    Do not read depth as accuracy. It is capped by how well the camera can
+    track the photodiode at all, and on this setup that ceiling is low: the
+    photodiode integrates the whole transmitted beam while the camera weights
+    it spatially, so the counts-per-volt differ from one transverse mode to the
+    next and no single gain fits them all. Measured over 14 captures, depth
+    ranged from 1.2 to 16 while the fitted offset stayed the same to within a
+    few microseconds - constraining the search to a 50 ms window changed the
+    answer in only 2 of them, and those two were the ones that failed outright.
+    A depth of 1.5 with a consistent offset is a good fit of a mismatched
+    model, not a bad fit.
+
+    `margin` = best rival residual / best residual, where the rival must lie
+    more than a few frame periods away. **Is that offset unique?** A cavity
+    sweep repeats every free spectral range, so a long scope record contains
+    many positions that fit almost as well and the margin collapses towards 1 -
+    even when the alignment is perfectly correct. A short record has few such
+    aliases and a high margin.
+
+    So `locked and not unique` is the normal outcome for a long record: the
+    alignment within the sweep is right, but which repetition it was is
+    undetermined. For identifying a transverse mode that is usually harmless,
+    since equivalent positions in the sweep carry equivalent mode content.
     """
 
-    def __init__(self, t0, residual, margin, gain, offset, grid, residuals):
+    def __init__(self, t0, residual, margin, gain, offset, grid, residuals,
+                 depth=None):
         self.t0 = t0
         self.residual = residual
         self.margin = margin
+        self.depth = depth
         self.gain = gain
         self.offset = offset
         self.grid = grid
         self.residuals = residuals
 
     @property
-    def trustworthy(self):
+    def locked(self):
+        """The frame grid found the sweep's structure.
+
+        The threshold is deliberately low. Depth is limited by model mismatch
+        rather than by whether the offset is right (see the class docstring),
+        so a stricter gate rejects fits that are demonstrably correct.
+        """
+        return self.depth is not None and self.depth > 1.5
+
+    @property
+    def unique(self):
+        """No rival offset a free spectral range away fits nearly as well."""
         return self.margin > 1.5
 
+    @property
+    def trustworthy(self):
+        """Locked onto the sweep and unambiguous about where."""
+        return self.locked and self.unique
+
     def __repr__(self):
-        return (f'OffsetFit(t0={self.t0:.6f} s, margin={self.margin:.1f}x, '
-                f'gain={self.gain:.4g})')
+        return (f'OffsetFit(t0={self.t0:.6f} s, depth={self.depth:.1f}x, '
+                f'margin={self.margin:.1f}x, gain={self.gain:.4g})')
 
 
 # ------------------------------------------------------------------ loading
@@ -137,6 +198,22 @@ def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN):
     return ScopeTrace(frame[time_column].to_numpy(float) * time_scale,
                       frame[signal_column].to_numpy(float) * signal_scale,
                       units[time_column], units[signal_column], path)
+
+
+def latest_session(root=None):
+    """The most recently written capture folder under `root`.
+
+    So that pressing Run analyses the capture just taken, without a path
+    having to be pasted in first - which is the point of leaving SESSION
+    empty.
+    """
+    root = Path(SESSION_ROOT if root is None else root)
+    folders = [q.parent for q in root.glob('*/*_session.json')]
+    if not folders:
+        raise FileNotFoundError(
+            f'no capture with a session file under {root} - run '
+            f'pico_scope/mode_video_capture.py first, or set SESSION')
+    return max(folders, key=lambda q: q.stat().st_mtime)
 
 
 def load_session(path, mmap=True):
@@ -337,9 +414,18 @@ def fit_time_offset(frame_starts, exposure_s, brightness, trace,
     if alias_guard is None:
         alias_guard = 3 * period
 
+    # A long scope record makes this grid large - 20 s at 0.2 ms is 10^5
+    # candidates - and the model matrix is (candidates x frames), so it is
+    # evaluated in chunks rather than all at once.
     grid = np.arange(low, high, coarse_step)
-    model = predicted_brightness(grid, frame_starts, exposure_s, t, cumulative)
-    residuals, gains = _residuals_after_linear_fit(model, brightness)
+    residuals = np.empty(grid.size)
+    chunk = max(1, int(4e6 // max(frame_starts.size, 1)))
+    for start in range(0, grid.size, chunk):
+        piece = grid[start:start + chunk]
+        model = predicted_brightness(piece, frame_starts, exposure_s, t,
+                                     cumulative)
+        residuals[start:start + chunk] = _residuals_after_linear_fit(
+            model, brightness)[0]
     best = int(np.argmin(residuals))
 
     fine = np.linspace(max(low, grid[best] - coarse_step),
@@ -356,11 +442,14 @@ def fit_time_offset(frame_starts, exposure_s, brightness, trace,
     margin = float(residuals[far].min() / residual) if far.any() and residual > 0 \
         else float('inf')
 
+    depth = float(np.median(residuals) / residual) if residual > 0 \
+        else float('inf')
     gain = float(fine_gains[fine_best])
     model_best = predicted_brightness(np.array([t0]), frame_starts, exposure_s,
                                       t, cumulative)[0]
     offset = float(brightness.mean() - gain * model_best.mean())
-    return OffsetFit(t0, residual, margin, gain, offset, grid, residuals)
+    return OffsetFit(t0, residual, margin, gain, offset, grid, residuals,
+                     depth=depth)
 
 
 # ------------------------------------------------- the sync-cable path
@@ -468,7 +557,9 @@ def _self_test():
         fit = fit_time_offset(starts, exposure, observed, trace)
         error = abs(fit.t0 - true_t0)
         print(f'  noise {noise_frac:>5.0%}: t0 error {error * 1e3:7.4f} ms, '
-              f'margin {fit.margin:6.1f}x, gain {fit.gain:.3f}')
+              f'depth {fit.depth:7.1f}x, margin {fit.margin:6.1f}x, '
+              f'gain {fit.gain:.3f}')
+        assert fit.locked, f'should have locked on at {noise_frac:.0%}'
         assert error < tolerance, f'{noise_frac:.0%}: {error * 1e3:.4f} ms'
         assert fit.trustworthy, f'margin {fit.margin} at {noise_frac:.0%}'
         assert fit.gain > 0, 'gain should recover positive'
@@ -506,10 +597,30 @@ def _self_test():
     #    better than any other.
     flat = np.full(starts.size, 40.0) + rng.normal(0, 0.05, starts.size)
     flat_fit = fit_time_offset(starts, exposure, flat, trace)
-    print(f'  featureless burst: margin {flat_fit.margin:.2f}x, '
-          f'trustworthy={flat_fit.trustworthy}')
-    assert not flat_fit.trustworthy, \
-        f'a featureless burst must not be trusted (margin {flat_fit.margin})'
+    print(f'  featureless burst: depth {flat_fit.depth:.2f}x, margin '
+          f'{flat_fit.margin:.2f}x, locked={flat_fit.locked}, '
+          f'unique={flat_fit.unique}')
+    assert not flat_fit.locked, \
+        f'a featureless burst must not read as locked (depth {flat_fit.depth})'
+    assert not flat_fit.trustworthy
+
+    # 3. A long record of a repeating sweep: locked on, but not unique. This is
+    #    the situation the first real capture landed in, and the two flags have
+    #    to separate it from the featureless case above rather than lumping
+    #    both under "not trusted" - here the alignment is right and only the
+    #    choice of repetition is open.
+    long_trace = _synthetic_trace(duration=12.0, regular=True)
+    long_clean = predicted_brightness(
+        np.array([4.0]), starts, exposure, long_trace.t,
+        _cumulative(long_trace.t, long_trace.signal))[0]
+    long_observed = long_clean + rng.normal(
+        0, 0.02 * (long_clean.max() - long_clean.min()), long_clean.size)
+    long_fit = fit_time_offset(starts, exposure, long_observed, long_trace)
+    print(f'  long regular record: depth {long_fit.depth:.1f}x, margin '
+          f'{long_fit.margin:.2f}x, locked={long_fit.locked}, '
+          f'unique={long_fit.unique}')
+    assert long_fit.locked, 'it did find the sweep'
+    assert not long_fit.unique, 'but a repeating sweep leaves it aliased'
 
     # a burst longer than the record cannot be placed
     try:
@@ -597,11 +708,145 @@ def _self_test():
         assert np.allclose(load_scope_csv(path).t, [0.0, 1.0])
     print('  CSV units row honoured: ms -> s and mV -> V')
 
+    # the run-button configuration has to name something this file can do
+    assert ACTION in ('refine', 'fit', 'self-test'), ACTION
     print('self-test passed')
 
 
+def load_session_trace(session_path):
+    """The scope trace a Phase 2 capture recorded for itself, as a ScopeTrace.
+
+    Phase 1 captures have no such file - the scope side was a .psdata exported
+    by hand - and raise here, which is what tells the caller to pass --scope.
+    """
+    session_path = Path(session_path)
+    if session_path.is_dir():
+        candidates = sorted(session_path.glob('*_session.json'))
+        if len(candidates) != 1:
+            raise FileNotFoundError(
+                f'expected one *_session.json in {session_path}, '
+                f'found {len(candidates)}')
+        session_path = candidates[0]
+    session = json.loads(session_path.read_text(encoding='utf-8'))
+    if 'scope' not in session:
+        raise FileNotFoundError(
+            f'{session_path.name} has no scope trace of its own - it was made '
+            f'with PicoScope 7 driving the scope. Pass the .psdata with '
+            f'--scope instead.')
+    data = np.load(session_path.parent / session['scope']['file'])
+    return ScopeTrace(data['t'], data['signal'], 's', 'V', session_path)
+
+
+def refine_session(session_path, window_s=0.25, verbose=True):
+    """Improve a Phase 2 capture's host-clock offset with the optical fit.
+
+    Optional by design. Driving both instruments from one process already puts
+    frame 0 within a few milliseconds, which is a fraction of a frame and good
+    enough for most work; this earns the last two orders of magnitude, and -
+    more usefully - reports `depth`, which says whether the camera and the
+    scope actually saw the same thing at all.
+
+    Because `t0_host` is already close, the search is a narrow window around it
+    rather than the whole record, so the free-spectral-range aliasing that
+    plagues a blind search over a long trace does not arise.
+    """
+    session_path = Path(session_path)
+    trace = load_session_trace(session_path)
+    session, frames = load_session(session_path)
+    starts = frame_start_times(session['meta'])
+    exposure = float(session['exposure_s'])
+    t0_host = float(session['sync']['t0_host_s'])
+
+    burst = float(starts[-1] + exposure)
+    low = max(float(trace.t[0]), t0_host - window_s)
+    high = min(float(trace.t[-1] - burst), t0_host + window_s)
+    if high <= low:
+        raise ValueError(
+            f'the host offset {t0_host * 1e3:.1f} ms leaves no room for the '
+            f'{burst:.3f} s burst inside a {trace.duration:.3f} s block')
+
+    results = {}
+    for name in ('masked', 'full'):
+        brightness = np.array(session[f'brightness_{name}'], dtype=float)
+        results[name] = fit_time_offset(starts, exposure, brightness, trace,
+                                        search=(low, high))
+    best_name = max(results, key=lambda k: results[k].depth)
+    best = results[best_name]
+    correction = best.t0 - t0_host
+
+    if verbose:
+        print(f'{trace}')
+        print(f'  host-clock offset : {t0_host * 1e3:9.3f} ms')
+        for name, fit in results.items():
+            print(f'  {name:>6} fit       : {fit.t0 * 1e3:9.3f} ms  '
+                  f'depth {fit.depth:7.1f}x  margin {fit.margin:6.2f}x')
+        print(f'  correction        : {correction * 1e3:+9.3f} ms '
+              f'({abs(correction) / exposure:.3f} of an exposure)')
+        frames_off = abs(correction) / exposure
+        # Two independent estimates, so the useful question is whether they
+        # agree. A correction inside the calibrated clock's own jitter is
+        # mutual corroboration and settles it whatever `depth` says - depth
+        # measures how well the camera tracks the photodiode, not whether the
+        # offset is right, and on this setup it sits low for physical reasons.
+        if frames_off <= 2.0:
+            print(f'  the calibrated host clock and the fit agree to '
+                  f'{frames_off:.2f} of a frame'
+                  + ('' if best.locked else
+                     f' (depth is only {best.depth:.1f}x, but the two methods '
+                     f'agreeing is the stronger evidence)'))
+        elif not best.locked:
+            print(f'  ! the fit did not lock ({best.depth:.1f}x) and disagrees '
+                  f'with the host clock by {frames_off:.1f} frames - do not '
+                  f'trust it. Usually the burst caught too few resonances.')
+        else:
+            print(f'  ! the fit locked ({best.depth:.1f}x) but disagrees with '
+                  f'the host clock by {frames_off:.1f} frames, far more than '
+                  f'its 0.78 frames of jitter. Either the fit found an alias, '
+                  f'or HOST_T0_BIAS_S needs re-measuring.')
+
+    session['sync'].update({
+        't0_fitted_s': best.t0,
+        't0_correction_s': correction,
+        'fit_series': best_name,
+        'fit_depth': best.depth,
+        'fit_margin': best.margin,
+        'fit_locked': bool(best.locked),
+    })
+    json_path = (session_path if session_path.suffix == '.json'
+                 else sorted(session_path.glob('*_session.json'))[0])
+    # numpy scalars reach here through the fit results; a default converter
+    # keeps one of them from costing the whole session file
+    json_path.write_text(
+        json.dumps(session, indent=1,
+                   default=lambda v: v.item() if hasattr(v, 'item') else str(v)),
+        encoding='utf-8')
+    if verbose:
+        print(f'  wrote t0_fitted_s to {json_path.name}')
+    return {'session': session, 'frames': frames, 'trace': trace,
+            'fits': results, 'best': best, 'best_series': best_name,
+            't0_host': t0_host, 'correction': correction,
+            'windows': frame_windows(starts, exposure, best.t0)}
+
+
+def session_windows(session_path, prefer_fitted=True):
+    """Frame exposure windows in the scope's timebase, for a Phase 2 capture.
+
+    Uses the refined offset when refine_session() has been run and the plain
+    host-clock one otherwise, so a viewer can work either way.
+    """
+    session_path = Path(session_path)
+    if session_path.is_dir():
+        session_path = sorted(session_path.glob('*_session.json'))[0]
+    session = json.loads(session_path.read_text(encoding='utf-8'))
+    sync = session['sync']
+    key = 't0_fitted_s' if (prefer_fitted and 't0_fitted_s' in sync) \
+        else 't0_host_s'
+    starts = frame_start_times(session['meta'])
+    return frame_windows(starts, float(session['exposure_s']), float(sync[key])), key
+
+
 def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
-                verbose=True):
+                verbose=True, buffer=None):
     """Align a capture folder with a scope recording; return everything found.
 
     `scope_path` may be a `.psdata` - it is converted through the same helper
@@ -613,19 +858,22 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
     margin is the one to believe, and a disagreement between them is worth
     looking at rather than averaging away.
     """
-    from utilities.utils import psdata_to_csv
+    from utilities.utils import psdata_buffer_csvs
 
     scope_path = Path(scope_path)
-    csv = (psdata_to_csv(scope_path) if scope_path.suffix.lower() == '.psdata'
-           else scope_path)
-    trace = load_scope_csv(csv, signal_column=signal_column)
+    if scope_path.suffix.lower() == '.psdata':
+        csvs = [Path(c) for c in psdata_buffer_csvs(scope_path)]
+    else:
+        csvs = [scope_path]
+    if buffer is not None:
+        csvs = [csvs[buffer - 1]]
+
     session, frames = load_session(session_path)
 
     starts = frame_start_times(session['meta'])
     exposure = float(session['exposure_s'])
     drops = dropped_frames(session['meta'])
     if verbose:
-        print(f'{trace}')
         print(f'session {session["frames_shape"]} {session["frames_dtype"]}, '
               f'exposure {exposure * 1e3:.2f} ms, '
               f'burst {starts[-1] + exposure:.3f} s')
@@ -633,14 +881,50 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
             print(f'  dropped frames: {drops} - the fit uses the camera '
                   f'timestamps, so this shifts nothing')
 
-    results = {}
-    for name in ('masked', 'full'):
-        brightness = np.array(session[f'brightness_{name}'], dtype=float)
-        fit = fit_time_offset(starts, exposure, brightness, trace)
-        results[name] = fit
+    # A .psdata can hold several waveform buffers and only one of them was
+    # rolling when the burst happened. Rather than ask, fit them all: a buffer
+    # that does not contain the burst has nothing to lock onto and reports a
+    # margin near 1, so the margin identifies the right one by itself.
+    per_buffer = {}
+    burst = float(starts[-1] + exposure)
+    for csv in csvs:
+        trace = load_scope_csv(csv, signal_column=signal_column)
+        if trace.duration < burst:
+            # A .psdata usually ends with a partial buffer, cut short when the
+            # recording was stopped. It cannot contain the burst; skip it
+            # rather than failing the whole fit.
+            if verbose:
+                print(f'  {csv.name}: {trace.duration:.3f} s - shorter than the '
+                      f'{burst:.3f} s burst, skipped')
+            continue
+        fits = {}
+        for name in ('masked', 'full'):
+            brightness = np.array(session[f'brightness_{name}'], dtype=float)
+            fits[name] = fit_time_offset(starts, exposure, brightness, trace)
+        per_buffer[csv.name] = {'trace': trace, 'fits': fits}
         if verbose:
-            print(f'  {name:>6}: t0 = {fit.t0:.6f} s, margin {fit.margin:8.1f}x, '
-                  f'{"trustworthy" if fit.trustworthy else "NOT TRUSTWORTHY"}')
+            print(f'  {csv.name}: {trace.t.size} samples, '
+                  f'{trace.duration:.2f} s')
+            for name, fit in fits.items():
+                flags = ('locked' if fit.locked else 'NOT LOCKED')
+                flags += ', unique' if fit.unique else ', aliased'
+                print(f'      {name:>6}: t0 = {fit.t0:10.6f} s, depth '
+                      f'{fit.depth:7.1f}x, margin {fit.margin:5.2f}x  [{flags}]')
+
+    # Rank buffers by depth, not margin: depth says how well the burst matches
+    # this record, while margin only says whether a rival offset within the same
+    # record fits too - which is a property of the sweep's periodicity, not of
+    # whether this is the right buffer.
+    if not per_buffer:
+        raise ValueError(
+            f'no waveform buffer is as long as the {burst:.3f} s burst. Record '
+            f'a longer scope trace, or fewer frames (--frames).')
+    winner = max(per_buffer,
+                 key=lambda k: max(f.depth for f in per_buffer[k]['fits'].values()))
+    trace = per_buffer[winner]['trace']
+    results = per_buffer[winner]['fits']
+    if verbose and len(per_buffer) > 1:
+        print(f'  -> buffer {winner} contains the burst')
 
     best_name = max(results, key=lambda k: results[k].margin)
     best = results[best_name]
@@ -652,37 +936,78 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
         if disagreement > 0.25 * exposure:
             print('  ! they disagree by more than a quarter of a frame. Check '
                   'whether a mode is falling outside the mask, or saturating.')
-        if not best.trustworthy:
-            print('  ! neither series gives a confident offset. Did the burst '
-                  'overlap the sweep, and did any resonance land in it?')
+        if not best.locked:
+            print('  ! the fit did not lock onto the sweep at all. Did the '
+                  'burst overlap the scope record, and did any resonance land '
+                  'in it?')
+        elif not best.unique:
+            print(f'  ! locked on, but {best.margin:.2f}x from the best rival '
+                  f'offset - the sweep repeats and this record is long enough '
+                  f'to contain many equally good positions. The alignment '
+                  f'within the sweep is still right; which repetition is not '
+                  f'pinned. Use a shorter scope record to remove the ambiguity.')
 
     windows = frame_windows(starts, exposure, best.t0)
     return {'trace': trace, 'session': session, 'frames': frames,
             'frame_starts': starts, 'exposure_s': exposure, 'fits': results,
             'best': best, 'best_series': best_name, 'windows': windows,
-            'disagreement_s': disagreement, 'dropped': drops}
+            'disagreement_s': disagreement, 'dropped': drops,
+            'buffer': winner, 'per_buffer': per_buffer}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
-    parser.add_argument('--session',
-                        help='capture folder or *_session.json from '
-                             'mode_video_capture.py')
-    parser.add_argument('--scope',
+    parser.add_argument('--session', default=SESSION or None,
+                        help='capture folder or *_session.json; defaults to '
+                             'SESSION in this file, or the newest capture')
+    parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata or .csv recorded at the same time')
     parser.add_argument('--signal-column', default=SIGNAL_COLUMN,
                         help=f'scope column to align against '
                              f'(default {SIGNAL_COLUMN})')
+    parser.add_argument('--refine', action='store_true',
+                        help='refine a Phase 2 capture that recorded its own '
+                             'scope trace; no --scope needed')
+    parser.add_argument('--window', type=float, default=SEARCH_WINDOW_S,
+                        help='half-width in seconds of the search around the '
+                             'host-clock offset when refining (default 0.25)')
+    parser.add_argument('--buffer', type=int, default=None,
+                        help='use only this waveform buffer of a .psdata '
+                             '(1-based); by default every buffer is fitted and '
+                             'the one whose margin is best is the one used')
     args = parser.parse_args()
+
+    # No arguments: do what the block at the top of the file says.
+    action = ACTION
     if args.self_test:
+        action = 'self-test'
+    elif args.refine:
+        action = 'refine'
+    elif args.scope:
+        action = 'fit'
+
+    if action == 'self-test':
         _self_test()
         return
-    if args.session and args.scope:
-        fit_session(args.session, args.scope, args.signal_column)
-        return
-    parser.print_help()
+
+    session = args.session or latest_session()
+    print(f'session: {session}')
+    if action == 'refine':
+        refine_session(session, window_s=args.window)
+    elif action == 'fit':
+        if not args.scope:
+            raise SystemExit(
+                'fitting against a separately recorded scope file needs '
+                'SCOPE_FILE set at the top of this file (or --scope). A '
+                'capture made by mode_video_capture.py with DRIVE_SCOPE '
+                'carries its own trace - use ACTION = refine for those.')
+        fit_session(session, args.scope, args.signal_column,
+                    buffer=args.buffer)
+    else:
+        raise SystemExit(f'ACTION must be refine, fit or self-test, '
+                         f'not {ACTION!r}')
 
 
 if __name__ == '__main__':
