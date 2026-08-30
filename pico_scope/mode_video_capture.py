@@ -33,6 +33,7 @@ so every existing loader and analysis script keeps working untouched.
 """
 
 import argparse
+import importlib
 import json
 import sys
 import time
@@ -42,24 +43,32 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
-from basler_cameras import BaslerCamera, burst_timing  # noqa: E402
+from camera_core import burst_timing  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
+
+# The camera makes this script can drive. Imported one at a time and only when
+# needed: a machine with just one SDK installed must still run, and importing
+# an absent SDK at module scope would take the whole file down with it.
+CAMERA_BACKENDS = {
+    'basler': ('basler_cam', 'basler_cameras', 'BaslerCamera'),
+    'ximea': ('ximea_cam', 'ximea_cameras', 'XimeaCamera'),
+}
 
 # --- what happens when this file is run (edit these, then press Run) -------
 # Nothing here needs the command line; the arguments exist for scripting and
 # override these when given.
 ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
+CAMERA = None           # 'basler' | 'ximea' | None = the only one connected
 DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
 LOCATE_FIRST = True     # locate the mode first; False reuses the last ROI
 ALLOW_SATURATED = False # capture even when the light is too bright
 
 # --- the camera and how it is driven (this is the block to edit) -----------
-# None means whichever Basler camera is connected, which is right whenever
-# there is only one - the serial that used to sit here belonged to a camera
-# that is not always the one plugged in. Name a serial only to pick between
-# two cameras that are both connected; resolve_serial() then says which.
+# None means whichever camera is connected, of either make, which is right
+# whenever there is only one - the serial that used to sit here belonged to a
+# camera that is not always the one plugged in. Name a serial only to pick
+# between cameras that are both connected; resolve_camera() then says which.
 SERIAL_NUMBER = None
 FRAME_RATE_HZ = 100.0           # see the peak-blending check below
 # The exposure follows the frame rate rather than being typed out beside it:
@@ -71,18 +80,24 @@ FRAME_RATE_HZ = 100.0           # see the peak-blending check below
 EXPOSURE_GAP_US = max(100.0, 0.01 * 1e6 / FRAME_RATE_HZ)
 EXPOSURE_US = 1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US   # 9900 us at 100 Hz
 N_FRAMES = 120                  # 1.2 s at 100 Hz
-# Mono12, not Mono8: as the laser warms the transmission climbs, and a
-# clipped peak stops the camera tracking the photodiode - the one thing that
-# breaks the alignment fit. 12 bits buy 16x the headroom. It costs frame rate
-# (12-bit readout is slower per row), which is paid for by fewer ROI rows.
-PIXEL_FORMAT = 'Mono12'
+# None: the deepest format the camera offers - Mono12 on the Basler, Mono10 on
+# the XIMEA, whose sensor has no more to give. Depth is wanted for headroom: as
+# the laser warms the transmission climbs, and a clipped peak makes a poor
+# image of the mode. Name a format to force one (Mono8 reads out faster).
+PIXEL_FORMAT = None
 GAIN_DB = 0.0                   # measured: gain only makes the noise worse
-BINNING = 2                     # firmware mode is Sum on this model: 4x signal
-THROUGHPUT_BPS = 212_352_571    # the cameras' own default; 150 MB/s caps us at 74 Hz
+# N x N sum. The Basler does it in firmware, before the link; the XIMEA has no
+# firmware binning at all, so its wrapper sums on the host. Either way the
+# signal goes up by N**2 and the data goes down by it.
+BINNING = 2
+# None: as much of the link as the camera may have. A number caps it, which is
+# only wanted when two cameras share a bus - and this capture drives one.
+THROUGHPUT_BPS = None
 
-# ROI in BINNED pixels. Width is free - readout is paced per row - so keep the
-# whole sensor width and spend the budget on rows.
-ROI_WIDTH = 1024                # = full 2048 sensor columns at binning 2
+# ROI in BINNED pixels. None: the full sensor width. On the Basler width is
+# free - readout is paced per row - so the budget is spent on rows; choose_roi
+# narrows the width only if a camera turns out to charge for columns too.
+ROI_WIDTH = None
 ROI_HEIGHT_CANDIDATES = (128, 192, 256, 320, 384, 448, 512, 640, 768, 1024)
 # The higher orders are larger than the 0th and are the ones that must not be
 # clipped, so the margin around what was actually seen is at least as wide as
@@ -114,13 +129,20 @@ SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
 SCOPE_PAD_S = 0.30              # recorded before and after the burst
 
 # ps4000aRunBlock returns before the scope has actually begun sampling, so the
-# host-clock estimate of where frame 0 sits is systematically early. Measured
-# over 12 captures on 2026-08-26: +39.9 ms with a standard deviation of 7.8 ms,
-# i.e. a 4.0-frame bias with 0.78 frames of jitter. Subtracting it puts 83% of
-# captures within one frame without any fitting, which is what makes the fine
-# alignment optional. Re-measure with --calibrate if the driver or the timing
-# configuration changes.
-HOST_T0_BIAS_S = 0.0399
+# host-clock estimate of where frame 0 sits is systematically early. Part of
+# that delay is the camera's own arming time, so the bias is per make and
+# measured, never borrowed: applying one camera's number to another would
+# misalign every capture by an unknown constant while still claiming sub-frame
+# accuracy, and nothing downstream would show it.
+#
+# basler: measured over 12 captures on 2026-08-26, +39.9 ms with a standard
+# deviation of 7.8 ms - a 4.0-frame bias with 0.78 frames of jitter.
+# Subtracting it puts 83% of captures within one frame with no fitting at all,
+# which is what makes the fine alignment optional.
+#
+# None means not yet measured. The capture still runs and still records the raw
+# host clock; it just says so, and that --refine is not optional for it.
+HOST_T0_BIAS_S = {'basler': 0.0399, 'ximea': None}
 
 # --- what the capture is checked against -----------------------------------
 # The tightest 0th->1st spacing measured across the 2026-08-23 mode maps. Two
@@ -129,7 +151,6 @@ HOST_T0_BIAS_S = 0.0399
 TIGHTEST_PEAK_SPACING_S = 0.0247
 MIN_FRAMES_BETWEEN_PEAKS = 2.0
 MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as lit
-PIXEL_SIZE_MM = 5.5 / 1000.0    # acA2040 pitch; effective pitch is this x binning
 
 # --- where captures are written --------------------------------------------
 # Shared with mode_video_sync, so that leaving its SESSION empty finds the
@@ -173,9 +194,9 @@ def locate_mode(cam, n_frames=150, threshold=0.1):
     answer moves whenever the cavity is realigned, so this runs before every
     capture rather than being written down as a constant.
 
-    Uses the same pixel format, gain and binning as the capture: in Mono12 the
-    read noise is resolved rather than truncated away, which moves the threshold
-    this has to clear.
+    Uses the same pixel format, gain and binning as the capture: in the deeper
+    formats the read noise is resolved rather than truncated away, which moves
+    the threshold this has to clear.
 
     The burst has to be long enough to catch the higher-order modes and not just
     the 0th - they are larger and displaced, and they are the ones the ROI must
@@ -184,9 +205,7 @@ def locate_mode(cam, n_frames=150, threshold=0.1):
 
     Returns a dict in binned pixels; `centre_row` is what the ROI is centred on.
     """
-    cam.set_pixel_format(PIXEL_FORMAT)
-    cam.set_throughput_limit(THROUGHPUT_BPS)
-    cam.set_binning(BINNING)
+    apply_camera_basics(cam)
     cam.set_roi_full()
     cam.exposure_us = EXPOSURE_US
     cam.gain_db = GAIN_DB
@@ -228,78 +247,118 @@ def locate_mode(cam, n_frames=150, threshold=0.1):
 
 
 def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES):
-    """Pick the ROI height and vertical offset from the mode just measured.
+    """Pick the ROI from the mode just measured.
 
-    Two constraints pull against each other. The height must cover the mode
-    with room for the larger higher orders, and it must be small enough that
-    the sensor still reads out at the target rate - readout is paced per row,
-    so rows are exactly what frame rate costs.
+    Two constraints pull against each other. The ROI must cover the mode with
+    room for the larger higher orders, and it must be small enough that the
+    camera still delivers at the target rate.
 
-    Resolves them by preferring the smallest height that covers the mode, then
-    checking it against the camera's own ResultingFrameRate; if nothing that
-    covers the mode is fast enough, it takes the largest height that *is* fast
-    enough and says so, rather than silently dropping either requirement.
+    Rows are spent first, because on the Basler width is free - readout is
+    paced per row - so the whole sensor width costs nothing there. A camera
+    that pays for columns too (its rate limited by data volume rather than by
+    rows) gets a second resort: the width is narrowed around the mode's own
+    columns rather than giving up the frame rate. Which camera is which is not
+    assumed - it falls out of probing the rate.
 
-    Returns a dict with `height`, `offset_y`, `covers` and `resulting_hz`.
+    Prefers the smallest ROI that covers the mode; if nothing that covers it is
+    fast enough, takes the largest that *is* fast enough and says so, rather
+    than silently dropping either requirement.
+
+    Returns a dict with `height`, `width`, `offset_y`, `offset_x`, `covers`
+    and `resulting_hz`.
     """
     target_hz = FRAME_RATE_HZ if target_hz is None else target_hz
     max_width, max_height = cam.max_frame_size
     margin = max(found['height'], ROI_MIN_MARGIN_ROWS)
     needed = found['height'] + 2 * margin
+    full_width = min(roi_width_for(cam), max_width)
 
-    def place(height):
-        height = min(height, max_height)
-        offset = int(np.clip(found['centre_row'] - height // 2,
-                             0, max_height - height))
-        return height, offset
+    def place(height, width):
+        height, width = min(height, max_height), min(width, max_width)
+        offset_y = int(np.clip(found['centre_row'] - height // 2,
+                               0, max_height - height))
+        offset_x = int(np.clip(found['centre_col'] - width // 2,
+                               0, max_width - width))
+        return height, width, offset_y, offset_x
 
-    def rate_for(height, offset):
-        cam.set_roi(ROI_WIDTH, height, ROI_OFFSET_X, offset)
+    def probe(height, width):
+        height, width, offset_y, offset_x = place(height, width)
+        cam.set_roi(width, height, offset_x, offset_y)
         cam.exposure_us = EXPOSURE_US
         cam.frame_rate_hz = target_hz
-        return cam.resulting_frame_rate
+        return {'height': height, 'width': width,
+                'offset_y': offset_y, 'offset_x': offset_x,
+                'rate': cam.resulting_frame_rate,
+                'covers': (offset_y <= found['row_min']
+                           and offset_y + height >= found['row_max'] + 1
+                           and offset_x <= found['col_min']
+                           and offset_x + width >= found['col_max'] + 1)}
+
+    # Widths to try, widest first. The narrower ones still leave the mode a
+    # margin as wide as itself, so a narrowed ROI never clips what it was
+    # sized around.
+    needed_cols = found['width'] + 2 * max(found['width'], ROI_MIN_MARGIN_ROWS)
+    widths = [full_width]
+    for factor in (2, 4):
+        narrower = max(needed_cols, full_width // factor)
+        if narrower < widths[-1]:
+            widths.append(narrower)
 
     usable = [h for h in sorted(candidates) if h <= max_height]
-    fast_enough, covering = [], []
-    for candidate in usable:
-        height, offset = place(candidate)
-        rate = rate_for(height, offset)
-        covers = (offset <= found['row_min']
-                  and offset + height >= found['row_max'] + 1)
-        if rate >= target_hz * 0.98:
-            fast_enough.append((height, offset, rate, covers))
-        if covers and height >= needed:
-            covering.append((height, offset, rate, covers))
+    at_full_width = []
+    for width in widths:
+        options = [probe(candidate, width) for candidate in usable]
+        if width == full_width:
+            at_full_width = options
+        both = [o for o in options if o['covers'] and o['height'] >= needed
+                and o['rate'] >= target_hz * 0.98]
+        if both:
+            best = min(both, key=lambda o: o['height'])
+            note = None if width == full_width else (
+                f'narrowed the ROI to {width} of {full_width} columns: at the '
+                f'full width no height both covered the mode and kept '
+                f'{target_hz:g} Hz. This camera pays for columns as well as '
+                f'rows.')
+            return _finish_roi(cam, found, best, needed, note, target_hz)
 
-    both = [c for c in fast_enough if c[0] >= needed and c[3]]
-    if both:
-        height, offset, rate, covers = min(both, key=lambda c: c[0])
-        note = None
-    elif fast_enough:
-        height, offset, rate, covers = max(fast_enough, key=lambda c: c[0])
-        note = (f'no height that both covers the mode with its margin '
-                f'({needed} binned rows) and sustains {target_hz:g} Hz; took '
-                f'the tallest that keeps the rate. '
-                + ('The mode still fits, with less margin than wanted.'
-                   if covers else
-                   'THE MODE DOES NOT FIT - it will be clipped. Move the '
-                   'camera so the mode sits nearer the sensor centre, or '
-                   'accept a lower frame rate.'))
-    else:
+    # Nothing covers the mode at the rate, at any width. Fall back to the
+    # widest view that at least keeps the rate, and say what was given up.
+    fast_enough = [o for o in at_full_width if o['rate'] >= target_hz * 0.98]
+    if not fast_enough:
+        shallower = [f for f in cam.formats if f != cam.pixel_format]
         raise RuntimeError(
-            f'no ROI height sustains {target_hz:g} Hz at '
-            f'{cam.pixel_format}. Lower FRAME_RATE_HZ, or use Mono8, whose '
-            f'readout is about 2.4x faster per row.')
+            f'no ROI that covers the mode sustains {target_hz:g} Hz at '
+            f'{cam.pixel_format}. Lower FRAME_RATE_HZ, shorten the exposure, '
+            f'or capture in a shallower format '
+            f'({", ".join(shallower) or "none available"}), which costs fewer '
+            f'bytes per pixel.')
+    best = max(fast_enough, key=lambda o: o['height'])
+    note = (f'no height that both covers the mode with its margin '
+            f'({needed} binned rows) and sustains {target_hz:g} Hz; took '
+            f'the tallest that keeps the rate. '
+            + ('The mode still fits, with less margin than wanted.'
+               if best['covers'] else
+               'THE MODE DOES NOT FIT - it will be clipped. Move the '
+               'camera so the mode sits nearer the sensor centre, or '
+               'accept a lower frame rate.'))
+    return _finish_roi(cam, found, best, needed, note, target_hz)
 
-    cam.set_roi(ROI_WIDTH, height, ROI_OFFSET_X, offset)
+
+def _finish_roi(cam, found, best, needed, note, target_hz):
+    """Apply the chosen ROI, report it, and return the record of the choice."""
+    cam.set_roi(best['width'], best['height'], best['offset_x'],
+                best['offset_y'])
     cam.exposure_us = EXPOSURE_US
     cam.frame_rate_hz = target_hz
-    result = {'height': height, 'offset_y': offset, 'covers': covers,
+    offset, height = best['offset_y'], best['height']
+    result = {'height': height, 'width': best['width'], 'offset_y': offset,
+              'offset_x': best['offset_x'], 'covers': best['covers'],
               'resulting_hz': cam.resulting_frame_rate, 'needed_rows': needed,
               'margin_rows': min(found['row_min'] - offset,
                                  offset + height - found['row_max'] - 1),
               'note': note}
-    print(f'  -> ROI {ROI_WIDTH}x{height} at offset_y {offset} '
+    print(f'  -> ROI {best["width"]}x{height} at offset '
+          f'({best["offset_x"]}, {offset}) '
           f'(binned rows {offset}-{offset + height}), '
           f'{result["resulting_hz"]:.1f} Hz')
     print(f'     mode occupies {found["row_min"]}-{found["row_max"]}, '
@@ -468,28 +527,103 @@ def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
     return result
 
 
-def resolve_serial(serial=None):
+def camera_class(make):
+    """Import one make's device layer and return its camera class.
+
+    Deferred to here so that a missing SDK disables that make alone. Both
+    device modules are imported flat, from their own folder, which is also
+    what keeps ximea_cam's PyQt-importing package __init__ out of the way.
+    """
+    folder, module_name, class_name = CAMERA_BACKENDS[make]
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / folder))
+    return getattr(importlib.import_module(module_name), class_name)
+
+
+def resolve_camera(make=None, serial=None):
     """Which camera to use: the one named, or the only one connected.
 
-    Naming a serial in the file is a promise about which cameras are plugged
-    in today, and that promise goes stale - the camera gets unplugged, or
-    swapped for the other one. Falling back on "the only camera there is" is
-    both what is usually meant and impossible to get silently wrong.
+    Naming a camera in the file is a promise about what is plugged in today,
+    and that promise goes stale - a camera gets unplugged, or swapped for the
+    other one. Falling back on "the only camera there is" is both what is
+    usually meant and impossible to get silently wrong.
+
+    Returns `(camera_class, serial_number, make)`.
     """
+    make = CAMERA if make is None else make
     serial = SERIAL_NUMBER if serial is None else serial
-    if serial:
-        return str(serial)
-    devices = BaslerCamera.list_devices()
-    if not devices:
-        raise RuntimeError('no Basler camera is connected.')
-    if len(devices) > 1:
+    if make and make not in CAMERA_BACKENDS:
+        raise RuntimeError(f'unknown camera make {make!r}; this script drives '
+                           f'{" and ".join(CAMERA_BACKENDS)}')
+
+    found, unavailable = [], {}
+    for name in ([make] if make else list(CAMERA_BACKENDS)):
+        try:
+            cls = camera_class(name)
+        except Exception as error:
+            unavailable[name] = error      # SDK not installed on this machine
+            continue
+        for device in cls.list_devices():
+            if serial and str(device['serial_number']) != str(serial):
+                continue
+            found.append((cls, str(device['serial_number']), name,
+                          device.get('model', '')))
+
+    if not found:
+        detail = ''
+        if serial:
+            detail = f' with serial {serial}'
+        elif make:
+            detail = f' of make {make}'
+        missing = [f'{name} support is unavailable here ({error})'
+                   for name, error in unavailable.items()]
+        raise RuntimeError('; '.join(
+            [f'no camera is connected{detail}'] + missing))
+    if len(found) > 1:
+        listing = ', '.join(f'{name}:{sn}' for _, sn, name, _ in found)
         raise RuntimeError(
-            f'{len(devices)} cameras are connected, so which one watches the '
-            f'cavity mode has to be said: set SERIAL_NUMBER (or --serial) to '
-            f'one of {[d["serial_number"] for d in devices]}.')
-    print(f"  camera {devices[0]['serial_number']} ({devices[0]['model']}), "
-          f"the only one connected")
-    return devices[0]['serial_number']
+            f'{len(found)} cameras are connected, so which one watches the '
+            f'cavity mode has to be said: set CAMERA to a make, or '
+            f'SERIAL_NUMBER (or --serial) to one of {listing}.')
+
+    cls, serial_number, name, model = found[0]
+    print(f'  camera {serial_number} ({model}, {name}), the only one connected')
+    return cls, serial_number, name
+
+
+def pixel_format_for(cam):
+    """The format to capture in: the deepest the camera offers unless pinned."""
+    return PIXEL_FORMAT or cam.deepest_format
+
+
+def roi_width_for(cam):
+    """ROI width in binned pixels: the whole sensor unless pinned."""
+    return ROI_WIDTH or cam.max_frame_size[0]
+
+
+def host_t0_bias_s(make):
+    """The calibrated arming delay for one camera make, or 0.0 if unmeasured.
+
+    Unmeasured means unmeasured: no number is invented and none is borrowed
+    from the other camera. The caller is told, and says so in its own output.
+    """
+    return HOST_T0_BIAS_S.get(make) or 0.0
+
+
+def apply_camera_basics(cam):
+    """Format, link limit and binning - the settings ROI choices depend on.
+
+    Binning last and before any ROI: it changes what one pixel means, so every
+    size and offset after it is in different units.
+    """
+    fmt = cam.set_pixel_format(pixel_format_for(cam))
+    # None means "as much of the link as this camera may have". Both wrappers
+    # clip to their own maximum, so infinity asks for all of it. The Basler
+    # opens at a deliberately low 150 MB/s, on the assumption that two cameras
+    # share the bus; that cap alone drops a 384-row ROI from 99 Hz to 50, and
+    # this capture drives one camera at a time.
+    cam.set_throughput_limit(float('inf') if THROUGHPUT_BPS is None
+                             else THROUGHPUT_BPS)
+    return fmt, cam.set_binning(BINNING)
 
 
 def previous_roi(root=None):
@@ -544,37 +678,36 @@ def configure(cam, offset_y, roi_height):
     if offset_y is None or roi_height is None:
         raise ValueError('configure() needs a measured ROI: locate the mode '
                          'first, or take one from fallback_roi().')
-    cam.set_pixel_format(PIXEL_FORMAT)
-    cam.set_throughput_limit(THROUGHPUT_BPS)
-    binning_info = cam.set_binning(BINNING)
-    roi = cam.set_roi(ROI_WIDTH, roi_height, ROI_OFFSET_X, offset_y)
+    pixel_format, binning_info = apply_camera_basics(cam)
+    roi = cam.set_roi(roi_width_for(cam), roi_height, ROI_OFFSET_X, offset_y)
     cam.exposure_us = EXPOSURE_US
     cam.gain_db = GAIN_DB
     cam.frame_rate_hz = FRAME_RATE_HZ
-    chunks = cam.enable_chunks()
+    stamps = cam.enable_timestamps()
 
     period = 1.0 / FRAME_RATE_HZ
     burst = N_FRAMES * period
     sensor_w = roi['width'] * BINNING
     sensor_h = roi['height'] * BINNING
-    link_max = cam.max_frame_rate_for(sensor_w, sensor_h, PIXEL_FORMAT, BINNING)
+    link_max = cam.max_frame_rate_for(sensor_w, sensor_h, pixel_format, BINNING)
     frames_per_gap = TIGHTEST_PEAK_SPACING_S / period
 
     print(f'\n--- camera {cam.serial_number} ({cam.model}) ---')
-    print(f'  frame {roi["width"]}x{roi["height"]} {PIXEL_FORMAT} at offset '
+    print(f'  frame {roi["width"]}x{roi["height"]} {pixel_format} at offset '
           f'({roi["offset_x"]}, {roi["offset_y"]}) = sensor '
           f'{sensor_w}x{sensor_h}, rows {roi["offset_y"] * BINNING}-'
           f'{(roi["offset_y"] + roi["height"]) * BINNING}')
-    print(f'  binning {binning_info["binning"]} (mode not selectable on this '
-          f'model; measured to be Sum), effective pixel '
-          f'{PIXEL_SIZE_MM * BINNING * 1000:.1f} um')
+    print(f'  binning {binning_info["binning"]} ({cam.binning_mode}), full '
+          f'scale {cam.saturation_level}, effective pixel '
+          f'{cam.pixel_size_mm * BINNING * 1000:.1f} um')
     print(f'  exposure {cam.exposure_us:.0f} us, gain {cam.gain_db:.1f} dB, '
-          f'chunks {chunks}')
+          f'timestamps {stamps or "carried by every frame"}')
 
     print(f'\n--- bandwidth (check 5) ---')
-    print(f'  {roi["width"] * roi["height"] / 1e6:.3f} MB/frame, link allows '
-          f'{link_max:.1f} Hz at {THROUGHPUT_BPS / 1e6:.0f} MB/s')
-    print(f'  camera reports ResultingFrameRate {cam.resulting_frame_rate:.2f} Hz')
+    print(f'  {sensor_w * sensor_h * cam.BYTES_PER_PIXEL[pixel_format] / 1e6:.3f} '
+          f'MB/frame on the link, allowing {link_max:.1f} Hz at '
+          f'{cam.throughput_limit_bps / 1e6:.0f} MB/s')
+    print(f'  camera can sustain {cam.resulting_frame_rate:.2f} Hz as configured')
     resulting = cam.assert_frame_rate_reachable(FRAME_RATE_HZ)
 
     print(f'\n--- peak blending (check 6) ---')
@@ -589,7 +722,9 @@ def configure(cam, offset_y, roi_height):
             f'image. Raise the frame rate (and cut ROI rows to afford it).')
     print(f'  burst {burst:.3f} s for {N_FRAMES} frames, '
           f'{N_FRAMES * roi["width"] * roi["height"] / 1e6:.0f} MB')
-    return {'roi': roi, 'binning': binning_info, 'chunks': chunks,
+    return {'roi': roi, 'binning': binning_info, 'timestamps': list(stamps),
+            'pixel_format': pixel_format, 'binning_mode': cam.binning_mode,
+            'saturation_level': int(cam.saturation_level),
             'link_max_hz': link_max, 'resulting_hz': resulting,
             'burst_s': burst, 'frames_between_closest_peaks': frames_per_gap}
 
@@ -638,7 +773,7 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
         'frames_dtype': str(frames.dtype),
         'camera': camera_info,
         'binning': BINNING,
-        'effective_pixel_size_mm': PIXEL_SIZE_MM * BINNING,
+        'effective_pixel_size_mm': camera_info['pixel_size_mm'] * BINNING,
         'requested_frame_rate_hz': FRAME_RATE_HZ,
         'exposure_s': EXPOSURE_US / 1e6,
         'checks': checks,
@@ -668,9 +803,10 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
 
 
 def capture(serial_number=None, output_root=OUTPUT_ROOT,
-            locate=True, prompt=True):
+            locate=True, prompt=True, make=None):
     """Locate the mode, configure, wait for the scope, record, save."""
-    cam = BaslerCamera(resolve_serial(serial_number))
+    camera_cls, serial_number, make = resolve_camera(make, serial_number)
+    cam = camera_cls(serial_number)
     cam.open()
     try:
         mode_location = None
@@ -681,8 +817,7 @@ def capture(serial_number=None, output_root=OUTPUT_ROOT,
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
             report_mode_location(mode_location)
-            cam.set_pixel_format(PIXEL_FORMAT)
-            cam.set_binning(BINNING)
+            apply_camera_basics(cam)
             roi_choice = choose_roi(cam, mode_location)
             offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
 
@@ -735,7 +870,7 @@ def capture(serial_number=None, output_root=OUTPUT_ROOT,
 # %% [Step 3b] Driving both instruments (Phase 2) -----------------------------
 def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
                          locate=True, n_frames=None, scope_serial=None,
-                         adjust_gain=True, require_level=True):
+                         adjust_gain=True, require_level=True, make=None):
     """Record the spectrum and the mode video from one process.
 
     The camera is configured first and the scope block started last, so that as
@@ -752,7 +887,8 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
     from pico_scope.ps4000a_scope import PicoScope4000A
 
     n_frames = N_FRAMES if n_frames is None else n_frames
-    cam = BaslerCamera(resolve_serial(serial_number))
+    camera_cls, serial_number, make = resolve_camera(make, serial_number)
+    cam = camera_cls(serial_number)
     cam.open()
     scope = PicoScope4000A(scope_serial)
     try:
@@ -764,8 +900,7 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
             report_mode_location(mode_location)
-            cam.set_pixel_format(PIXEL_FORMAT)
-            cam.set_binning(BINNING)
+            apply_camera_basics(cam)
             roi_choice = choose_roi(cam, mode_location)
             offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
         checks = configure(cam, offset_y, roi_height)
@@ -819,16 +954,24 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
     # It carries whatever latency RunBlock and StartGrabbing add, which is the
     # error the fine alignment exists to remove.
     t0_host_raw = host_before_burst - host_scope_start
-    t0_host = t0_host_raw + HOST_T0_BIAS_S
+    bias = host_t0_bias_s(make)
+    t0_host = t0_host_raw + bias
     print(f'\n  {frames.shape} {frames.dtype}, dropped {timing["n_dropped"]}')
     print(f'  frame period {timing["period_s_median"] * 1e3:.4f} ms '
           f'+- {timing["period_s_std"] * 1e3:.4f} ms')
     print(f'  scope {block_info["n_collected"]} samples at '
           f'{block_info["interval_s"] * 1e9:.0f} ns, overflow '
           f'{block_info["overflow_channels"] or "none"}')
-    print(f'  t0 from the host clocks: {t0_host_raw * 1e3:.2f} ms raw, '
-          f'{t0_host * 1e3:.2f} ms after the {HOST_T0_BIAS_S * 1e3:+.1f} ms '
-          f'calibration')
+    if HOST_T0_BIAS_S.get(make) is None:
+        print(f'  t0 from the host clocks: {t0_host_raw * 1e3:.2f} ms, with no '
+              f'calibration - the {make} arming delay has not been measured')
+        print(f'  ! run mode_video_sync.py --refine on this capture. For the '
+              f'{make} the nominal offset is not yet good to a frame, because '
+              f'nobody has measured how long it takes to arm.')
+    else:
+        print(f'  t0 from the host clocks: {t0_host_raw * 1e3:.2f} ms raw, '
+              f'{t0_host * 1e3:.2f} ms after the {bias * 1e3:+.1f} ms '
+              f'{make} calibration')
 
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
     folder = Path(output_root) / stamp
@@ -856,7 +999,9 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
         'method': 'host_clock',
         't0_host_s': t0_host,
         't0_host_raw_s': t0_host_raw,
-        'host_t0_bias_s': HOST_T0_BIAS_S,
+        'host_t0_bias_s': bias,
+        'host_t0_bias_calibrated': HOST_T0_BIAS_S.get(make) is not None,
+        'camera_make': make,
         'host_scope_start_s': host_scope_start,
         'host_before_burst_s': host_before_burst,
         'host_after_burst_s': host_after_burst,
@@ -892,10 +1037,12 @@ def _self_test():
     timing = burst_timing(meta, expected_rate_hz=100.0)
     assert timing['n_dropped'] == 0 and timing['timestamps_look_like_ns']
 
+    pixel_size = 5.5 / 1000.0
+    fake_camera_info = {'serial_number': 'x', 'make': 'basler',
+                        'pixel_size_mm': pixel_size}
     with tempfile.TemporaryDirectory() as folder:
         path, mask = save_session(folder, 'test', frames, meta, timing,
-                                  {'burst_s': 0.12}, {'serial_number': 'x'},
-                                  None)
+                                  {'burst_s': 0.12}, fake_camera_info, None)
         session, loaded = load_session(path)
         assert loaded.shape == frames.shape, loaded.shape
         assert np.array_equal(np.asarray(loaded), frames)
@@ -904,7 +1051,7 @@ def _self_test():
         assert len(session['brightness_full']) == n
         assert len(session['brightness_masked']) == n
         assert session['mask_pixels'] == int(mask.sum()) > 0
-        assert session['effective_pixel_size_mm'] == PIXEL_SIZE_MM * BINNING
+        assert session['effective_pixel_size_mm'] == pixel_size * BINNING
         # the folder form of load_session finds the same file
         assert load_session(Path(folder), mmap=False)[0]['created'] == \
             session['created']
@@ -923,7 +1070,7 @@ def _self_test():
         numpy_checks = {'peak_max': np.int64(3), 'worst': np.float64(4.0),
                         'covers': np.bool_(True), 'peaks': np.arange(3)}
         path, _ = save_session(folder, 'np', frames, meta, timing,
-                               numpy_checks, {'serial_number': 'x'}, None)
+                               numpy_checks, fake_camera_info, None)
         stored = json.loads(path.read_text())['checks']
         assert stored == {'peak_max': 3, 'worst': 4.0, 'covers': True,
                           'peaks': [0, 1, 2]}, stored
@@ -932,7 +1079,7 @@ def _self_test():
     with tempfile.TemporaryDirectory() as folder:
         try:
             save_session(folder, 'bad', frames, meta, timing,
-                         {'unserialisable': object()}, {'serial_number': 'x'},
+                         {'unserialisable': object()}, fake_camera_info,
                          None)
         except TypeError:
             pass
@@ -957,29 +1104,43 @@ def _self_test():
     # Rows are what frame rate costs, so a fake camera whose rate is inversely
     # proportional to ROI height exercises the real trade-off without hardware.
     class _FakeCam:
+        """A camera whose rate is paced per row, as the Basler's is.
+
+        `seconds_per_pixel` makes it charge for columns too, which is how the
+        width-narrowing path gets exercised without a camera that needs it.
+        """
         max_frame_size = (1024, 1024)
         pixel_format = 'Mono12'
+        formats = ('Mono8', 'Mono12')
         exposure_us = EXPOSURE_US
 
-        def __init__(self, seconds_per_row=1.29e-5):
+        def __init__(self, seconds_per_row=1.29e-5, seconds_per_pixel=0.0):
             self.seconds_per_row = seconds_per_row
-            self.height = None
-            self.offset_y = None
+            self.seconds_per_pixel = seconds_per_pixel
+            self.height = self.width = None
+            self.offset_y = self.offset_x = None
 
         def set_roi(self, width, height, offset_x, offset_y):
             self.height, self.offset_y = height, offset_y
-            return {'width': width, 'height': height, 'offset_y': offset_y}
+            self.width, self.offset_x = width, offset_x
+            return {'width': width, 'height': height,
+                    'offset_x': offset_x, 'offset_y': offset_y}
 
         frame_rate_hz = property(lambda self: 0.0, lambda self, value: None)
 
         @property
         def resulting_frame_rate(self):
-            return 1.0 / (self.height * self.seconds_per_row)
+            seconds = (self.height * self.seconds_per_row
+                       + self.height * self.width * self.seconds_per_pixel)
+            return 1.0 / seconds
 
-    def _found(row_min, row_max):
+    def _found(row_min, row_max, col_min=300, col_max=700):
         return {'row_min': row_min, 'row_max': row_max,
+                'col_min': col_min, 'col_max': col_max,
                 'centre_row': (row_min + row_max) // 2,
-                'height': row_max - row_min + 1}
+                'centre_col': (col_min + col_max) // 2,
+                'height': row_max - row_min + 1,
+                'width': col_max - col_min + 1}
 
     # a small central mode: the smallest height that still covers it wins
     small_mode = _found(480, 560)
@@ -1003,6 +1164,16 @@ def _self_test():
     tight = choose_roi(_FakeCam(), _found(300, 740), target_hz=100.0)
     assert tight['note'] is not None, tight
     assert tight['resulting_hz'] >= 98.0, 'the frame rate is the hard constraint'
+    # a camera that charges for columns narrows the width rather than
+    # giving up the frame rate, and says that is what it did
+    # 4e-8 s/pixel is chosen so that the covering height makes 100 Hz at half
+    # the width and misses it at full width - the case the narrowing exists for
+    wide = choose_roi(_FakeCam(seconds_per_row=1.29e-5, seconds_per_pixel=4e-8),
+                      _found(480, 560, col_min=450, col_max=560),
+                      target_hz=100.0)
+    assert wide['width'] < 1024, wide
+    assert wide['covers'] and wide['resulting_hz'] >= 98.0, wide
+    assert 'columns as well as rows' in (wide['note'] or ''), wide
     print('  choose_roi: covers the mode, follows it to the sensor edge, and '
           'reports the compromise when the rate and the margin conflict')
 
@@ -1103,8 +1274,34 @@ def _self_test():
     else:
         raise AssertionError('configure accepted a ROI it was never given')
 
+    # Both makes must satisfy the shared contract. Checked on the classes,
+    # so it needs no camera - only the SDK, and a make whose SDK is absent is
+    # skipped rather than failing a machine that will never use it.
+    from camera_core import check_camera_surface
+    checked = []
+    for make in CAMERA_BACKENDS:
+        try:
+            cls = camera_class(make)
+        except Exception as error:
+            print(f'  {make}: SDK not installed here ({type(error).__name__})')
+            continue
+        check_camera_surface(cls)
+        checked.append(make)
+    assert checked, 'no camera SDK is installed, so nothing could be checked'
+    print(f'  {" and ".join(checked)} satisfy the shared camera surface, so '
+          f'this script never asks which one it is holding')
+
+    # a bias is per make and never borrowed from the other camera
+    assert set(HOST_T0_BIAS_S) == set(CAMERA_BACKENDS), HOST_T0_BIAS_S
+    assert host_t0_bias_s('nonexistent-make') == 0.0
+    for make, bias in HOST_T0_BIAS_S.items():
+        assert bias is None or 0.0 <= bias < 1.0, (make, bias)
+    print('  the host-clock bias is per camera; an unmeasured one stays 0 and '
+          "says so rather than borrowing the other camera's")
+
     # the run-button configuration has to name something this file can do
     assert ACTION in ('capture', 'levels', 'locate', 'self-test'), ACTION
+    assert CAMERA is None or CAMERA in CAMERA_BACKENDS, CAMERA
     assert LEVEL_BURST_FRAMES is None or LEVEL_BURST_FRAMES > 0
     print('self-test passed')
 
@@ -1115,6 +1312,10 @@ def main():
                         help='run the offline checks and exit')
     parser.add_argument('--locate', action='store_true',
                         help='find the mode and report, without capturing')
+    parser.add_argument('--camera', default=None,
+                        choices=sorted(CAMERA_BACKENDS),
+                        help='camera make; defaults to CAMERA in this file, '
+                             'or the only camera connected')
     parser.add_argument('--serial', default=None,
                         help='camera serial number; defaults to SERIAL_NUMBER '
                              'in this file, or the only camera connected')
@@ -1156,10 +1357,10 @@ def main():
         _self_test()
         return
 
-    serial = resolve_serial(args.serial)
+    camera_cls, serial, make = resolve_camera(args.camera, args.serial)
 
     if action == 'locate':
-        cam = BaslerCamera(serial)
+        cam = camera_cls(serial)
         cam.open()
         try:
             print('--- locating the mode (whole sensor) ---')
@@ -1171,7 +1372,7 @@ def main():
         return
 
     if action == 'levels':
-        cam = BaslerCamera(serial)
+        cam = camera_cls(serial)
         cam.open()
         try:
             offset_y = roi_height = None
@@ -1180,8 +1381,7 @@ def main():
             if locate:
                 found = locate_mode(cam)
                 report_mode_location(found)
-                cam.set_pixel_format(PIXEL_FORMAT)
-                cam.set_binning(BINNING)
+                apply_camera_basics(cam)
                 choice = choose_roi(cam, found)
                 offset_y, roi_height = choice['offset_y'], choice['height']
             configure(cam, offset_y, roi_height)
@@ -1198,10 +1398,10 @@ def main():
                          f'self-test, not {ACTION!r}')
 
     if DRIVE_SCOPE or args.scope:
-        capture_synchronized(serial, locate=locate,
+        capture_synchronized(serial, locate=locate, make=make,
                              require_level=not allow_saturated)
     else:
-        capture(serial, locate=locate, prompt=not args.no_prompt)
+        capture(serial, locate=locate, make=make, prompt=not args.no_prompt)
 
 if __name__ == '__main__':
     main()

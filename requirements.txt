@@ -15,6 +15,8 @@ dvg-pyqtgraph-threadsafe~=3.4.0
 # connection to devices
 PyVISA~=1.14.1  # for NI Visa devices
 pypylon~=4.0.0  # for Basler cameras
+# ximea: for Ximea cameras. NOT on PyPI - install the XIMEA Software Package from
+# ximea.com, then run: python ximea_cam/install_ximea_package.py
 picosdk~=1.1  # for PicoScope
 pythonnet~=3.0.5  # for ADI ACE for connection to ADC and DAC
 # utilities

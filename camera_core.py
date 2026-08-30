@@ -20,6 +20,7 @@ contract on a machine with neither camera installed.
     binning, set_binning(n), max_binning, binning_mode
     set_roi(w, h, ox, oy), set_roi_full(), max_frame_size,
         max_frame_rate_for(w, h, fmt, binning), assert_frame_rate_reachable(hz)
+    enable_timestamps()
     throughput_limit_bps, set_throughput_limit(bps)
     record_burst(n) -> (frames, meta), describe()
     list_devices()                                          [static]
@@ -75,7 +76,7 @@ CAMERA_SURFACE = (
     'set_roi', 'set_roi_full', 'max_frame_size', 'max_frame_rate_for',
     'assert_frame_rate_reachable',
     'throughput_limit_bps', 'set_throughput_limit',
-    'record_burst', 'describe', 'list_devices',
+    'enable_timestamps', 'record_burst', 'describe', 'list_devices',
     'start_streaming', 'get_frame', 'stop_streaming',
 )
 
@@ -282,13 +283,42 @@ class CameraStreamer:
                 self.on_frame(frame)
 
 
-def sum_bin(frames, factor):
-    """Sum non-overlapping factor x factor blocks. Works on one frame or a stack.
+def safe_sum_dtype(dtype, factor):
+    """Smallest dtype that cannot overflow summing factor**2 pixels of `dtype`.
+
+    Judged from the dtype alone, which is the pessimistic case: a camera that
+    knows its pixels carry fewer bits than the container (10 bits in a 16-bit
+    word, say) should pass its own dtype to sum_bin instead and keep the
+    narrower one.
+    """
+    dtype = np.dtype(dtype)
+    if not np.issubdtype(dtype, np.integer):
+        return dtype
+    needed = int(np.iinfo(dtype).max) * factor * factor
+    family = ((np.uint8, np.uint16, np.uint32, np.uint64)
+              if np.iinfo(dtype).min == 0 else
+              (np.int8, np.int16, np.int32, np.int64))
+    for candidate in family:
+        if (np.iinfo(candidate).max >= needed
+                and np.dtype(candidate).itemsize >= dtype.itemsize):
+            return np.dtype(candidate)
+    return np.dtype(np.int64)
+
+
+def sum_bin(frames, factor, dtype=None):
+    """Sum non-overlapping factor x factor blocks. One frame or a whole stack.
 
     The host-side equivalent of the Basler's firmware Sum binning, for cameras
     that have none. Summing rather than averaging is the point: it is what
     multiplies the signal by factor**2 and buys the extra bits of range, which
     is the whole reason the Basler bins.
+
+    `dtype` is the accumulator. Left to itself this widens far enough that no
+    input could overflow, which for uint16 input means uint32. A camera that
+    knows its pixels are narrower than their container should say so - passing
+    uint16 for 10-bit data is safe to 65535 and four times faster, and this
+    runs once per frame inside the burst loop, where a few milliseconds is the
+    difference between keeping every frame and dropping some.
 
     Trailing rows and columns that do not fill a block are dropped, so the
     caller should size the ROI in multiples of `factor`.
@@ -299,10 +329,17 @@ def sum_bin(frames, factor):
     h, w = frames.shape[-2:]
     h, w = (h // factor) * factor, (w // factor) * factor
     trimmed = frames[..., :h, :w]
-    shape = trimmed.shape[:-2] + (h // factor, factor, w // factor, factor)
-    # int64 first: a sum of four 10-bit pixels overflows nothing, but a sum of
-    # four 16-bit ones would wrap silently in the input dtype.
-    return trimmed.reshape(shape).sum(axis=(-3, -1), dtype=np.int64)
+    dtype = safe_sum_dtype(trimmed.dtype, factor) if dtype is None else dtype
+
+    # Strided adds rather than a reshape-and-sum: the reshape forces numpy
+    # through a slower reduction, and the accumulator here is already the
+    # width we want.
+    total = trimmed[..., 0::factor, 0::factor].astype(dtype, copy=True)
+    for dy in range(factor):
+        for dx in range(factor):
+            if dy or dx:
+                total += trimmed[..., dy::factor, dx::factor]
+    return total
 
 
 def _self_test():
@@ -354,7 +391,18 @@ def _self_test():
     assert sum_bin(stack, 2)[0, 0, 0] == 0 + 1 + 4 + 5
     # odd sizes lose the remainder rather than raising
     assert sum_bin(np.ones((5, 5), dtype=np.uint16), 2).shape == (2, 2)
-    print('  host-side 2x2 binning sums (4x signal), as the Basler firmware does')
+
+    # left to itself the accumulator widens so that no input can overflow
+    assert safe_sum_dtype(np.uint8, 2) == np.uint16
+    assert safe_sum_dtype(np.uint16, 2) == np.uint32
+    full = np.full((2, 2), 65535, dtype=np.uint16)
+    assert sum_bin(full, 2)[0, 0] == 4 * 65535
+    # but a camera that knows its pixels are narrower keeps the narrow one
+    tenbit = np.full((2, 2), 1023, dtype=np.uint16)
+    kept = sum_bin(tenbit, 2, dtype=np.uint16)
+    assert kept.dtype == np.uint16 and kept[0, 0] == 4092, kept
+    print('  host-side 2x2 binning sums (4x signal), as the Basler firmware '
+          'does, widening only when the input could overflow')
 
     print('self-test passed')
 

@@ -465,6 +465,18 @@ class BaslerCamera:
                 f'the {self.throughput_limit_bps / 1e6:.0f} MB/s link cap allows '
                 f'only {link_max:.1f} Hz - raise it with set_throughput_limit(), '
                 f'bin harder, or use Mono8')
+        # The link cap binds harder than the payload arithmetic above
+        # predicts - measured: a 1024x384 Mono12 frame that arithmetic says
+        # needs 150 MB/s for 190 Hz in fact managed 50 Hz at that cap and
+        # 99 Hz at 212 MB/s. So while the cap is below its maximum it stays a
+        # live suspect, and blaming readout outright sends the caller to shrink
+        # an ROI that was never the problem.
+        headroom = self._cam.DeviceLinkThroughputLimit.Max
+        if not reasons and self.throughput_limit_bps < headroom:
+            reasons.append(
+                f'the link cap is at {self.throughput_limit_bps / 1e6:.0f} of a '
+                f'possible {headroom / 1e6:.0f} MB/s - raise it with '
+                f'set_throughput_limit() before shrinking anything')
         if not reasons:
             reasons.append(
                 f'sensor readout is the limit: it is paced per row, about '
@@ -530,6 +542,17 @@ class BaslerCamera:
         return enabled
 
     # ------------------------------------------------------------- grabbing
+    def enable_timestamps(self):
+        """Make every frame carry the camera's own timestamp.
+
+        On this camera that means chunk data. Without it the fallback stamp is
+        taken when the frame reaches the host and carries USB latency, which
+        would land silently in the alignment. Named for what the caller wants
+        rather than for the pylon mechanism, so the XIMEA - whose frames are
+        stamped with nothing to enable - can answer the same question.
+        """
+        return self.enable_chunks(('Timestamp',))
+
     def grab(self):
         """Grab a single frame and return it as a numpy array."""
         result = self._cam.GrabOne(self.GRAB_TIMEOUT_MS)
