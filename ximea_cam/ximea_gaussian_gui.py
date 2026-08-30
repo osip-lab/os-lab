@@ -2,9 +2,11 @@
 Ximea Camera Control and Gaussian Fitting GUI
 
 Requirements:
-    pip install ximea PyQt6 numpy scipy numba matplotlib pyperclip
+    pip install PyQt6 numpy scipy numba matplotlib pyperclip
 
-Also install the Ximea Software Package / driver from Ximea.
+Also install the Ximea Software Package / driver from Ximea, then run
+`python ximea_cam/install_ximea_package.py` to install the `ximea` package
+itself (it is not on PyPI).
 
 Tested conceptually for xiAPI-compatible Ximea cameras such as MQ042MG-CM-S7-TG.
 """

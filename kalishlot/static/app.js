@@ -11,6 +11,7 @@ import { initIdle } from './boxes/idle.js';
 const BOX_RENDERERS = {
   dummy_camera: createCameraBox,
   basler_camera: createCameraBox,
+  ximea_camera: createCameraBox,
   rigol_dg: createRigolDGBox,
   picoscope: createPicoScopeBox,
 };

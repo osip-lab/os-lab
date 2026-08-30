@@ -305,6 +305,17 @@ class XimeaCamera:
         self._cam.set_framerate(float(np.clip(value, low, high)))
 
     @property
+    def frame_rate_limits_hz(self):
+        """(min, max) rate the camera can keep as currently configured.
+
+        The maximum moves with exposure, ROI and link, so it is the honest
+        ceiling for a rate control - unlike `resulting_frame_rate`, which
+        reports what is happening now and would pin a slider to its own value.
+        """
+        return (float(self._cam.get_framerate_minimum()),
+                float(self._cam.get_framerate_maximum()))
+
+    @property
     def resulting_frame_rate(self):
         """The rate the camera can actually sustain as configured.
 
