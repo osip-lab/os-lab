@@ -73,9 +73,27 @@ Useful flags:
 | `--locate` | find the mode and report, without capturing |
 | `--levels` | check the light and exit |
 | `--frames N` | record N frames instead of 120 |
-| `--no-locate` | reuse the last ROI, saving ~2 s |
+| `--no-locate` | reuse the last capture's ROI, saving ~2 s |
 | `--allow-saturated` | capture even if the light is too bright |
 | *(omit `--scope`)* | Phase 1 mode: you drive PicoScope 7 by hand |
+
+### What is *not* fixed in the file
+
+Three things that a run has no business inheriting from whenever the script was
+written are worked out at every run instead:
+
+- **which camera** - `SERIAL_NUMBER = None` means the only Basler connected. It
+  says which one it took. Name a serial only when two are plugged in.
+- **where the mode is** - `ROI_OFFSET_Y` and `ROI_HEIGHT` are `None`, so
+  `locate_mode()` measures the mode and `choose_roi()` sizes the ROI around it
+  every time. The mode moves whenever the cavity is realigned, and a stale
+  offset fails silently: the capture runs, on rows the mode has left. With
+  `--no-locate` the ROI comes from the last capture on disk, never from a
+  number in the file. Set both constants only to pin the ROI deliberately.
+- **the exposure** - derived as `1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US`, so
+  changing the frame rate alone stays correct. The gap is 1% of the period
+  with a 100 us floor; the exposure must stay under the period or it becomes
+  the cap on the rate itself.
 
 ## Sharpening the alignment (optional)
 

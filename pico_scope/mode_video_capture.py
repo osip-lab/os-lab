@@ -52,13 +52,24 @@ from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
 # override these when given.
 ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
 DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
-LOCATE_FIRST = True     # find the mode before capturing; False reuses the ROI
+LOCATE_FIRST = True     # locate the mode first; False reuses the last ROI
 ALLOW_SATURATED = False # capture even when the light is too bright
 
 # --- the camera and how it is driven (this is the block to edit) -----------
-SERIAL_NUMBER = '25173136'      # the camera pointed at the cavity mode
+# None means whichever Basler camera is connected, which is right whenever
+# there is only one - the serial that used to sit here belonged to a camera
+# that is not always the one plugged in. Name a serial only to pick between
+# two cameras that are both connected; resolve_serial() then says which.
+SERIAL_NUMBER = None
 FRAME_RATE_HZ = 100.0           # see the peak-blending check below
-EXPOSURE_US = 9900.0            # just under the frame period, never equal to it
+# The exposure follows the frame rate rather than being typed out beside it:
+# as long as the period allows, less the gap the sensor needs between frames.
+# Asking for the whole period does not fail loudly, it quietly lowers the rate,
+# and the inverse-minus-a-bit had to be recomputed by hand at every new rate.
+# The floor is what stops the gap vanishing at high rates, where 1% of a short
+# period is less than the sensor wants.
+EXPOSURE_GAP_US = max(100.0, 0.01 * 1e6 / FRAME_RATE_HZ)
+EXPOSURE_US = 1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US   # 9900 us at 100 Hz
 N_FRAMES = 120                  # 1.2 s at 100 Hz
 # Mono12, not Mono8: as the laser warms the transmission climbs, and a
 # clipped peak stops the camera tracking the photodiode - the one thing that
@@ -72,21 +83,23 @@ THROUGHPUT_BPS = 212_352_571    # the cameras' own default; 150 MB/s caps us at 
 # ROI in BINNED pixels. Width is free - readout is paced per row - so keep the
 # whole sensor width and spend the budget on rows.
 ROI_WIDTH = 1024                # = full 2048 sensor columns at binning 2
-ROI_HEIGHT = 384                # = 768 sensor rows; 99.1 Hz in Mono12
-# ROI_HEIGHT is only the fallback for --no-locate. Normally choose_roi() picks
-# the height from the mode it just measured, because the camera gets moved and
-# the mode's size and position move with it.
 ROI_HEIGHT_CANDIDATES = (128, 192, 256, 320, 384, 448, 512, 640, 768, 1024)
 # The higher orders are larger than the 0th and are the ones that must not be
 # clipped, so the margin around what was actually seen is at least as wide as
 # the mode itself, and never less than this.
 ROI_MIN_MARGIN_ROWS = 48
 ROI_OFFSET_X = 0
-# None means locate_mode() finds it at every run, which is the right default -
-# the mode moves whenever the cavity is realigned. The number is the fallback
-# used by --no-locate: measured 2026-08-26, mode at binned rows 529-640 centred
-# on 584, so 584 - ROI_HEIGHT // 2. Re-run --locate after any realignment.
-ROI_OFFSET_Y = 406
+
+# None, and meant to stay None. The mode moves whenever the cavity is realigned
+# or the camera is nudged, so locate_mode() measures where it is at every run
+# and choose_roi() sizes the ROI around what it found. A height and an offset
+# written here would be right only until the next time the setup is touched,
+# and then wrong silently: the capture would still run, on rows the mode has
+# left. Set them only to pin the ROI deliberately - comparing two captures
+# frame for frame, say. Otherwise --no-locate reuses the ROI of the last
+# capture, which at least was measured; see fallback_roi().
+ROI_OFFSET_Y = None
+ROI_HEIGHT = None
 
 # --- the scope, when this script drives it too (Phase 2) -------------------
 # Only one program can own the scope, so PicoScope 7 must be closed. The block
@@ -296,7 +309,7 @@ def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES):
     return result
 
 
-def report_mode_location(found, roi_height=ROI_HEIGHT):
+def report_mode_location(found, roi_height=None):
     """Print the reconnaissance, and warn if the ROI would clip the mode."""
     print(f"  mode spans rows {found['row_min']}-{found['row_max']} "
           f"({found['height']} binned rows), cols {found['col_min']}-"
@@ -305,8 +318,10 @@ def report_mode_location(found, roi_height=ROI_HEIGHT):
     print(f"  peak pixel {found['peak_pixel']} of "
           f"{found['saturation_level']} ({found['pixel_format']}), saturated "
           f"{found['saturated_fraction']:.3%}")
-    margin = (roi_height - found['height']) // 2
-    if margin < found['height']:
+    # Without a height there is no margin to judge yet - this runs before
+    # choose_roi(), which measures the real margin against the ROI it picks.
+    margin = None if roi_height is None else (roi_height - found['height']) // 2
+    if margin is not None and margin < found['height']:
         print(f'  ! only {margin} binned rows of margin around the mode. Higher '
               f'orders are larger than the 0th - consider more rows, at the '
               f'cost of frame rate.')
@@ -453,10 +468,82 @@ def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
     return result
 
 
+def resolve_serial(serial=None):
+    """Which camera to use: the one named, or the only one connected.
+
+    Naming a serial in the file is a promise about which cameras are plugged
+    in today, and that promise goes stale - the camera gets unplugged, or
+    swapped for the other one. Falling back on "the only camera there is" is
+    both what is usually meant and impossible to get silently wrong.
+    """
+    serial = SERIAL_NUMBER if serial is None else serial
+    if serial:
+        return str(serial)
+    devices = BaslerCamera.list_devices()
+    if not devices:
+        raise RuntimeError('no Basler camera is connected.')
+    if len(devices) > 1:
+        raise RuntimeError(
+            f'{len(devices)} cameras are connected, so which one watches the '
+            f'cavity mode has to be said: set SERIAL_NUMBER (or --serial) to '
+            f'one of {[d["serial_number"] for d in devices]}.')
+    print(f"  camera {devices[0]['serial_number']} ({devices[0]['model']}), "
+          f"the only one connected")
+    return devices[0]['serial_number']
+
+
+def previous_roi(root=None):
+    """The ROI of the most recent capture on disk, with the file it came from.
+
+    Where the mode sits is a property of the alignment, not of this file, so
+    the only honest record of it is the last time it was actually measured.
+
+    Returns `(offset_y, height, path)`, or None if nothing has been captured.
+    """
+    root = Path(OUTPUT_ROOT if root is None else root)
+    sessions = sorted(root.glob('*/*_session.json'),
+                      key=lambda q: q.stat().st_mtime, reverse=True)
+    for path in sessions:
+        try:
+            roi = json.loads(path.read_text(encoding='utf-8'))['checks']['roi']
+            return int(roi['offset_y']), int(roi['height']), path
+        except (ValueError, KeyError, OSError, TypeError):
+            continue                     # a half-written session, not a stop
+    return None
+
+
+def fallback_roi():
+    """The ROI for a run that skips the reconnaissance.
+
+    Pinned by ROI_OFFSET_Y and ROI_HEIGHT if they are set; otherwise the last
+    capture's, which was at least measured at some point. Never a number left
+    over from whenever this file happened to be written.
+    """
+    if (ROI_OFFSET_Y is None) != (ROI_HEIGHT is None):
+        raise RuntimeError('pin both ROI_OFFSET_Y and ROI_HEIGHT or neither - '
+                           'half a pinned ROI is not enough to place one.')
+    if ROI_OFFSET_Y is not None:
+        print(f'  ROI pinned in the file: {ROI_HEIGHT} rows at offset_y '
+              f'{ROI_OFFSET_Y}')
+        return ROI_OFFSET_Y, ROI_HEIGHT
+    found = previous_roi()
+    if found is None:
+        raise RuntimeError(
+            'no ROI to fall back on: the mode has not been located and no '
+            'previous capture is on disk. Locate it first - LOCATE_FIRST = '
+            'True, or drop --no-locate - which is the normal way round.')
+    offset_y, height, path = found
+    print(f'  reusing the ROI measured for {path.parent.name}: {height} rows '
+          f'at offset_y {offset_y}')
+    return offset_y, height
+
+
 # %% [Step 2] Configuring the camera ----------------------------------------
-def configure(cam, offset_y, roi_height=None):
+def configure(cam, offset_y, roi_height):
     """Apply the capture settings and print every check worth failing on."""
-    roi_height = ROI_HEIGHT if roi_height is None else roi_height
+    if offset_y is None or roi_height is None:
+        raise ValueError('configure() needs a measured ROI: locate the mode '
+                         'first, or take one from fallback_roi().')
     cam.set_pixel_format(PIXEL_FORMAT)
     cam.set_throughput_limit(THROUGHPUT_BPS)
     binning_info = cam.set_binning(BINNING)
@@ -580,15 +667,16 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     return session_path, mask
 
 
-def capture(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
+def capture(serial_number=None, output_root=OUTPUT_ROOT,
             locate=True, prompt=True):
     """Locate the mode, configure, wait for the scope, record, save."""
-    cam = BaslerCamera(serial_number)
+    cam = BaslerCamera(resolve_serial(serial_number))
     cam.open()
     try:
         mode_location = None
-        # the --no-locate fallbacks; choose_roi() overrides both when it runs
-        offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
+        offset_y = roi_height = None
+        if not locate:
+            offset_y, roi_height = fallback_roi()
         if locate:
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
@@ -645,7 +733,7 @@ def capture(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
 
 
 # %% [Step 3b] Driving both instruments (Phase 2) -----------------------------
-def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
+def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
                          locate=True, n_frames=None, scope_serial=None,
                          adjust_gain=True, require_level=True):
     """Record the spectrum and the mode video from one process.
@@ -664,13 +752,14 @@ def capture_synchronized(serial_number=SERIAL_NUMBER, output_root=OUTPUT_ROOT,
     from pico_scope.ps4000a_scope import PicoScope4000A
 
     n_frames = N_FRAMES if n_frames is None else n_frames
-    cam = BaslerCamera(serial_number)
+    cam = BaslerCamera(resolve_serial(serial_number))
     cam.open()
     scope = PicoScope4000A(scope_serial)
     try:
         mode_location = None
-        # the --no-locate fallbacks; choose_roi() overrides both when it runs
-        offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
+        offset_y = roi_height = None
+        if not locate:
+            offset_y, roi_height = fallback_roi()
         if locate:
             print('--- locating the mode (whole sensor) ---')
             mode_location = locate_mode(cam)
@@ -979,6 +1068,41 @@ def _self_test():
           'that no single burst clips at is still refused when it has no '
           'headroom')
 
+    # the exposure follows the frame rate and always leaves room to read out
+    period_us = 1e6 / FRAME_RATE_HZ
+    assert 0 < EXPOSURE_US < period_us, (EXPOSURE_US, period_us)
+    assert period_us - EXPOSURE_US >= 100.0, 'no room between frames'
+    print(f'  {FRAME_RATE_HZ:g} Hz -> exposure {EXPOSURE_US:.0f} us, '
+          f'{EXPOSURE_GAP_US:.0f} us of gap, derived not typed')
+
+    # the ROI is measured at every run, not remembered from whenever this file
+    # was written; the only fallback is a previous capture
+    assert (ROI_OFFSET_Y is None) == (ROI_HEIGHT is None), 'pin both or neither'
+    with tempfile.TemporaryDirectory() as empty:
+        assert previous_roi(empty) is None
+        older = Path(empty) / 'a'
+        older.mkdir()
+        (older / 'a_session.json').write_text(
+            json.dumps({'checks': {'roi': {'offset_y': 111, 'height': 256}}}),
+            encoding='utf-8')
+        newer = Path(empty) / 'b'
+        newer.mkdir()
+        (newer / 'b_session.json').write_text(
+            json.dumps({'checks': {'roi': {'offset_y': 222, 'height': 320}}}),
+            encoding='utf-8')
+        offset_y, height, path = previous_roi(empty)
+        assert (offset_y, height) == (222, 320), (offset_y, height)
+        assert path.parent.name == 'b'
+    print('  with no ROI in the file, --no-locate falls back on the last '
+          'capture rather than on a number from 2026-08-26')
+
+    try:
+        configure(None, None, None)
+    except ValueError as error:
+        assert 'measured ROI' in str(error), error
+    else:
+        raise AssertionError('configure accepted a ROI it was never given')
+
     # the run-button configuration has to name something this file can do
     assert ACTION in ('capture', 'levels', 'locate', 'self-test'), ACTION
     assert LEVEL_BURST_FRAMES is None or LEVEL_BURST_FRAMES > 0
@@ -991,8 +1115,9 @@ def main():
                         help='run the offline checks and exit')
     parser.add_argument('--locate', action='store_true',
                         help='find the mode and report, without capturing')
-    parser.add_argument('--serial', default=SERIAL_NUMBER,
-                        help=f'camera serial number (default {SERIAL_NUMBER})')
+    parser.add_argument('--serial', default=None,
+                        help='camera serial number; defaults to SERIAL_NUMBER '
+                             'in this file, or the only camera connected')
     parser.add_argument('--frames', type=int, default=None,
                         help=f'frames to record (default {N_FRAMES})')
     parser.add_argument('--no-prompt', action='store_true',
@@ -1000,7 +1125,8 @@ def main():
                              'the PicoScope recording must already be running '
                              'and long enough to cover the delay')
     parser.add_argument('--no-locate', action='store_true',
-                        help='skip the reconnaissance and use ROI_OFFSET_Y')
+                        help='skip the reconnaissance and reuse the ROI '
+                             'of the last capture')
     parser.add_argument('--allow-saturated', action='store_true',
                         help='capture even if the camera is clipping, instead '
                              'of refusing; the alignment fit will likely fail')
@@ -1030,8 +1156,10 @@ def main():
         _self_test()
         return
 
+    serial = resolve_serial(args.serial)
+
     if action == 'locate':
-        cam = BaslerCamera(args.serial)
+        cam = BaslerCamera(serial)
         cam.open()
         try:
             print('--- locating the mode (whole sensor) ---')
@@ -1043,10 +1171,12 @@ def main():
         return
 
     if action == 'levels':
-        cam = BaslerCamera(args.serial)
+        cam = BaslerCamera(serial)
         cam.open()
         try:
-            offset_y, roi_height = ROI_OFFSET_Y, ROI_HEIGHT
+            offset_y = roi_height = None
+            if not locate:
+                offset_y, roi_height = fallback_roi()
             if locate:
                 found = locate_mode(cam)
                 report_mode_location(found)
@@ -1068,10 +1198,10 @@ def main():
                          f'self-test, not {ACTION!r}')
 
     if DRIVE_SCOPE or args.scope:
-        capture_synchronized(args.serial, locate=locate,
+        capture_synchronized(serial, locate=locate,
                              require_level=not allow_saturated)
     else:
-        capture(args.serial, locate=locate, prompt=not args.no_prompt)
+        capture(serial, locate=locate, prompt=not args.no_prompt)
 
 if __name__ == '__main__':
     main()
