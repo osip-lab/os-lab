@@ -95,6 +95,46 @@ written are worked out at every run instead:
   with a 100 us floor; the exposure must stay under the period or it becomes
   the cap on the rate itself.
 
+## Which camera
+
+Two cameras can drive a capture, and `CAMERA` in the run block is the only
+difference between them:
+
+    CAMERA = None        # 'basler' | 'ximea' | None = the only one connected
+
+Left as `None` with both plugged in, the script refuses and lists what it
+found rather than picking one. Everything else - the ROI search, the light
+check, the session format, the viewer, the fit - is identical, because both
+wrappers present the one surface described in `camera_core.py`.
+
+| | Basler acA2040-90umNIR | XIMEA MQ042MG-CM-S7-TG |
+| --- | --- | --- |
+| Depth | 12-bit (`Mono12`), full scale 4095 | **10-bit** (`Mono10`), full scale 1023 |
+| Binning | 2x2 Sum in firmware, before the link | **none in hardware** - summed 2x2 on the host |
+| At 100 Hz | limited by rows, ~384 binned rows | limited by exposure; the ROI is free |
+| Link | 419 MB/s available | 399 MB/s available |
+| Timestamps | chunk `Timestamp`, ns | `tsSec`/`tsUSec`, us, converted to ns |
+| Host-clock bias | **+39.9 ms +- 7.8 ms**, measured | **not yet measured** |
+
+Two consequences worth knowing at the bench:
+
+**The XIMEA needs more attenuation.** Binning it on the host does recover the
+4x signal and the 12-bit-equivalent range, but the *sensor* pixel underneath
+still clips at 1023 where the Basler's clips at 4095. `record_burst` reports
+what the sensor peaked at before binning hid it, since four summed pixels only
+reach full scale if all four clipped.
+
+**A XIMEA capture must be refined.** Its arming delay has never been measured,
+so `HOST_T0_BIAS_S['ximea']` is `None`: the capture applies no correction and
+says so, and `--refine` is not optional for it. Until that is measured, treat
+a XIMEA capture's nominal offset as good to a few frames, not to one.
+
+To measure it: take a dozen short captures, refine each, and record the
+correction it reports. The mean is the bias and the standard deviation is the
+jitter, exactly as the Basler's +39.9 ms +- 7.8 ms was established. Then put
+the number in `HOST_T0_BIAS_S` and the fine alignment becomes optional for it
+too.
+
 ## Sharpening the alignment (optional)
 
     ACTION = 'refine'    # SESSION = '' takes the newest capture; press Run
