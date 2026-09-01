@@ -62,7 +62,13 @@ ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
 CAMERA = None           # 'basler' | 'ximea' | None = the only one connected
 DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
 LOCATE_FIRST = True     # locate the mode first; False reuses the last ROI
-ALLOW_SATURATED = False # capture even when the light is too bright
+STRICT_LEVELS = False   # True: refuse to capture when the light clips.
+                        # Off by default: clipping is monotone, so it flattens
+                        # the peaks without moving them, and the alignment fit
+                        # (a centred, normalised inner product) is unchanged by
+                        # it. What saturation really costs is the *image* - the
+                        # lobes merge into one blob - so it is reported loudly
+                        # and left to you to judge.
 
 # --- the camera and how it is driven (this is the block to edit) -----------
 # None means whichever camera is connected, of either make, which is right
@@ -140,9 +146,19 @@ SCOPE_PAD_S = 0.30              # recorded before and after the burst
 # Subtracting it puts 83% of captures within one frame with no fitting at all,
 # which is what makes the fine alignment optional.
 #
+# ximea: measured over 26 captures on 2026-09-01, of which 11 gave a fit that
+# locked, -145.1 ms with a standard deviation of 2.3 ms - a 14.5-frame bias
+# with 0.23 frames of jitter. Negative because this camera arms far faster than
+# the host round-trip that estimates t0, where the Basler arms more slowly.
+# Only locked fits (depth > 1.5) were averaged: the laser was drifting through
+# resonances thermally rather than being scanned, so two bursts in three saw no
+# resonance at all and returned a meaningless offset. That the 11 that did lock
+# agree to a couple of ms, across bursts whose resonances fell at unrelated
+# times, is what rules out a common alias.
+#
 # None means not yet measured. The capture still runs and still records the raw
 # host clock; it just says so, and that --refine is not optional for it.
-HOST_T0_BIAS_S = {'basler': 0.0399, 'ximea': None}
+HOST_T0_BIAS_S = {'basler': 0.0399, 'ximea': -0.1451}
 
 # --- what the capture is checked against -----------------------------------
 # The tightest 0th->1st spacing measured across the 2026-08-23 mode maps. Two
@@ -915,8 +931,11 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
             if require_level:
                 raise RuntimeError('too bright to capture: ' + level['advice'])
             print(f'  ! {level["advice"]}')
-            print('  ! continuing anyway (--allow-saturated); the alignment '
-                  'fit will probably not lock.')
+            # Not a reason to stop: clipping flattens the peaks without moving
+            # them, and the fit maximises a centred, normalised inner product,
+            # which that leaves alone. The stored frames are what suffer.
+            print('  ! capturing anyway. The timing fit is unaffected by '
+                  'clipping; the images are, so the lobes may be merged.')
 
         scope.open()
         scope.configure_channel(SCOPE_CHANNEL, enabled=True,
@@ -1236,7 +1255,7 @@ def _self_test():
     assert not stuck['ok']
     assert 'minimum gain' in stuck['advice'], stuck['advice']
     print('  the pre-flight judges from the worst of several bursts, so a level '
-          'that no single burst clips at is still refused when it has no '
+          'that no single burst clips at is still flagged when it has no '
           'headroom')
 
     # the exposure follows the frame rate and always leaves room to read out
@@ -1294,10 +1313,15 @@ def _self_test():
     # a bias is per make and never borrowed from the other camera
     assert set(HOST_T0_BIAS_S) == set(CAMERA_BACKENDS), HOST_T0_BIAS_S
     assert host_t0_bias_s('nonexistent-make') == 0.0
+    # Either sign: the bias is the gap between where the host thinks frame 0
+    # sits and where it is, so a camera that arms faster than the host
+    # round-trip that estimates t0 has a negative one. The XIMEA measured
+    # -145 ms against the Basler's +40 ms.
     for make, bias in HOST_T0_BIAS_S.items():
-        assert bias is None or 0.0 <= bias < 1.0, (make, bias)
-    print('  the host-clock bias is per camera; an unmeasured one stays 0 and '
-          "says so rather than borrowing the other camera's")
+        assert bias is None or -1.0 < bias < 1.0, (make, bias)
+    print('  the host-clock bias is per camera and of either sign; an '
+          "unmeasured one stays 0 and says so rather than borrowing the "
+          "other camera's")
 
     # the run-button configuration has to name something this file can do
     assert ACTION in ('capture', 'levels', 'locate', 'self-test'), ACTION
@@ -1328,9 +1352,9 @@ def main():
     parser.add_argument('--no-locate', action='store_true',
                         help='skip the reconnaissance and reuse the ROI '
                              'of the last capture')
-    parser.add_argument('--allow-saturated', action='store_true',
-                        help='capture even if the camera is clipping, instead '
-                             'of refusing; the alignment fit will likely fail')
+    parser.add_argument('--strict-levels', action='store_true',
+                        help='refuse to capture if the camera is clipping, '
+                             'instead of only warning')
     parser.add_argument('--levels', action='store_true',
                         help='measure the light level and exit, without '
                              'capturing')
@@ -1349,7 +1373,7 @@ def main():
     elif args.locate:
         action = 'locate'
     locate = LOCATE_FIRST and not args.no_locate
-    allow_saturated = ALLOW_SATURATED or args.allow_saturated
+    strict_levels = STRICT_LEVELS or args.strict_levels
     if args.frames:
         globals()['N_FRAMES'] = args.frames
 
@@ -1399,7 +1423,7 @@ def main():
 
     if DRIVE_SCOPE or args.scope:
         capture_synchronized(serial, locate=locate, make=make,
-                             require_level=not allow_saturated)
+                             require_level=strict_levels)
     else:
         capture(serial, locate=locate, make=make, prompt=not args.no_prompt)
 

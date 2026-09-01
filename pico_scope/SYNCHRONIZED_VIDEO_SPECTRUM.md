@@ -57,6 +57,18 @@ what factor to attenuate) or too dim to use the range well. Gain is already at
 its minimum and the exposure is pinned by the frame rate, so the adjustment is
 optical - an ND filter, or a weaker split off the transmission.
 
+Too bright is a **warning, not a refusal**. Clipping is monotone: it flattens
+the peaks without moving them, and the alignment fit maximises a centred,
+normalised inner product, which is unchanged by that. What saturation spoils is
+the *image* - neighbouring lobes merge into one blob - so it is worth fixing
+before you trust a picture, but it does not invalidate the timing. Pass
+`--strict-levels` to have the script refuse instead.
+
+When the laser is drifting through resonances rather than being scanned, the
+four bursts disagree wildly (`[4092, 4092, 2059, 1542]` is typical): the spread
+is measuring which bursts happened to catch a resonance, not the stability of
+the light. Judge by the brightest, and ignore the spread figure.
+
 ## Capturing
 
     ACTION = 'capture'   # DRIVE_SCOPE = True, then press Run
@@ -74,7 +86,7 @@ Useful flags:
 | `--levels` | check the light and exit |
 | `--frames N` | record N frames instead of 120 |
 | `--no-locate` | reuse the last capture's ROI, saving ~2 s |
-| `--allow-saturated` | capture even if the light is too bright |
+| `--strict-levels` | refuse to capture if the light clips, instead of only warning |
 | *(omit `--scope`)* | Phase 1 mode: you drive PicoScope 7 by hand |
 
 ### What is *not* fixed in the file
@@ -114,7 +126,7 @@ wrappers present the one surface described in `camera_core.py`.
 | At 100 Hz | limited by rows, ~384 binned rows | limited by exposure; the ROI is free |
 | Link | 419 MB/s available | 399 MB/s available |
 | Timestamps | chunk `Timestamp`, ns | `tsSec`/`tsUSec`, us, converted to ns |
-| Host-clock bias | **+39.9 ms +- 7.8 ms**, measured | **not yet measured** |
+| Host-clock bias | **+39.9 ms +- 7.8 ms** | **-145.1 ms +- 2.3 ms** |
 
 Two consequences worth knowing at the bench:
 
@@ -124,16 +136,23 @@ still clips at 1023 where the Basler's clips at 4095. `record_burst` reports
 what the sensor peaked at before binning hid it, since four summed pixels only
 reach full scale if all four clipped.
 
-**A XIMEA capture must be refined.** Its arming delay has never been measured,
-so `HOST_T0_BIAS_S['ximea']` is `None`: the capture applies no correction and
-says so, and `--refine` is not optional for it. Until that is measured, treat
-a XIMEA capture's nominal offset as good to a few frames, not to one.
+**The XIMEA's bias is negative, and much steadier.** Measured over 26 captures
+on 2026-09-01: **-145.1 ms +- 2.3 ms**, a 14.5-frame bias with only 0.23 frames
+of jitter, against the Basler's 4.0 frames with 0.78 of jitter. The sign is not
+a mistake. The bias is the gap between the host's estimate of where frame 0
+sits and where it really sits; this camera arms far faster than that host
+round-trip, so the true first exposure *precedes* the estimate, where the
+slower-arming Basler's follows it. With the number in place a fresh XIMEA
+capture lands a mean of +0.4 ms from the fitted offset, every locked fit inside
+one frame, so `--refine` is optional for it on the same terms as the Basler.
 
-To measure it: take a dozen short captures, refine each, and record the
-correction it reports. The mean is the bias and the standard deviation is the
-jitter, exactly as the Basler's +39.9 ms +- 7.8 ms was established. Then put
-the number in `HOST_T0_BIAS_S` and the fine alignment becomes optional for it
-too.
+Only fits that locked were averaged, and that mattered here: the laser was
+drifting through resonances thermally rather than being scanned, so two bursts
+in three contained no resonance at all and returned a meaningless offset with
+`depth` around 1.1. The rule is `depth > 1.5`, which the sync script already
+applies and records as `fit_locked` in the session. That the fits which did
+lock agree to a couple of ms, across bursts whose resonances fell at unrelated
+times, is what rules out their having found a common alias.
 
 ## Sharpening the alignment (optional)
 
