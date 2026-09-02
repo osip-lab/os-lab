@@ -18,6 +18,24 @@ guesswork: every instant of the trace maps to a definite frame.
 - **Click** to pin a frame, click again to unpin and resume following.
 - **Left / right arrows** step one frame; **shift** steps ten.
 - **b** toggles snap-to-brightest (on by default, see below).
+- **fit Gaussian** (the checkbox, or **f**) fits a 2D Gaussian to the frame on
+  screen and draws its 1/e^2 contour, reporting the beam radii in millimetres.
+
+## Fitting the mode
+
+The checkbox uses the same `gaussian_fit` routine as kalishlot's camera boxes,
+so a mode measured here and one measured live in the browser cannot disagree.
+It runs in that module's `FitLoop`: a fit costs about 140 ms and hovering
+changes the frame far faster, so the loop keeps only the newest frame and skips
+the ones the cursor swept past rather than falling behind it.
+
+The millimetre readout is the one thing that cannot be assumed. It uses the
+capture's own `effective_pixel_size_mm` - the sensor pitch times the binning.
+The Basler acA2040 and the XIMEA MQ042 happen to share a 5.5 um pitch, so it is
+the *binning* that matters: a 2x2 binned frame is 11 um per pixel, and quoting
+the bare pitch would halve every width reported. A capture that records no
+pixel size at all gets the widths in pixels and says so, rather than inventing
+a scale.
 
 ## Snap to brightest
 
@@ -51,6 +69,8 @@ matplotlib.use('Agg' if (ACTION == 'self-test' or '--self-test' in sys.argv)
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.patches import Ellipse  # noqa: E402
+from matplotlib.widgets import CheckButtons  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E402
@@ -59,10 +79,29 @@ from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E40
                                         load_session, load_session_trace,
                                         nearest_frame, release_frames)
 
+# The same fitter kalishlot's camera boxes use, straight from the device
+# layer - one routine, so a mode measured here and one measured in the
+# browser cannot disagree. It lives under basler_cam/ for historical reasons
+# but is camera-agnostic; the XIMEA adapter uses it too.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
+from gaussian_fit import FitLoop  # noqa: E402
+
 SNAP_RADIUS = 1          # frames either side, when snapping to the brightest
 SHADE_ALPHA = 0.06      # faint: at 120 frames these are stripes until you zoom
 HELP_TEXT = ('move: follow the cursor   click: pin/unpin   '
-             'left/right: step (shift = 10)   b: snap-to-brightest')
+             'left/right: step (shift = 10)   b: snap-to-brightest   '
+             'f: fit a Gaussian')
+
+# Matches kalishlot's CameraFitMixin.FIT_REBINNING, so the browser and this
+# viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
+# frame and agrees with 2x to better than 1% on the widths.
+FIT_REBINNING = 4
+FIT_POLL_MS = 80        # how often the GUI thread looks for a finished fit
+# fit_gaussian bounds amplitude and offset at 4095, the 12-bit full scale it
+# was written for. A binned frame can exceed that - 2x2 summing 10-bit XIMEA
+# pixels reaches 4092, but 4x4 would reach 16368 - so a frame that scales
+# past it is divided down before fitting and the amplitude scaled back.
+FIT_MAX_LEVEL = 4095
 
 
 class ModeSpectrumViewer:
@@ -77,7 +116,7 @@ class ModeSpectrumViewer:
     """
 
     def __init__(self, trace, frames, windows, brightness, title='',
-                 snap=True):
+                 snap=True, pixel_size_mm=None, camera_label=''):
         self.trace = trace
         self.frames = frames
         self.windows = np.asarray(windows)
@@ -86,6 +125,20 @@ class ModeSpectrumViewer:
         self.pinned = None
         self.index = 0
         self.background = None
+
+        # Millimetres per pixel *of a stored frame*, which is the sensor pitch
+        # times the binning - both cameras here are 5.5 um, but a binned frame
+        # is 11 um, so reading the pitch alone would report half the real size.
+        # It comes from the capture, never from a constant in this file.
+        self.pixel_size_mm = pixel_size_mm
+        self.camera_label = camera_label
+        self.fitting = False
+        self._fit_loop = None
+        self._fit_result = None     # written by the fit thread, read by the timer
+        self._fit_seen = None
+        self._fit_scale = 1.0
+        self._fit_timer = None
+
         self._build_figure(title)
         self._connect()
         self.show_frame(0)
@@ -143,6 +196,25 @@ class ModeSpectrumViewer:
         # rather than an artefact of autoscaling each image to itself.
         self.image.set_clim(0, max(int(np.asarray(self.frames).max()), 1))
 
+        self._build_fit_controls()
+
+    def _build_fit_controls(self):
+        """The fit checkbox, and the overlay it draws on the image."""
+        self.ax_fit = self.fig.add_axes([0.755, 0.42, 0.115, 0.07])
+        self.ax_fit.set_frame_on(False)
+        self.check_fit = CheckButtons(self.ax_fit, ['fit Gaussian'], [False])
+        self.check_fit.on_clicked(lambda _label: self.toggle_fit())
+
+        # 1/e^2 contour of the fitted beam, plus its centre.
+        self.fit_ellipse = Ellipse((0, 0), 0, 0, angle=0.0, fill=False,
+                                   color='#39d0ff', lw=1.4, zorder=5)
+        self.fit_ellipse.set_visible(False)
+        self.ax_image.add_patch(self.fit_ellipse)
+        self.fit_centre, = self.ax_image.plot([], [], '+', color='#39d0ff',
+                                              ms=11, mew=1.4, zorder=6)
+        self.fit_text = self.fig.text(0.755, 0.10, '', fontsize=8.5,
+                                      va='bottom', ha='left', family='monospace')
+
     def _connect(self):
         self.cids = [
             self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion),
@@ -150,6 +222,118 @@ class ModeSpectrumViewer:
             self.fig.canvas.mpl_connect('key_press_event', self.on_key),
             self.fig.canvas.mpl_connect('draw_event', self.on_draw),
         ]
+
+    # ---------------------------------------------------------------- fit
+    def toggle_fit(self, enabled=None):
+        """Turn the Gaussian fit on or off; returns the new state.
+
+        The fit runs in kalishlot's FitLoop rather than inline: one fit costs
+        about 140 ms, and hovering changes the frame far faster than that. The
+        loop keeps only the newest submitted frame, so a fast sweep of the
+        mouse skips the frames it passed over instead of queueing 100 fits and
+        falling seconds behind the cursor.
+        """
+        self.fitting = (not self.fitting) if enabled is None else bool(enabled)
+        if self.check_fit.get_status()[0] != self.fitting:
+            # keeps the box in step when toggled by the 'f' key
+            self.check_fit.eventson = False
+            self.check_fit.set_active(0)
+            self.check_fit.eventson = True
+        if self.fitting:
+            if self._fit_loop is None:
+                self._fit_loop = FitLoop(on_result=self._on_fit_result,
+                                         rebinning=FIT_REBINNING)
+            self._fit_loop.start()
+            self._start_fit_timer()
+            self.submit_fit()
+        else:
+            if self._fit_loop is not None:
+                self._fit_loop.stop()
+            self._fit_result = self._fit_seen = None
+            self.fit_ellipse.set_visible(False)
+            self.fit_centre.set_data([], [])
+            self.fit_text.set_text('')
+            self.fig.canvas.draw_idle()
+        return self.fitting
+
+    def submit_fit(self):
+        """Hand the frame on screen to the fit thread."""
+        if not self.fitting or self._fit_loop is None:
+            return
+        frame = np.asarray(self.frames[self.index], dtype=float)
+        # fit_gaussian bounds amplitude and offset at 4095; scale a deeper
+        # frame down rather than letting the bound silently clip the fit.
+        peak = float(frame.max())
+        self._fit_scale = FIT_MAX_LEVEL / peak if peak > FIT_MAX_LEVEL else 1.0
+        self._fit_loop.submit(frame * self._fit_scale if self._fit_scale != 1.0
+                              else frame)
+
+    def _on_fit_result(self, success, parameters):
+        """Called on the fit thread: only store, never touch an artist."""
+        self._fit_result = (success, parameters, self.index, self._fit_scale)
+
+    def _start_fit_timer(self):
+        """Poll for finished fits on the GUI thread.
+
+        Matplotlib artists must not be touched from the fit thread, so the
+        result is picked up here instead of drawn where it is produced.
+        """
+        if self._fit_timer is not None:
+            return
+        self._fit_timer = self.fig.canvas.new_timer(interval=FIT_POLL_MS)
+        self._fit_timer.add_callback(self._poll_fit)
+        self._fit_timer.start()
+
+    def _poll_fit(self):
+        result = self._fit_result
+        if result is None or result is self._fit_seen:
+            return
+        self._fit_seen = result
+        self.draw_fit(*result)
+
+    def draw_fit(self, success, parameters, index, scale=1.0):
+        """Put a finished fit on the image. Safe to call directly in tests."""
+        if not success:
+            self.fit_ellipse.set_visible(False)
+            self.fit_centre.set_data([], [])
+            reason = parameters.get('reason', 'fit did not converge')
+            self.fit_text.set_text(f'frame {index}: {reason}')
+            self.fig.canvas.draw_idle()
+            return
+
+        w_x, w_y = parameters['w_x'], parameters['w_y']
+        self.fit_ellipse.set_center((parameters['x_0'], parameters['y_0']))
+        # w is the 1/e^2 radius, so the ellipse's full width is twice it.
+        self.fit_ellipse.set_width(2 * w_x)
+        self.fit_ellipse.set_height(2 * w_y)
+        self.fit_ellipse.set_angle(np.degrees(parameters['angle']))
+        self.fit_ellipse.set_visible(True)
+        self.fit_centre.set_data([parameters['x_0']], [parameters['y_0']])
+
+        lines = [f'frame {index}',
+                 f'x0 {parameters["x_0"]:7.1f} px',
+                 f'y0 {parameters["y_0"]:7.1f} px']
+        if self.pixel_size_mm:
+            lines += [f'wx {w_x * self.pixel_size_mm:7.3f} mm',
+                      f'wy {w_y * self.pixel_size_mm:7.3f} mm']
+        else:
+            lines += [f'wx {w_x:7.1f} px', f'wy {w_y:7.1f} px',
+                      'pixel size unknown']
+        lines.append(f'amp {parameters["amplitude"] / scale:7.0f}')
+        if self.camera_label:
+            lines.append(self.camera_label)
+        self.fit_text.set_text('\n'.join(lines))
+        self.fig.canvas.draw_idle()
+
+    def close_fit(self):
+        """Stop the fit thread and its timer; called when the viewer closes."""
+        if self._fit_timer is not None:
+            self._fit_timer.stop()
+            self._fit_timer = None
+        if self._fit_loop is not None:
+            self._fit_loop.stop()
+            self._fit_loop = None
+        self.fitting = False
 
     # -------------------------------------------------------------- logic
     def frame_for_time(self, t_seconds):
@@ -180,6 +364,7 @@ class ModeSpectrumViewer:
             f'{self.windows[index, 0] * 1e3:.2f}-{self.windows[index, 1] * 1e3:.2f} ms   '
             f'brightness {self.brightness[index]:.2f}   [{state}'
             f'{", snap" if self.snap else ""}]')
+        self.submit_fit()
         if redraw:
             self._blit()
 
@@ -236,6 +421,9 @@ class ModeSpectrumViewer:
             self.pinned = self.index + step
         elif key == 'b':
             self.snap = not self.snap
+        elif key == 'f':
+            self.toggle_fit()
+            return
         else:
             return
         if self.pinned is not None:
@@ -273,7 +461,40 @@ def viewer_from_session(session_path, scope_path=None, snap=True):
     brightness = np.array(session.get('brightness_masked')
                           or frame_brightness(frames), dtype=float)
     title = f'{Path(session_path).name} - {source}'
-    return ModeSpectrumViewer(trace, frames, windows, brightness, title, snap)
+    return ModeSpectrumViewer(trace, frames, windows, brightness, title, snap,
+                              pixel_size_mm=session_pixel_size_mm(session),
+                              camera_label=camera_label(session))
+
+
+def session_pixel_size_mm(session):
+    """Millimetres per pixel of a stored frame, or None if unrecorded.
+
+    A capture writes `effective_pixel_size_mm`, which is already the sensor
+    pitch times the binning. Older captures predate that key, so it is rebuilt
+    from the camera block - which carries the pitch per make, 5.5 um for both
+    the Basler acA2040 and the XIMEA MQ042 - times the binning that was used.
+    Falling back to a constant is what this must never do: a wrong pitch turns
+    every millimetre in the readout into a plausible, silent lie.
+    """
+    recorded = session.get('effective_pixel_size_mm')
+    if recorded:
+        return float(recorded)
+    camera = session.get('camera') or {}
+    pitch = camera.get('pixel_size_mm')
+    if not pitch:
+        return None
+    binning = camera.get('binning_x') or session.get('binning') or 1
+    return float(pitch) * float(binning)
+
+
+def camera_label(session):
+    """One line naming the camera and the pixel size the fit is quoting."""
+    camera = session.get('camera') or {}
+    make = camera.get('make') or 'camera'
+    size = session_pixel_size_mm(session)
+    if size is None:
+        return f'{make}, pixel size unknown'
+    return f'{make} {size * 1e3:.1f} um/px'
 
 
 # --------------------------------------------------------------- self-test
@@ -378,6 +599,75 @@ def _self_test():
     assert np.isclose(width, exposure * 1e3), 'the band is one exposure wide'
     print('  the highlighted band tracks the frame and is one exposure wide')
 
+    # --- the Gaussian fit ---------------------------------------------
+    # The pixel size is the part that fails silently, so it is pinned for
+    # both makes. Both sensors are 5.5 um, so it is the binning that decides
+    # the answer, and a capture that records nothing must say so rather than
+    # inventing a scale.
+    assert session_pixel_size_mm({'effective_pixel_size_mm': 0.011}) == 0.011
+    for make in ('basler', 'ximea'):
+        camera = {'make': make, 'pixel_size_mm': 0.0055, 'binning_x': 2}
+        rebuilt = session_pixel_size_mm({'camera': camera})
+        assert np.isclose(rebuilt, 0.011), (make, rebuilt)
+        assert np.isclose(session_pixel_size_mm(
+            {'camera': dict(camera, binning_x=1)}), 0.0055), make
+        assert f'{make} 11.0 um/px' == camera_label({'camera': camera}), make
+    assert session_pixel_size_mm({}) is None
+    assert 'unknown' in camera_label({})
+    print('  the fit reads its pixel size from the capture - sensor pitch '
+          'times binning - for either make, and says so when it has none')
+
+    # a fit of a known blob: the 1/e^2 radii come back in millimetres
+    sigma_px = 3.0
+    fit_viewer = ModeSpectrumViewer(trace, frames, windows, brightness,
+                                    'fit', snap=False, pixel_size_mm=0.011,
+                                    camera_label='ximea 11.0 um/px')
+    from gaussian_fit import fit_gaussian
+    ok, pars = fit_gaussian(np.asarray(frames[int(np.argmax(brightness))],
+                                       dtype=float), rebinning=1)
+    assert ok, 'the synthetic blob must fit'
+    # the blob is exp(-(r/3)^2), i.e. sigma = 3/sqrt(2), and w = 2 sigma
+    expected_w = 2 * sigma_px / np.sqrt(2)
+    assert np.isclose(pars['w_x'], expected_w, rtol=0.1), (pars['w_x'], expected_w)
+    assert np.isclose(pars['x_0'], 16, atol=0.5), pars['x_0']
+    assert np.isclose(pars['y_0'], 12, atol=0.5), pars['y_0']
+
+    fit_viewer.draw_fit(True, pars, 7)
+    assert fit_viewer.fit_ellipse.get_visible()
+    centre = fit_viewer.fit_ellipse.get_center()
+    assert np.isclose(centre[0], pars['x_0']) and np.isclose(centre[1], pars['y_0'])
+    # w is a radius, so the drawn contour is twice it across
+    assert np.isclose(fit_viewer.fit_ellipse.get_width(), 2 * pars['w_x'])
+    assert np.isclose(fit_viewer.fit_ellipse.get_height(), 2 * pars['w_y'])
+    readout = fit_viewer.fit_text.get_text()
+    assert f'{pars["w_x"] * 0.011:7.3f} mm' in readout, readout
+    assert 'ximea 11.0 um/px' in readout
+    print('  the fitted contour is drawn at 1/e^2 and the widths are '
+          'reported in millimetres, not pixels')
+
+    # a failed fit says why instead of leaving a stale ellipse on screen
+    fit_viewer.draw_fit(False, {'reason': 'low signal'}, 8)
+    assert not fit_viewer.fit_ellipse.get_visible()
+    assert 'low signal' in fit_viewer.fit_text.get_text()
+    # without a pixel size the widths stay in pixels rather than being scaled
+    fit_viewer.pixel_size_mm = None
+    fit_viewer.draw_fit(True, pars, 9)
+    assert 'mm' not in fit_viewer.fit_text.get_text()
+    assert 'pixel size unknown' in fit_viewer.fit_text.get_text()
+    print('  a fit that does not converge clears the overlay and says why')
+
+    # toggling off stops the thread and clears the overlay
+    fit_viewer.pixel_size_mm = 0.011
+    assert fit_viewer.toggle_fit(True) is True
+    assert fit_viewer.check_fit.get_status()[0] is True
+    assert fit_viewer.toggle_fit(False) is False
+    assert not fit_viewer.fit_ellipse.get_visible()
+    assert fit_viewer.fit_text.get_text() == ''
+    assert fit_viewer.check_fit.get_status()[0] is False
+    fit_viewer.close_fit()
+    plt.close(fit_viewer.fig)
+    print('  the checkbox turns the fit on and off and stops its thread')
+
     plt.close(viewer.fig)
     # the run-button configuration has to name something this file can do
     assert ACTION in ('show', 'self-test'), ACTION
@@ -410,6 +700,7 @@ def main():
     snap = SNAP_TO_BRIGHTEST and not args.no_snap
     viewer = viewer_from_session(session, args.scope, snap=snap)
     plt.show()
+    viewer.close_fit()
     release_frames(viewer.frames)
 
 
