@@ -11,13 +11,20 @@ the same time, sets exposure/gain, grabs a frame from each, prints image
 statistics and closes everything cleanly.
 """
 
-import queue
 import sys
-import threading
 import time
+from pathlib import Path
 
 import numpy as np
 from pypylon import genicam, pylon
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# burst_timing and CameraStreamer are camera-agnostic and now live in
+# camera_core, shared with the XIMEA wrapper. Re-exported here because
+# basler_gui.py, kalishlot/adapters/basler.py and mode_video_capture.py all
+# import them from this module.
+from camera_core import (CameraStreamer, burst_timing,  # noqa: E402,F401
+                         check_camera_surface, sum_bin)
 
 
 def _clip(node, value):
@@ -73,41 +80,6 @@ def _grab_timestamp(result):
     return int(result.TimeStamp)
 
 
-def burst_timing(meta, expected_rate_hz=None):
-    """Sanity-check a record_burst() metadata list; return a report dict.
-
-    Three things are worth knowing about a burst before it is trusted:
-    whether any frame was dropped (a gap in block_id), how steady the frame
-    period was, and whether the camera timestamps really are in nanoseconds -
-    which is checked by comparing the period they imply against the frame rate
-    that was asked for, rather than assumed.
-    """
-    block_ids = np.array([row['block_id'] for row in meta], dtype=np.int64)
-    stamps = np.array([row['camera_timestamp_ns'] for row in meta],
-                      dtype=np.float64)
-    gaps = np.diff(block_ids)
-    missing = [{'after_frame': int(i), 'after_block_id': int(block_ids[i]),
-                'n_missing': int(gap - 1)}
-               for i, gap in enumerate(gaps) if gap != 1]
-    periods_s = np.diff(stamps) / 1e9
-    report = {
-        'n_frames': int(block_ids.size),
-        'dropped': missing,
-        'n_dropped': int(sum(m['n_missing'] for m in missing)),
-        'period_s_median': float(np.median(periods_s)) if periods_s.size else None,
-        'period_s_std': float(np.std(periods_s)) if periods_s.size else None,
-        'duration_s': float((stamps[-1] - stamps[0]) / 1e9) if stamps.size > 1 else 0.0,
-    }
-    if expected_rate_hz and report['period_s_median']:
-        expected = 1.0 / expected_rate_hz
-        report['period_ratio_to_expected'] = report['period_s_median'] / expected
-        # A ratio far from 1 usually means the timestamp tick is not a
-        # nanosecond on this model, not that the camera missed its rate.
-        report['timestamps_look_like_ns'] = bool(
-            0.9 < report['period_ratio_to_expected'] < 1.1)
-    return report
-
-
 class BaslerCamera:
     """A single Basler camera, addressed by serial number.
 
@@ -123,6 +95,11 @@ class BaslerCamera:
         with BaslerCamera('24756778') as cam:
             img = cam.grab()
     """
+
+    MAKE = 'basler'
+    # acA2040 sensor pitch. The effective pixel is this times the binning
+    # factor, which is what describe() records for later interpretation.
+    PIXEL_SIZE_MM = 5.5 / 1000.0
 
     GRAB_TIMEOUT_MS = 10000
     MAX_FRAME_RATE = 10.0  # Hz, the default frame_rate_hz applied at open()
@@ -205,6 +182,11 @@ class BaslerCamera:
         self.close()
 
     # ------------------------------------------------------------- settings
+    @property
+    def pixel_size_mm(self):
+        """Sensor pitch, before binning."""
+        return self.PIXEL_SIZE_MM
+
     @property
     def model(self):
         return self._cam.DeviceModelName.GetValue()
@@ -302,7 +284,48 @@ class BaslerCamera:
             int(np.clip(bytes_per_second, node.Min, node.Max)))
         return self.throughput_limit_bps
 
+    @property
+    def formats(self):
+        """Mono formats this camera offers, shallowest first."""
+        available = [name for name in ('Mono8', 'Mono12p', 'Mono12')
+                     if _entry_available(self._cam.PixelFormat, name)]
+        return tuple(available)
+
+    @property
+    def deepest_format(self):
+        """The format with the most levels - what a capture wants by default.
+
+        Headroom is the reason: as the laser warms the transmission climbs,
+        and a clipped peak stops the camera tracking the photodiode.
+        """
+        available = self.formats
+        for name in ('Mono12', 'Mono12p', 'Mono8'):
+            if name in available:
+                return name
+        return self.pixel_format
+
     # ------------------------------------------------------ binning and ROI
+    @property
+    def max_binning(self):
+        """Largest square binning the camera will accept, in firmware."""
+        return int(min(self._cam.BinningHorizontal.Max,
+                       self._cam.BinningVertical.Max))
+
+    @property
+    def binning_mode(self):
+        """How binned pixels are combined: 'sum', 'average', or the fixed
+        firmware mode when the camera has no node to ask.
+
+        Measured, not assumed, on the acA2040-90umNIR: probe_binning_mode()
+        found it sums, which is why binning here multiplies the signal.
+        """
+        for node_name in ('BinningVerticalMode', 'BinningHorizontalMode'):
+            try:
+                return str(getattr(self._cam, node_name).GetValue()).lower()
+            except Exception:
+                continue
+        return 'firmware-sum'
+
     @property
     def binning(self):
         """(horizontal, vertical) binning factors."""
@@ -442,6 +465,18 @@ class BaslerCamera:
                 f'the {self.throughput_limit_bps / 1e6:.0f} MB/s link cap allows '
                 f'only {link_max:.1f} Hz - raise it with set_throughput_limit(), '
                 f'bin harder, or use Mono8')
+        # The link cap binds harder than the payload arithmetic above
+        # predicts - measured: a 1024x384 Mono12 frame that arithmetic says
+        # needs 150 MB/s for 190 Hz in fact managed 50 Hz at that cap and
+        # 99 Hz at 212 MB/s. So while the cap is below its maximum it stays a
+        # live suspect, and blaming readout outright sends the caller to shrink
+        # an ROI that was never the problem.
+        headroom = self._cam.DeviceLinkThroughputLimit.Max
+        if not reasons and self.throughput_limit_bps < headroom:
+            reasons.append(
+                f'the link cap is at {self.throughput_limit_bps / 1e6:.0f} of a '
+                f'possible {headroom / 1e6:.0f} MB/s - raise it with '
+                f'set_throughput_limit() before shrinking anything')
         if not reasons:
             reasons.append(
                 f'sensor readout is the limit: it is paced per row, about '
@@ -507,6 +542,17 @@ class BaslerCamera:
         return enabled
 
     # ------------------------------------------------------------- grabbing
+    def enable_timestamps(self):
+        """Make every frame carry the camera's own timestamp.
+
+        On this camera that means chunk data. Without it the fallback stamp is
+        taken when the frame reaches the host and carries USB latency, which
+        would land silently in the alignment. Named for what the caller wants
+        rather than for the pylon mechanism, so the XIMEA - whose frames are
+        stamped with nothing to enable - can answer the same question.
+        """
+        return self.enable_chunks(('Timestamp',))
+
     def grab(self):
         """Grab a single frame and return it as a numpy array."""
         result = self._cam.GrabOne(self.GRAB_TIMEOUT_MS)
@@ -604,9 +650,12 @@ class BaslerCamera:
         height, width = self.frame_shape
         binning_x, binning_y = self.binning
         return {
+            'make': self.MAKE,
             'serial_number': self.serial_number,
             'model': self.model,
             'pixel_format': self.pixel_format,
+            'pixel_size_mm': self.pixel_size_mm,
+            'binning_mode': self.binning_mode,
             'saturation_level': self.saturation_level,
             'width': width,
             'height': height,
@@ -624,120 +673,6 @@ class BaslerCamera:
     def stop_streaming(self):
         if self._cam.IsGrabbing():
             self._cam.StopGrabbing()
-
-
-class CameraStreamer:
-    """Grab frames continuously from an open BaslerCamera in a background
-    thread and deliver them through a callback.
-
-    GUI-agnostic on purpose: any interface (desktop GUI, web server) supplies
-    `on_frame(image)` and optionally `on_error(exception)`; both are called
-    from the streaming thread, so the interface is responsible for handing
-    the data over to its own event loop if needed.
-    """
-
-    def __init__(self, camera, on_frame, on_error=None):
-        self.camera = camera
-        self.on_frame = on_frame
-        self.on_error = on_error
-        self._thread = None
-        self._playing = threading.Event()
-        self._stopping = threading.Event()
-        self._single_request = threading.Event()
-        self._commands = queue.Queue()
-
-    @property
-    def is_running(self):
-        return self._thread is not None and self._thread.is_alive()
-
-    @property
-    def is_paused(self):
-        return not self._playing.is_set()
-
-    def start(self):
-        if self.is_running:
-            self._playing.set()
-            return
-        self._stopping.clear()
-        self._playing.set()
-        self.camera.start_streaming()
-        self._thread = threading.Thread(target=self._loop, daemon=True,
-                                        name=f'stream-{self.camera.serial_number}')
-        self._thread.start()
-
-    def pause(self):
-        """Stop delivering frames; acquisition thread stays alive."""
-        self._playing.clear()
-
-    def resume(self):
-        self._playing.set()
-
-    def snap(self):
-        """Deliver one frame while paused.
-
-        All camera access stays in the streaming thread, so this only posts
-        a request; the frame arrives through on_frame like any other.
-        While playing this is a no-op (frames are coming anyway).
-        """
-        if self.is_paused:
-            self._single_request.set()
-
-    def submit(self, command):
-        """Run `command(camera)` in the streaming thread between grabs.
-
-        The pylon camera object is not thread-safe, so while the streamer is
-        running, all camera access (e.g. changing exposure/gain) must go
-        through here instead of calling the camera directly. The command is
-        responsible for its own error handling; an uncaught exception is
-        reported through on_error but does not stop the stream.
-        """
-        self._commands.put(command)
-
-    def _run_commands(self):
-        while True:
-            try:
-                command = self._commands.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                command(self.camera)
-            except Exception as error:
-                if self.on_error is not None:
-                    self.on_error(error)
-
-    def stop(self):
-        """Stop the thread and the camera's acquisition."""
-        self._stopping.set()
-        self._playing.set()  # release a paused loop so it can exit
-        if self._thread is not None:
-            self._thread.join(timeout=2 * BaslerCamera.GRAB_TIMEOUT_MS / 1000)
-            self._thread = None
-        if self.camera.is_open:
-            self.camera.stop_streaming()
-
-    def _loop(self):
-        while not self._stopping.is_set():
-            self._run_commands()
-            single = False
-            if not self._playing.wait(timeout=0.1):
-                if not self._single_request.is_set():
-                    continue  # paused; keep checking for resume/stop/snap
-                self._single_request.clear()
-                single = True
-            if self._stopping.is_set():
-                break
-            try:
-                frame = self.camera.get_frame()
-            except Exception as error:
-                if self._stopping.is_set():
-                    break
-                if self.on_error is not None:
-                    self.on_error(error)
-                break
-            if self._stopping.is_set():
-                break
-            if single or self._playing.is_set():
-                self.on_frame(frame)
 
 
 def self_test():

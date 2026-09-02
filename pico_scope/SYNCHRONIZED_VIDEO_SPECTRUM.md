@@ -57,6 +57,18 @@ what factor to attenuate) or too dim to use the range well. Gain is already at
 its minimum and the exposure is pinned by the frame rate, so the adjustment is
 optical - an ND filter, or a weaker split off the transmission.
 
+Too bright is a **warning, not a refusal**. Clipping is monotone: it flattens
+the peaks without moving them, and the alignment fit maximises a centred,
+normalised inner product, which is unchanged by that. What saturation spoils is
+the *image* - neighbouring lobes merge into one blob - so it is worth fixing
+before you trust a picture, but it does not invalidate the timing. Pass
+`--strict-levels` to have the script refuse instead.
+
+When the laser is drifting through resonances rather than being scanned, the
+four bursts disagree wildly (`[4092, 4092, 2059, 1542]` is typical): the spread
+is measuring which bursts happened to catch a resonance, not the stability of
+the light. Judge by the brightest, and ignore the spread figure.
+
 ## Capturing
 
     ACTION = 'capture'   # DRIVE_SCOPE = True, then press Run
@@ -73,9 +85,74 @@ Useful flags:
 | `--locate` | find the mode and report, without capturing |
 | `--levels` | check the light and exit |
 | `--frames N` | record N frames instead of 120 |
-| `--no-locate` | reuse the last ROI, saving ~2 s |
-| `--allow-saturated` | capture even if the light is too bright |
+| `--no-locate` | reuse the last capture's ROI, saving ~2 s |
+| `--strict-levels` | refuse to capture if the light clips, instead of only warning |
 | *(omit `--scope`)* | Phase 1 mode: you drive PicoScope 7 by hand |
+
+### What is *not* fixed in the file
+
+Three things that a run has no business inheriting from whenever the script was
+written are worked out at every run instead:
+
+- **which camera** - `SERIAL_NUMBER = None` means the only Basler connected. It
+  says which one it took. Name a serial only when two are plugged in.
+- **where the mode is** - `ROI_OFFSET_Y` and `ROI_HEIGHT` are `None`, so
+  `locate_mode()` measures the mode and `choose_roi()` sizes the ROI around it
+  every time. The mode moves whenever the cavity is realigned, and a stale
+  offset fails silently: the capture runs, on rows the mode has left. With
+  `--no-locate` the ROI comes from the last capture on disk, never from a
+  number in the file. Set both constants only to pin the ROI deliberately.
+- **the exposure** - derived as `1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US`, so
+  changing the frame rate alone stays correct. The gap is 1% of the period
+  with a 100 us floor; the exposure must stay under the period or it becomes
+  the cap on the rate itself.
+
+## Which camera
+
+Two cameras can drive a capture, and `CAMERA` in the run block is the only
+difference between them:
+
+    CAMERA = None        # 'basler' | 'ximea' | None = the only one connected
+
+Left as `None` with both plugged in, the script refuses and lists what it
+found rather than picking one. Everything else - the ROI search, the light
+check, the session format, the viewer, the fit - is identical, because both
+wrappers present the one surface described in `camera_core.py`.
+
+| | Basler acA2040-90umNIR | XIMEA MQ042MG-CM-S7-TG |
+| --- | --- | --- |
+| Depth | 12-bit (`Mono12`), full scale 4095 | **10-bit** (`Mono10`), full scale 1023 |
+| Binning | 2x2 Sum in firmware, before the link | **none in hardware** - summed 2x2 on the host |
+| At 100 Hz | limited by rows, ~384 binned rows | limited by exposure; the ROI is free |
+| Link | 419 MB/s available | 399 MB/s available |
+| Timestamps | chunk `Timestamp`, ns | `tsSec`/`tsUSec`, us, converted to ns |
+| Host-clock bias | **+39.9 ms +- 7.8 ms** | **-145.1 ms +- 2.3 ms** |
+
+Two consequences worth knowing at the bench:
+
+**The XIMEA needs more attenuation.** Binning it on the host does recover the
+4x signal and the 12-bit-equivalent range, but the *sensor* pixel underneath
+still clips at 1023 where the Basler's clips at 4095. `record_burst` reports
+what the sensor peaked at before binning hid it, since four summed pixels only
+reach full scale if all four clipped.
+
+**The XIMEA's bias is negative, and much steadier.** Measured over 26 captures
+on 2026-09-01: **-145.1 ms +- 2.3 ms**, a 14.5-frame bias with only 0.23 frames
+of jitter, against the Basler's 4.0 frames with 0.78 of jitter. The sign is not
+a mistake. The bias is the gap between the host's estimate of where frame 0
+sits and where it really sits; this camera arms far faster than that host
+round-trip, so the true first exposure *precedes* the estimate, where the
+slower-arming Basler's follows it. With the number in place a fresh XIMEA
+capture lands a mean of +0.4 ms from the fitted offset, every locked fit inside
+one frame, so `--refine` is optional for it on the same terms as the Basler.
+
+Only fits that locked were averaged, and that mattered here: the laser was
+drifting through resonances thermally rather than being scanned, so two bursts
+in three contained no resonance at all and returned a meaningless offset with
+`depth` around 1.1. The rule is `depth > 1.5`, which the sync script already
+applies and records as `fit_locked` in the session. That the fits which did
+lock agree to a couple of ms, across bursts whose resonances fell at unrelated
+times, is what rules out their having found a common alias.
 
 ## Sharpening the alignment (optional)
 

@@ -43,9 +43,20 @@ from adapters.dummy_camera import DummyCameraAdapter
 from adapters.picoscope import PicoScopeAdapter
 from adapters.rigol_dg import RigolDGAdapter
 
-DEVICE_TYPES = {cls.type_name: cls
-                for cls in (DummyCameraAdapter, BaslerCameraAdapter,
-                            RigolDGAdapter, PicoScopeAdapter)}
+_ADAPTERS = [DummyCameraAdapter, BaslerCameraAdapter,
+             RigolDGAdapter, PicoScopeAdapter]
+
+# XIMEA is optional where the others are not: its Python package is not on
+# PyPI and has to be copied out of the XIMEA Software Package by hand (see
+# requirements.txt), so on a machine without it this import fails. A missing
+# camera should cost that camera's box, not the whole server.
+try:
+    from adapters.ximea import XimeaCameraAdapter
+    _ADAPTERS.append(XimeaCameraAdapter)
+except ImportError as error:
+    print(f'XIMEA support unavailable: {error}')
+
+DEVICE_TYPES = {cls.type_name: cls for cls in _ADAPTERS}
 
 JPEG_QUALITY = 80
 FRAME_POLL_S = 1 / 30  # how often each websocket checks for a newer frame
