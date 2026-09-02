@@ -127,7 +127,7 @@ def load_cached_marks(data_path, min_pairs=1, signal_column=None):
     return record
 
 
-def ask_use_cached_marks(record, data_path):
+def ask_use_cached_marks(record, data_path, accept_all=None):
     """Ask whether to reuse a cached marking, or to mark the file again.
 
     Marking is the slow part of a run, so the cache is what one usually wants
@@ -140,24 +140,38 @@ def ask_use_cached_marks(record, data_path):
     The long arm is part of what is printed because it is saved with the marks
     and reused with them: it is the one number that would otherwise be typed
     again on every run, and answering 'n' is how a wrong one is corrected.
+
+    `accept_all` is an optional one-item mutable flag (e.g. a list holding a
+    bool), shared across a whole run of several files by a caller such as
+    mode_map_2d: once it is set, every later call returns True without asking,
+    and answering 'a' here is what sets it. The single-file script has no use
+    for it and leaves it None, which keeps the plain y/n prompt.
     """
+    if accept_all is not None and accept_all[0]:
+        return True
     path = cache_file(data_path)
     marked = datetime.fromtimestamp(path.stat().st_mtime)
     print(f"  {path.name} holds a marking of this file: "
           f"{len(record['marks'])} pairs, long arm "
           f"{record['long_arm_m'] * 100:.4g} cm, marked {marked:%Y-%m-%d %H:%M}")
+    all_option = ", a = yes to all remaining" if accept_all is not None else ""
     while True:
         try:
-            answer = input("  Use it? y = yes, n = mark the file again "
-                           "[default y]: ").strip().lower()
+            answer = input(f"  Use it? y = yes, n = mark the file again"
+                           f"{all_option} [default y]: ").strip().lower()
         except EOFError:
             return True
         if answer in ('', 'y', 'yes'):
             return True
+        if accept_all is not None and answer in ('a', 'all'):
+            accept_all[0] = True
+            print("  using cached marks for this and every remaining file")
+            return True
         if answer in ('n', 'no'):
             print("  marking it again - the new marks replace the cached ones")
             return False
-        print("  Please answer 'y' or 'n'.")
+        options = "'y', 'n'" + (" or 'a'" if accept_all is not None else "")
+        print(f"  Please answer {options}.")
 
 
 def save_marks(data_path, record):
