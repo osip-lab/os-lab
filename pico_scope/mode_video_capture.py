@@ -129,7 +129,7 @@ ROI_HEIGHT = None
 # second of slack would add another ~4 free-spectral-range aliases for the
 # optional fine alignment to sort out.
 SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
-SCOPE_RANGE_V = 0.1            # +-10 mV; peaks sit around 1-2 mV
+SCOPE_RANGE_V = 0.1             # +-100 mV; raised from 10 mV on 2026-09-02
 SCOPE_COUPLING = 'DC'
 SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
 SCOPE_PAD_S = 0.30              # recorded before and after the burst
