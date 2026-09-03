@@ -45,10 +45,11 @@ Marking is slow, so every file's marks are cached in a
 pico_scope/extract_df_and_fsr_from_scope_csv.py writes, so a file already
 marked there while the measurement was being taken needs no marking here at
 all. When a file already has one, the run stops to ask whether to use that
-marking ('y') or to mark the file again ('n', which then replaces the
-sidecar); set REMARK_ALL, or list keys in REMARK_KEYS, to skip the question
-and mark those files again. A marking with fewer than the two consecutive
-pairs a map row needs for its FSR is marked again without asking.
+marking ('y'), to mark the file again ('n', which then replaces the
+sidecar), or to use it and every remaining cached marking without asking
+again ('a'); set REMARK_ALL, or list keys in REMARK_KEYS, to skip the
+question and mark those files again. A marking with fewer than the two
+consecutive pairs a map row needs for its FSR is marked again without asking.
 
 Finishing a marking window without marking anything asks again which waveform
 buffer of that file to use - the usual reason for an unmarkable trace being
@@ -92,21 +93,20 @@ from utilities.utils import (ask_long_arm_length,  # noqa: E402
 # fly (and you are asked which waveform buffer to use); .csv files are read as
 # they are. The keys need not be evenly spaced - the map keeps their spacing.
 MEASUREMENTS = {
-    33: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\33cm\without EOM-0014.psdata",
-    34: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\34cm\without EOM-0012.psdata",
-    35: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\35cm\without EOM-0012.psdata",
-    36: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\36cm\without EOM-0009.psdata",
-    37: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\37cm\without EOM-0008.psdata",
-    38: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\38cm\without EOM-0007.psdata",
-    39: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\39cm\without EOM-0006.psdata",
-    40: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\40cm\without EOM-0004.psdata",
-    41: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\41cm\without EOM-0003.psdata",
-    42: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\42cm\without EOM-0003.psdata",
-    43: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\43cm\without EOM-0002.psdata",
-    44: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\44cm\without EOM-3W.psdata",
-    45: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\45cm\without EOM-3W.psdata",
-    46: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\46cm\without EOM-3W-0002.psdata",
-    47: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-25\47cm\without EOM-3W.psdata",
+    37: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\37cm\without EOM 2-0013.psdata",
+    # 38: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\38cm\without EOM 2-0012.psdata",
+    # 39: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\39cm\without EOM 2-0010.psdata",
+    40: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\40cm\without EOM 2-0008.psdata",
+    # 41: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\41cm\without EOM-0007.psdata",
+    42: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\42cm\without EOM-0006.psdata",
+    43: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\43cm\without EOM-0005.psdata",
+    44: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\44cm\without EOM-0005.psdata",
+    45: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\45cm\without EOM-0003.psdata",
+    46: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\46cm\without EOM-0003.psdata",
+    47: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\47cm\without EOM-0002.psdata",
+    # 48: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\48cm\without EOM.psdata",
+    49: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\49cm\without EOM-0001.psdata",
+    50: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\50cm max linear stage\without EOM-0003.psdata",
 }
 Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
 
@@ -189,7 +189,7 @@ def load_trace(csv_path):
             raw[SIGNAL_COLUMN].to_numpy(dtype=float))
 
 
-def analyse_file(key, data_path, remark=False):
+def analyse_file(key, data_path, remark=False, accept_all=None):
     """Return the marking record for one measurement, marking it if needed.
 
     The record is the '<data file>.modemarks.json' sidecar (see
@@ -197,6 +197,10 @@ def analyse_file(key, data_path, remark=False):
     pico_scope/extract_df_and_fsr_from_scope_csv.py needs no marking here. A
     map row needs two consecutive pairs for its FSR, which is more than that
     script needs, so a cached marking with fewer is marked again.
+
+    `accept_all` is the one-item mutable flag main() shares across the whole
+    dictionary (see ask_use_cached_marks): once set, every remaining cached
+    file is used without asking.
 
     Finishing the marking window without anything marked means the trace on
     screen is not the one to analyse, so the waveform-buffer question is asked
@@ -211,7 +215,8 @@ def analyse_file(key, data_path, remark=False):
     if not remark:
         cached = load_cached_marks(data_path, min_pairs=2,
                                    signal_column=SIGNAL_COLUMN)
-        if cached is not None and ask_use_cached_marks(cached, data_path):
+        if cached is not None and ask_use_cached_marks(cached, data_path,
+                                                        accept_all=accept_all):
             print("  using the cached marks")
             return cached
 
@@ -593,6 +598,7 @@ def main(measurements=None, y_label=None, normalize_to=None):
             'the top of pico_scope/mode_map_2d.py.')
 
     keys, rows = [], []
+    accept_all = [False]  # shared across files: 'a' at the cache prompt sets it
     for index, key in enumerate(sorted(measurements), start=1):
         path = measurements[key]
         # the full path, not just the name: many measurements share a file
@@ -600,7 +606,8 @@ def main(measurements=None, y_label=None, normalize_to=None):
         print(f"\n=== [{index}/{len(measurements)}] {y_label} = {key:g} ===")
         print(f"  {path}")
         record = analyse_file(
-            key, path, remark=REMARK_ALL or key in REMARK_KEYS)
+            key, path, remark=REMARK_ALL or key in REMARK_KEYS,
+            accept_all=accept_all)
         if record is None:
             print(f"  {y_label} = {key:g} skipped")
             continue
@@ -631,7 +638,12 @@ def main(measurements=None, y_label=None, normalize_to=None):
     fig = plot_map(keys, rows, x_edges, y_edges, z, y_label=y_label)
     trend_fig = plot_trends(keys, rows, y_label=y_label)
     if SAVE_OUTPUTS:
-        save_outputs(Path(next(iter(measurements.values()))).parent,
+        # the date folder holding every measurement's own subfolder, not the
+        # first measurement's own subfolder (e.g. .../2026-08-27, not
+        # .../2026-08-27/37cm)
+        first_path = next(path for path in measurements.values()
+                          if path is not None)
+        save_outputs(Path(first_path).parent.parent,
                      fig, trend_fig, keys, rows, centres, z)
     plt.show(block=True)
     return keys, rows, centres, z
