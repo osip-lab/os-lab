@@ -49,6 +49,15 @@ class RigolDGAdapter(DeviceAdapter):
             self._label = f'{fields[1]} — s/n {fields[2]}'
 
     def close(self):
+        # Closing means kalishlot stops managing the device (idle timeout,
+        # manual removal, server shutdown) — unlike open(), which must never
+        # disturb a running experiment, close() leaves the instrument in a
+        # safe state rather than an output running unattended forever.
+        for channel in self.generator.CHANNELS:
+            try:
+                self.generator.set_output(channel, False)
+            except Exception:
+                pass
         self.generator.close()
 
     def describe(self):
