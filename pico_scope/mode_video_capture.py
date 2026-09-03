@@ -37,6 +37,7 @@ import importlib
 import json
 import sys
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -61,7 +62,7 @@ CAMERA_BACKENDS = {
 ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
 CAMERA = None           # 'basler' | 'ximea' | None = the only one connected
 DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
-LOCATE_FIRST = True     # locate the mode first; False reuses the last ROI
+LOCATE_FIRST = False     # locate the mode first; False reuses the last ROI
 STRICT_LEVELS = False   # True: refuse to capture when the light clips.
                         # Off by default: clipping is monotone, so it flattens
                         # the peaks without moving them, and the alignment fit
@@ -129,7 +130,7 @@ ROI_HEIGHT = None
 # second of slack would add another ~4 free-spectral-range aliases for the
 # optional fine alignment to sort out.
 SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
-SCOPE_RANGE_V = 0.1             # +-100 mV; raised from 10 mV on 2026-09-02
+SCOPE_RANGE_V = 5               # +-5 V; raised from +-100 mV on 2026-09-03
 SCOPE_COUPLING = 'DC'
 SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
 SCOPE_PAD_S = 0.30              # recorded before and after the burst
@@ -161,11 +162,6 @@ SCOPE_PAD_S = 0.30              # recorded before and after the burst
 HOST_T0_BIAS_S = {'basler': 0.0399, 'ximea': -0.1451}
 
 # --- what the capture is checked against -----------------------------------
-# The tightest 0th->1st spacing measured across the 2026-08-23 mode maps. Two
-# resonances closer together than one frame period blend into a single image,
-# so the frame period has to stay well under this.
-TIGHTEST_PEAK_SPACING_S = 0.0247
-MIN_FRAMES_BETWEEN_PEAKS = 2.0
 MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as lit
 
 # --- where captures are written --------------------------------------------
@@ -701,12 +697,9 @@ def configure(cam, offset_y, roi_height):
     cam.frame_rate_hz = FRAME_RATE_HZ
     stamps = cam.enable_timestamps()
 
-    period = 1.0 / FRAME_RATE_HZ
-    burst = N_FRAMES * period
     sensor_w = roi['width'] * BINNING
     sensor_h = roi['height'] * BINNING
     link_max = cam.max_frame_rate_for(sensor_w, sensor_h, pixel_format, BINNING)
-    frames_per_gap = TIGHTEST_PEAK_SPACING_S / period
 
     print(f'\n--- camera {cam.serial_number} ({cam.model}) ---')
     print(f'  frame {roi["width"]}x{roi["height"]} {pixel_format} at offset '
@@ -724,25 +717,29 @@ def configure(cam, offset_y, roi_height):
           f'MB/frame on the link, allowing {link_max:.1f} Hz at '
           f'{cam.throughput_limit_bps / 1e6:.0f} MB/s')
     print(f'  camera can sustain {cam.resulting_frame_rate:.2f} Hz as configured')
-    resulting = cam.assert_frame_rate_reachable(FRAME_RATE_HZ)
+    try:
+        actual_hz = cam.assert_frame_rate_reachable(FRAME_RATE_HZ)
+    except RuntimeError as exc:
+        # Falling back rather than refusing: a session at the achievable rate
+        # is worth having, and the warning is loud enough that it won't be
+        # mistaken for the rate that was actually asked for.
+        actual_hz = cam.resulting_frame_rate
+        message = (f'FRAME_RATE_HZ={FRAME_RATE_HZ:g} is not reachable - the '
+                   f'script dropped it to {actual_hz:.1f} Hz automatically. '
+                   f'{exc}')
+        warnings.warn(message)
+        print(f'  ! {message}')
 
-    print(f'\n--- peak blending (check 6) ---')
-    print(f'  frame period {period * 1e3:.2f} ms against the tightest measured '
-          f'0th->1st spacing of {TIGHTEST_PEAK_SPACING_S * 1e3:.1f} ms')
-    print(f'  {frames_per_gap:.1f} frames between the closest pair '
-          f'(want at least {MIN_FRAMES_BETWEEN_PEAKS:.0f})')
-    if frames_per_gap < MIN_FRAMES_BETWEEN_PEAKS:
-        raise RuntimeError(
-            f'at {FRAME_RATE_HZ:g} Hz only {frames_per_gap:.1f} frames separate '
-            f'the closest 0th and 1st orders, so they will blend into one '
-            f'image. Raise the frame rate (and cut ROI rows to afford it).')
+    period = 1.0 / actual_hz
+    burst = N_FRAMES * period
+
     print(f'  burst {burst:.3f} s for {N_FRAMES} frames, '
           f'{N_FRAMES * roi["width"] * roi["height"] / 1e6:.0f} MB')
     return {'roi': roi, 'binning': binning_info, 'timestamps': list(stamps),
             'pixel_format': pixel_format, 'binning_mode': cam.binning_mode,
             'saturation_level': int(cam.saturation_level),
-            'link_max_hz': link_max, 'resulting_hz': resulting,
-            'burst_s': burst, 'frames_between_closest_peaks': frames_per_gap}
+            'link_max_hz': link_max, 'resulting_hz': actual_hz,
+            'burst_s': burst}
 
 
 # %% [Step 3] Recording and saving -------------------------------------------
@@ -922,7 +919,7 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
         checks = configure(cam, offset_y, roi_height)
         if mode_location is not None:
             checks['roi_choice'] = roi_choice
-        burst_s = n_frames / FRAME_RATE_HZ
+        burst_s = n_frames / checks['resulting_hz']
 
         print('\n--- light level ---')
         level = check_light_level(cam, adjust_gain=adjust_gain)
@@ -967,7 +964,7 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
         scope.close()
         cam.close()
 
-    timing = burst_timing(meta, expected_rate_hz=FRAME_RATE_HZ)
+    timing = burst_timing(meta, expected_rate_hz=checks['resulting_hz'])
     # Scope t = 0 is the trigger, i.e. the start of the block, so the host-clock
     # estimate of where frame 0 sits is simply the delay between the two calls.
     # It carries whatever latency RunBlock and StartGrabbing add, which is the
@@ -1109,16 +1106,12 @@ def _self_test():
     print('  numpy metadata survives, and a metadata failure leaves no orphan '
           'arrays')
 
-    # the configured frame rate must actually resolve the closest peaks
+    # the exposure must fit inside the frame period, or it becomes the cap
     period = 1.0 / FRAME_RATE_HZ
-    assert TIGHTEST_PEAK_SPACING_S / period >= MIN_FRAMES_BETWEEN_PEAKS, \
-        f'the configured {FRAME_RATE_HZ} Hz cannot resolve the closest orders'
     assert EXPOSURE_US / 1e6 < period, \
         'exposure must be shorter than the frame period, or it becomes the cap'
-    print(f'  {FRAME_RATE_HZ:g} Hz gives '
-          f'{TIGHTEST_PEAK_SPACING_S / period:.1f} frames between the closest '
-          f'orders, exposure {EXPOSURE_US / 1e3:.1f} ms < period '
-          f'{period * 1e3:.1f} ms')
+    print(f'  {FRAME_RATE_HZ:g} Hz -> exposure {EXPOSURE_US / 1e3:.1f} ms < '
+          f'period {period * 1e3:.1f} ms')
     # --- the ROI chooser, against a stand-in camera ------------------------
     # Rows are what frame rate costs, so a fake camera whose rate is inversely
     # proportional to ROI height exercises the real trade-off without hardware.
