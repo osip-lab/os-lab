@@ -131,10 +131,19 @@ ROI_HEIGHT = None
 # second of slack would add another ~4 free-spectral-range aliases for the
 # optional fine alignment to sort out.
 SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
-SCOPE_RANGE_V = 0.2               # +-5 V; raised from +-100 mV on 2026-09-03
+SCOPE_RANGE_V = None            # None: auto-range from a short probe instead
+                                # (see auto_range_scope) - useful when the
+                                # transmission level is not known ahead of time
 SCOPE_COUPLING = 'DC'
 SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
 SCOPE_PAD_S = 0.30              # recorded before and after the burst
+SCOPE_AUTORANGE_PROBE_S = 0.2   # seconds sampled to auto-range, when
+                                # SCOPE_RANGE_V is None
+SCOPE_AUTORANGE_MARGIN = 1.5    # target range = this x the probe's largest
+                                # magnitude
+SCOPE_AUTORANGE_MIN_V = 0.02    # floor, so a probe that caught no signal (a
+                                # blocked beam, say) does not pick the most
+                                # sensitive range available
 
 # ps4000aRunBlock returns before the scope has actually begun sampling, so the
 # host-clock estimate of where frame 0 sits is systematically early. Part of
@@ -905,6 +914,33 @@ def capture(serial_number=None, output_root=None,
         cam.close()
 
 
+def auto_range_scope(scope, channel, coupling, probe_s=SCOPE_AUTORANGE_PROBE_S,
+                     margin=SCOPE_AUTORANGE_MARGIN, min_v=SCOPE_AUTORANGE_MIN_V):
+    """Probe `channel` briefly and return `margin` times the largest
+    magnitude seen - the range to ask configure_channel() for next, which
+    then snaps it up to the nearest one the hardware actually offers.
+
+    Used when SCOPE_RANGE_V is None: the transmission level depends on the
+    day's alignment and gain, so a fixed guess either clips the peaks (too
+    narrow) or wastes most of the ADC's resolution (too wide). The probe
+    itself is taken at the widest available range so it cannot clip.
+    """
+    from pico_scope.ps4000a_scope import CHANNEL_NAMES, RANGES
+
+    scope.configure_channel(channel, enabled=True, coupling=coupling,
+                            range_v=max(RANGES.values()))
+    for name in CHANNEL_NAMES:
+        if name != channel:
+            scope.configure_channel(name, enabled=False)
+    scope.configure_trigger(enabled=False)
+    _t, volts, _info = scope.capture_block(probe_s, SCOPE_SAMPLE_INTERVAL_S)
+    peak_v = float(np.max(np.abs(volts[channel])))
+    range_v = max(margin * peak_v, min_v)
+    print(f'  probed +-{peak_v * 1e3:.1f} mV, asking for +-{range_v * 1e3:.1f} '
+         f'mV ({margin:g}x)')
+    return range_v
+
+
 # %% [Step 3b] Driving both instruments (Phase 2) -----------------------------
 def capture_synchronized(serial_number=None, output_root=None,
                          locate=True, n_frames=None, scope_serial=None,
@@ -960,15 +996,22 @@ def capture_synchronized(serial_number=None, output_root=None,
                   'clipping; the images are, so the lobes may be merged.')
 
         scope.open()
-        scope.configure_channel(SCOPE_CHANNEL, enabled=True,
-                                coupling=SCOPE_COUPLING, range_v=SCOPE_RANGE_V)
+        print(f'\n--- scope {scope.variant} s/n {scope.serial} ---')
+        if SCOPE_RANGE_V is None:
+            print(f'  auto-ranging channel {SCOPE_CHANNEL} ...')
+            range_v = auto_range_scope(scope, SCOPE_CHANNEL, SCOPE_COUPLING)
+        else:
+            range_v = SCOPE_RANGE_V
+        channel_config = scope.configure_channel(
+            SCOPE_CHANNEL, enabled=True, coupling=SCOPE_COUPLING,
+            range_v=range_v)
+        range_v = channel_config['range_v']  # snapped to what the hardware offers
         for name in ('A', 'B', 'C', 'D'):
             if name != SCOPE_CHANNEL:
                 scope.configure_channel(name, enabled=False)
         scope.configure_trigger(enabled=False)   # start immediately
         duration = burst_s + 2 * SCOPE_PAD_S
-        print(f'\n--- scope {scope.variant} s/n {scope.serial} ---')
-        print(f'  channel {SCOPE_CHANNEL}, +-{SCOPE_RANGE_V * 1e3:g} mV '
+        print(f'  channel {SCOPE_CHANNEL}, +-{range_v * 1e3:g} mV '
               f'{SCOPE_COUPLING}, {SCOPE_SAMPLE_INTERVAL_S * 1e6:g} us/sample')
         print(f'  block {duration:.3f} s = {burst_s:.3f} s burst + '
               f'2 x {SCOPE_PAD_S:.2f} s pad')
@@ -1029,7 +1072,7 @@ def capture_synchronized(serial_number=None, output_root=None,
     session['scope'] = {
         'file': f'{stamp}_scope.npz',
         'channel': SCOPE_CHANNEL,
-        'range_v': SCOPE_RANGE_V,
+        'range_v': range_v,
         'coupling': SCOPE_COUPLING,
         'sample_interval_s': block_info['interval_s'],
         'n_samples': block_info['n_collected'],
