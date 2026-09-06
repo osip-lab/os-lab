@@ -432,21 +432,31 @@ class ModeSpectrumViewer:
 
 
 # ------------------------------------------------------------------ loading
-def viewer_from_session(session_path, scope_path=None, snap=True):
-    """Build a viewer from a capture, aligning it however it can.
+def load_synced_trace(session_path, scope_path=None):
+    """Load a capture's trace/frames/offset, aligning it however it can.
 
     A Phase 2 capture carries its own scope trace and an offset, so nothing
     else is needed; a Phase 1 capture needs the .psdata that was recorded
     alongside it, and is aligned by fitting.
+
+    Returns (trace, frames, windows, brightness, session, source,
+    mark_target_path). `mark_target_path` is the file a modemarks.json
+    sidecar for this trace belongs next to - the external .psdata for a
+    Phase 1 capture (the same file extract_df_and_fsr_from_scope_csv.py would
+    use for it), or the session's own recorded scope trace file for a
+    Phase 2 capture - so a marking of this trace is cached and found the same
+    way as any other marked measurement (see pico_scope/mode_marks_cache.py).
     """
     session_path = Path(session_path)
     if scope_path is not None:
+        scope_path = Path(scope_path)
         result = fit_session(session_path, scope_path, verbose=True)
         trace, frames = result['trace'], result['frames']
         windows = result['windows']
         session = result['session']
-        source = (f'fitted against {Path(scope_path).name}, '
+        source = (f'fitted against {scope_path.name}, '
                   f'depth {result["best"].depth:.1f}x')
+        mark_target_path = scope_path
     else:
         session, frames = load_session(session_path)
         trace = load_session_trace(session_path)
@@ -457,10 +467,22 @@ def viewer_from_session(session_path, scope_path=None, snap=True):
                                 float(sync[key]))
         source = ('refined offset' if key == 't0_fitted_s'
                   else 'calibrated host clock (run --refine to sharpen it)')
+        session_dir = session_path if session_path.is_dir() else session_path.parent
+        mark_target_path = session_dir / session['scope']['file']
 
     brightness = np.array(session.get('brightness_masked')
                           or frame_brightness(frames), dtype=float)
-    title = f'{Path(session_path).name} - {source}'
+    return (trace, frames, windows, brightness, session, source,
+           mark_target_path)
+
+
+def viewer_from_session(session_path, scope_path=None, snap=True):
+    """Build a viewer from a capture - see load_synced_trace() for how it is
+    aligned."""
+    session_path = Path(session_path)
+    trace, frames, windows, brightness, session, source, _ = load_synced_trace(
+        session_path, scope_path)
+    title = f'{session_path.name} - {source}'
     return ModeSpectrumViewer(trace, frames, windows, brightness, title, snap,
                               pixel_size_mm=session_pixel_size_mm(session),
                               camera_label=camera_label(session))

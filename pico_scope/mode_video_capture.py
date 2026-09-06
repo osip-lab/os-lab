@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from camera_core import burst_timing  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
+from utilities.utils import wait_for_path_from_clipboard  # noqa: E402
 
 # The camera makes this script can drive. Imported one at a time and only when
 # needed: a machine with just one SDK installed must still run, and importing
@@ -130,7 +131,7 @@ ROI_HEIGHT = None
 # second of slack would add another ~4 free-spectral-range aliases for the
 # optional fine alignment to sort out.
 SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
-SCOPE_RANGE_V = 5               # +-5 V; raised from +-100 mV on 2026-09-03
+SCOPE_RANGE_V = 0.2               # +-5 V; raised from +-100 mV on 2026-09-03
 SCOPE_COUPLING = 'DC'
 SCOPE_SAMPLE_INTERVAL_S = 1e-5  # 100 kS/s, the rate the lab already uses
 SCOPE_PAD_S = 0.30              # recorded before and after the burst
@@ -168,6 +169,27 @@ MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as li
 # Shared with mode_video_sync, so that leaving its SESSION empty finds the
 # capture this script just wrote.
 OUTPUT_ROOT = SESSION_ROOT
+
+# Prompt for the Dropbox measurement folder to save each capture into,
+# instead of the fixed local OUTPUT_ROOT above - data is identified by its
+# Dropbox path elsewhere in the lab, not by a local timestamp bank. Set False
+# to go back to saving under OUTPUT_ROOT with no prompt (e.g. quick local
+# testing); leaving --session-style auto-discovery under OUTPUT_ROOT working
+# only when this is False.
+PROMPT_FOR_OUTPUT_ROOT = True
+
+
+def prompt_for_output_root():
+    """Where to save this capture's session.
+
+    The Dropbox measurement folder it belongs with, not the local scratch
+    bank, so the capture is identified by its Dropbox path like everything
+    else about the measurement.
+    """
+    return Path(wait_for_path_from_clipboard(
+        filetype='folder',
+        instructions_message='Copy the path of the measurement folder to '
+                             'save this capture into...'))
 
 
 # %% [Step 1] Finding the mode ----------------------------------------------
@@ -815,7 +837,7 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     return session_path, mask
 
 
-def capture(serial_number=None, output_root=OUTPUT_ROOT,
+def capture(serial_number=None, output_root=None,
             locate=True, prompt=True, make=None):
     """Locate the mode, configure, wait for the scope, record, save."""
     camera_cls, serial_number, make = resolve_camera(make, serial_number)
@@ -864,8 +886,10 @@ def capture(serial_number=None, output_root=OUTPUT_ROOT,
                   'camera timestamps, not a uniform grid - but the video has '
                   'gaps.')
 
+        root = output_root if output_root is not None else (
+            prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else OUTPUT_ROOT)
         stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-        folder = Path(output_root) / stamp
+        folder = Path(root) / stamp
         session_path, mask = save_session(
             folder, stamp, frames, meta, timing, checks, cam.describe(),
             mode_location)
@@ -875,13 +899,14 @@ def capture(serial_number=None, output_root=OUTPUT_ROOT,
         print(f'\nNow stop and save the PicoScope recording as .psdata, then:')
         print(f'  python pico_scope/mode_video_sync.py --session '
               f'"{folder}" --scope "<that file>.psdata"')
+        print(f'SESSION_PATH={session_path}')
         return session_path
     finally:
         cam.close()
 
 
 # %% [Step 3b] Driving both instruments (Phase 2) -----------------------------
-def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
+def capture_synchronized(serial_number=None, output_root=None,
                          locate=True, n_frames=None, scope_serial=None,
                          adjust_gain=True, require_level=True, make=None):
     """Record the spectrum and the mode video from one process.
@@ -989,8 +1014,10 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
               f'{t0_host * 1e3:.2f} ms after the {bias * 1e3:+.1f} ms '
               f'{make} calibration')
 
+    root = output_root if output_root is not None else (
+        prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else OUTPUT_ROOT)
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-    folder = Path(output_root) / stamp
+    folder = Path(root) / stamp
     session_path, mask = save_session(
         folder, stamp, frames, meta, timing, checks, camera_info,
         mode_location)
@@ -1034,6 +1061,7 @@ def capture_synchronized(serial_number=None, output_root=OUTPUT_ROOT,
     print(f'  saved {session_path}')
     print(f'\nOptional fine alignment:')
     print(f'  python pico_scope/mode_video_sync.py --session "{folder}" --refine')
+    print(f'SESSION_PATH={session_path}')
     return session_path
 
 

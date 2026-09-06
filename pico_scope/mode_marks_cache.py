@@ -15,8 +15,6 @@ The record is a plain JSON dict:
 
     version        CACHE_VERSION, so an incompatible layout is ignored
     source_name    the data file's name, for reading the sidecar by eye
-    source_mtime   its mtime when it was marked; a sidecar older than the data
-                   belongs to a different measurement of the same name
     csv_path       the CSV (i.e. which waveform buffer) the marks are positions
                    on - psdata files hold several
     signal_column  the CSV column that was marked ('Channel D'); absent in
@@ -38,7 +36,7 @@ from pathlib import Path
 # repo root on sys.path so `utilities.*` resolves even when the importer was
 # run as a script from inside pico_scope/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from utilities.utils import psdata_to_csv  # noqa: E402
+from utilities.utils import psdata_buffer_csvs, psdata_to_csv  # noqa: E402
 
 CACHE_SUFFIX = '.modemarks.json'
 CACHE_VERSION = 1
@@ -74,7 +72,6 @@ def make_record(data_path, csv_path, marks, long_arm_m, signal_column=None,
     data_path = Path(data_path)
     record = {'version': CACHE_VERSION,
               'source_name': data_path.name,
-              'source_mtime': data_path.stat().st_mtime,
               'csv_path': str(csv_path),
               'long_arm_m': float(long_arm_m),
               'marks': complete_pairs(marks)}
@@ -88,12 +85,17 @@ def make_record(data_path, csv_path, marks, long_arm_m, signal_column=None,
 def load_cached_marks(data_path, min_pairs=1, signal_column=None):
     """The cached marking of `data_path`, or None if there is no usable one.
 
-    Usable means: the layout is the current one, the data file has not been
-    written since the marking (a cache older than its data belongs to a
-    different measurement that happened to have the same name), it holds at
-    least `min_pairs` complete pairs, and it was made on `signal_column` if
-    both that and the sidecar say which column was marked. Anything else
-    returns None with a line saying why, and the caller marks the file again.
+    Usable means: the layout is the current one, it holds at least `min_pairs`
+    complete pairs, and it was made on `signal_column` if both that and the
+    sidecar say which column was marked. Anything else returns None with a
+    line saying why, and the caller marks the file again.
+
+    There is deliberately no check that the data file is unchanged since the
+    marking: a data file is not expected to change once written, and a mark
+    reused on one that quietly did shows up as an odd fit on the graph -
+    caught and fixed there, not guessed at from a timestamp (which Dropbox
+    can shift by itself, with the file untouched, when a cloud-only file is
+    hydrated).
     """
     path = cache_file(data_path)
     if not path.is_file():
@@ -104,10 +106,6 @@ def load_cached_marks(data_path, min_pairs=1, signal_column=None):
         print(f"  ignoring unreadable {path.name}: {error}")
         return None
     if record.get('version') != CACHE_VERSION:
-        return None
-    if record.get('source_mtime') != Path(data_path).stat().st_mtime:
-        print(f"  {Path(data_path).name} changed since {path.name} was written "
-              "- marking it again.")
         return None
 
     # Older sidecars do not say which column was marked; they all come from
@@ -186,20 +184,36 @@ def resolve_csv(record, data_path):
 
     The psdata -> CSV cache expires (PSDATA_CSV_CACHE_MAX_AGE_DAYS), while the
     marks sidecar does not. The marks are positions on one waveform buffer, so
-    a reconversion is only usable if it yields the same buffer file.
+    a reconversion is only usable if it yields the same buffer file - which
+    one is already known from the sidecar, so it is picked back out of the
+    fresh conversion directly rather than asking the user to choose again
+    (and risk picking a different one than what the marks are on).
     """
     csv_path = Path(record['csv_path'])
     if csv_path.is_file():
         return str(csv_path)
     print(f"  the CSV this marking was made on is gone ({csv_path.name}) "
           "- converting again")
-    new_path = Path(trace_csv_path(data_path))
-    if new_path.name != csv_path.name:
-        raise RuntimeError(
-            f"the marks in {cache_file(data_path).name} were made on waveform "
-            f"buffer '{csv_path.name}', but '{new_path.name}' was chosen - "
-            "rerun and pick the same buffer, or delete the sidecar to mark the "
-            "file again.")
+    data_path = Path(data_path)
+    if data_path.suffix.lower() == '.psdata':
+        candidates = psdata_buffer_csvs(data_path)
+        matches = [p for p in candidates if p.name == csv_path.name]
+        if not matches:
+            raise RuntimeError(
+                f"the marks in {cache_file(data_path).name} were made on "
+                f"waveform buffer '{csv_path.name}', which is not among the "
+                f"buffers just produced ({', '.join(p.name for p in candidates)})"
+                " - delete the sidecar to mark the file again.")
+        new_path = matches[0]
+        print(f"  using the same waveform buffer as before: {new_path.name}")
+    else:
+        new_path = Path(trace_csv_path(data_path))
+        if new_path.name != csv_path.name:
+            raise RuntimeError(
+                f"the marks in {cache_file(data_path).name} were made on "
+                f"waveform buffer '{csv_path.name}', but '{new_path.name}' was "
+                "chosen - rerun and pick the same buffer, or delete the sidecar "
+                "to mark the file again.")
     record['csv_path'] = str(new_path)
     save_marks(data_path, record)
     return str(new_path)
@@ -208,7 +222,6 @@ def resolve_csv(record, data_path):
 # ------------------------------------------------------------------ self-test
 def _self_test():
     """Round-trip a sidecar through a temporary data file - no GUI, no scope."""
-    import os
     import tempfile
 
     from pico_scope.mode_marking import peak_record
@@ -243,11 +256,6 @@ def _self_test():
         assert load_cached_marks(data_path, min_pairs=3) is None, 'too few pairs'
         assert load_cached_marks(data_path, signal_column='Channel B') is None, \
             'marks from another channel were accepted'
-
-        # a sidecar written before the data file it claims to describe
-        stat = data_path.stat()
-        os.utime(data_path, (stat.st_atime, stat.st_mtime + 10))
-        assert load_cached_marks(data_path) is None, 'a stale sidecar was used'
 
         # an unreadable sidecar is a reason to mark again, not to crash
         cache_file(data_path).write_text('{not json', encoding='utf-8')

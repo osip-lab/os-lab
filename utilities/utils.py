@@ -36,7 +36,7 @@ def wait_for_path_from_clipboard(filetype: Optional[Union[str, Sequence[str]]] =
                 if cap.isOpened():
                     cap.release()
                     if verbose:
-                        print(f"✔ Detected valid video path: {clipboard}")
+                        print(f"OK: Detected valid video path: {clipboard}")
                     return clipboard
                 cap.release()
 
@@ -45,25 +45,25 @@ def wait_for_path_from_clipboard(filetype: Optional[Union[str, Sequence[str]]] =
                 img = cv2.imread(clipboard)
                 if img is not None:
                     if verbose:
-                        print(f"✔ Detected valid image path: {clipboard}")
+                        print(f"OK: Detected valid image path: {clipboard}")
                     return clipboard
 
             if filetype_lower == 'excel':
                 if clipboard.endswith('.xlsx') or clipboard.endswith('.xls'):
                     if verbose:
-                        print(f"✔ Detected valid CSV path: {clipboard}")
+                        print(f"OK: Detected valid CSV path: {clipboard}")
                     return clipboard
 
             if filetype_lower in ['table', 'tabular']:
                 if clipboard.endswith('.csv') or clipboard.endswith('.xlsx') or clipboard.endswith('.xls'):
                     if verbose:
-                        print(f"✔ Detected valid table path: {clipboard}")
+                        print(f"OK: Detected valid table path: {clipboard}")
                     return clipboard
 
             if filetype_lower in ['folder', 'directory', 'dir']:
                 if os.path.isdir(clipboard):
                     if verbose:
-                        print(f"✔ Detected valid directory path: {clipboard}")
+                        print(f"OK: Detected valid directory path: {clipboard}")
                     return clipboard
 
             if filetype is not None:
@@ -75,18 +75,18 @@ def wait_for_path_from_clipboard(filetype: Optional[Union[str, Sequence[str]]] =
 
                 if wants_directory and os.path.isdir(clipboard):
                     if verbose:
-                        print(f"✔ Detected valid directory path: {clipboard}")
+                        print(f"OK: Detected valid directory path: {clipboard}")
                     return clipboard
 
                 if any(clipboard.lower().endswith(f'.{ext}') for ext in extensions):
                     if verbose:
-                        print(f"✔ Detected valid path: {clipboard}")
+                        print(f"OK: Detected valid path: {clipboard}")
                     return clipboard
 
             if filetype is None:
                 # No specific filetype validation
                 if verbose:
-                    print(f"✔ Detected path: {clipboard}")
+                    print(f"OK: Detected path: {clipboard}")
                 return clipboard
 
         if verbose:
@@ -486,7 +486,7 @@ def save_fig_safe(filepath, **kwargs):
         i += 1
 
     plt.savefig(candidate, **kwargs)
-    print(f"✔ Saved figure to: {candidate}")
+    print(f"OK: Saved figure to: {candidate}")
 
 
 # The two functions below are duplicated verbatim in the cavity-design project, in
