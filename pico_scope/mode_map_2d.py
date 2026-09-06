@@ -97,7 +97,7 @@ MEASUREMENTS = {
     36: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\36cm\Second trial\without EOM.psdata",
     37.5: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\37.5cm\Without EOM.psdata",
     38: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\38cm\Without EOM.psdata",
-    39: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\39cm\Without EOM.psdata",
+    39: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\39cm\Second trial\Without EOM.psdata",
     40: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\40cm\Fourth trial\Without EOM.psdata",
     # 41: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\41cm\without EOM-0007.psdata",
     # 42: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-08-27\42cm\without EOM-0006.psdata",

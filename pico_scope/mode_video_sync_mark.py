@@ -30,11 +30,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from utilities.utils import wait_for_path_from_clipboard
 
 # --- what happens when this file is run (edit these, then press Run) -------
 # Nothing here needs the command line; the arguments exist for scripting.
 ACTION = 'mark'        # 'mark' | 'self-test'
-SESSION = r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-07\40cm\Second trial\2026-09-06_163607"
+SESSION = wait_for_path_from_clipboard(filetype='folder')
 SCOPE_FILE = ''        # the .psdata of a Phase 1 capture; '' for Phase 2
 SNAP_TO_BRIGHTEST = True
 
@@ -76,7 +77,8 @@ from pico_scope.mode_video_sync import (SIGNAL_COLUMN, latest_session,  # noqa: 
 from pico_scope.mode_video_sync_show import (ModeSpectrumViewer,  # noqa: E402
                                              camera_label, load_synced_trace,
                                              session_pixel_size_mm)
-from utilities.utils import append_numerical_result_line, ask_long_arm_length  # noqa: E402
+from utilities.utils import append_numerical_result_line, ask_long_arm_length, \
+    wait_for_path_from_clipboard  # noqa: E402
 
 
 def explore(session_path, trace, frames, windows, brightness, session,
