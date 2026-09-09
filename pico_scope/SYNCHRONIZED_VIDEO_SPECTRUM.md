@@ -96,12 +96,15 @@ written are worked out at every run instead:
 
 - **which camera** - `SERIAL_NUMBER = None` means the only Basler connected. It
   says which one it took. Name a serial only when two are plugged in.
-- **where the mode is** - `ROI_OFFSET_Y` and `ROI_HEIGHT` are `None`, so
-  `locate_mode()` measures the mode and `choose_roi()` sizes the ROI around it
-  every time. The mode moves whenever the cavity is realigned, and a stale
-  offset fails silently: the capture runs, on rows the mode has left. With
-  `--no-locate` the ROI comes from the last capture on disk, never from a
-  number in the file. Set both constants only to pin the ROI deliberately.
+- **where the mode is** - `MANUAL_ROI` is `None`, so `locate_mode()` measures
+  the mode and `choose_roi()` sizes the ROI around it every time. The mode
+  moves whenever the cavity is realigned, and a stale offset fails silently:
+  the capture runs, on rows the mode has left. With `--no-locate` the ROI comes
+  from the last capture on disk, never from a number in the file. To pin one
+  deliberately - comparing two captures frame for frame, say - type the four
+  numbers the camera GUI shows (xiCamTool or pylon Viewer, in sensor pixels)
+  into `MANUAL_ROI`; it overrides both routes and skips the reconnaissance,
+  and `None` puts it back.
 - **the exposure** - derived as `1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US`, so
   changing the frame rate alone stays correct. The gap is 1% of the period
   with a 100 us floor; the exposure must stay under the period or it becomes

@@ -350,10 +350,23 @@ selected_time_range = get_time_range_from_user(times, intensity_t)
 trimmed_video = trim_video_by_time_range(video_array, selected_time_range, fps)
 timestamps = times[int(selected_time_range[0] * fps):int(selected_time_range[1] * fps)]
 # %%
-nrows = 2
-ncols = (trimmed_video.shape[0] // nrows) + (trimmed_video.shape[0] % nrows)
-fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(7, nrows * 5))
+n_frames = trimmed_video.shape[0]
+frame_h, frame_w = trimmed_video.shape[1:3]
+# Pick the column count that makes the thumbnails as large as possible on a wide (maximized)
+# window, instead of a fixed number of rows that leaves most of the window empty.
+screen_aspect = 16 / 9
+frame_aspect = frame_w / frame_h
+# Thumbnail width when the grid is fitted into a screen_aspect x 1 window, for each candidate.
+ncols = max(range(1, n_frames + 1),
+            key=lambda nc: min(screen_aspect / nc,
+                               frame_aspect / int(np.ceil(n_frames / nc))))
+nrows = int(np.ceil(n_frames / ncols))
+fig, axes = plt.subplots(nrows=nrows, ncols=ncols,
+                         figsize=(13, 13 * (nrows * frame_h) / (ncols * frame_w)),
+                         squeeze=False)
 fig.suptitle("Click a frame to select it and continue", fontsize=11)
+# No per-frame titles and almost no padding, so the thumbnails fill the window.
+fig.subplots_adjust(left=0.002, right=0.998, top=0.96, bottom=0.004, wspace=0.01, hspace=0.01)
 selected_frame = None
 selected_frame_time = None  # time [s] of the chosen frame within the video
 
@@ -372,14 +385,9 @@ def on_click(event):
 fig.canvas.mpl_connect('button_press_event', on_click)
 
 for i, ax in enumerate(axes.flat):
-    if i < trimmed_video.shape[0]:
-        ax.set_title(f"Frame {i} (Time: {timestamps[i]:.2f}s)")
+    if i < n_frames:
         ax.imshow(trimmed_video[i], cmap='gray')
-        ax.axis('off')
-    else:
-        ax.axis('off')  # Hide any unused subplots
-
-fig.tight_layout()
+    ax.axis('off')  # Also hides any unused subplots
 # plt.get_current_fig_manager().window.showMaximized()
 plt.show()  # blocks until a frame is clicked (the click closes the window)
 

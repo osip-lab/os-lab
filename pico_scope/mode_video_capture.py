@@ -63,7 +63,8 @@ CAMERA_BACKENDS = {
 ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
 CAMERA = None           # 'basler' | 'ximea' | None = the only one connected
 DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
-LOCATE_FIRST = False     # locate the mode first; False reuses the last ROI
+LOCATE_FIRST = True     # locate the mode first; False reuses the last ROI
+                        # (both are ignored while MANUAL_ROI is set)
 STRICT_LEVELS = False   # True: refuse to capture when the light clips.
                         # Off by default: clipping is monotone, so it flattens
                         # the peaks without moving them, and the alignment fit
@@ -78,7 +79,7 @@ STRICT_LEVELS = False   # True: refuse to capture when the light clips.
 # camera that is not always the one plugged in. Name a serial only to pick
 # between cameras that are both connected; resolve_camera() then says which.
 SERIAL_NUMBER = None
-FRAME_RATE_HZ = 100.0           # see the peak-blending check below
+FRAME_RATE_HZ = 100           # see the peak-blending check below
 # The exposure follows the frame rate rather than being typed out beside it:
 # as long as the period allows, less the gap the sensor needs between frames.
 # Asking for the whole period does not fail loudly, it quietly lowers the rate,
@@ -102,7 +103,26 @@ BINNING = 2
 # only wanted when two cameras share a bus - and this capture drives one.
 THROUGHPUT_BPS = None
 
-# ROI in BINNED pixels. None: the full sensor width. On the Basler width is
+# --- the ROI by hand, typed straight from the camera GUI ------------------
+# The four numbers exactly as the ROI dialog shows them - xiCamTool on the
+# XIMEA, pylon Viewer on the Basler - in SENSOR pixels, which is the unit both
+# dialogs report. manual_roi() converts them to the binned pixels the camera
+# wrappers take: offsets round down, sizes round up, so the ROI applied is
+# never smaller than the box that was drawn there (it can be a few pixels
+# larger; the numbers actually applied are printed at every run).
+#
+# None gives the original behaviour back, and is the normal way to run:
+# LOCATE_FIRST = True measures where the mode is now, False reuses the ROI of
+# the last capture. A dict here overrides both, and the reconnaissance is
+# skipped. Typed numbers are right only until the cavity is realigned or the
+# camera nudged, and then wrong silently - the capture still runs, on rows the
+# mode has left - so set this back to None when the comparison it was pinned
+# for is done.
+MANUAL_ROI = {'offset_x': 636, 'offset_y': 674, 'width': 344, 'height': 450}
+# MANUAL_ROI = None
+
+# ROI in BINNED pixels, for the runs that size it themselves; MANUAL_ROI wins
+# over both when it is set. None: the full sensor width. On the Basler width is
 # free - readout is paced per row - so the budget is spent on rows; choose_roi
 # narrows the width only if a camera turns out to charge for columns too.
 ROI_WIDTH = None
@@ -113,17 +133,6 @@ ROI_HEIGHT_CANDIDATES = (128, 192, 256, 320, 384, 448, 512, 640, 768, 1024)
 ROI_MIN_MARGIN_ROWS = 48
 ROI_OFFSET_X = 0
 
-# None, and meant to stay None. The mode moves whenever the cavity is realigned
-# or the camera is nudged, so locate_mode() measures where it is at every run
-# and choose_roi() sizes the ROI around what it found. A height and an offset
-# written here would be right only until the next time the setup is touched,
-# and then wrong silently: the capture would still run, on rows the mode has
-# left. Set them only to pin the ROI deliberately - comparing two captures
-# frame for frame, say. Otherwise --no-locate reuses the ROI of the last
-# capture, which at least was measured; see fallback_roi().
-ROI_OFFSET_Y = None
-ROI_HEIGHT = None
-
 # --- the scope, when this script drives it too (Phase 2) -------------------
 # Only one program can own the scope, so PicoScope 7 must be closed. The block
 # is made just long enough to contain the burst plus the few tens of
@@ -131,7 +140,7 @@ ROI_HEIGHT = None
 # second of slack would add another ~4 free-spectral-range aliases for the
 # optional fine alignment to sort out.
 SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
-SCOPE_RANGE_V = None            # None: auto-range from a short probe instead
+SCOPE_RANGE_V = 0.05            # None: auto-range from a short probe instead
                                 # (see auto_range_scope) - useful when the
                                 # transmission level is not known ahead of time
 SCOPE_COUPLING = 'DC'
@@ -289,7 +298,8 @@ def locate_mode(cam, n_frames=150, threshold=0.1):
     return found
 
 
-def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES):
+def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES,
+               full_width=None):
     """Pick the ROI from the mode just measured.
 
     Two constraints pull against each other. The ROI must cover the mode with
@@ -307,6 +317,11 @@ def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES):
     fast enough, takes the largest that *is* fast enough and says so, rather
     than silently dropping either requirement.
 
+    `full_width` is the widest ROI to consider, in binned pixels; None takes
+    it from ROI_WIDTH, or the sensor. It is a parameter so that the self-test
+    can size its own synthetic sensor without a pinned ROI_WIDTH changing what
+    is being tested.
+
     Returns a dict with `height`, `width`, `offset_y`, `offset_x`, `covers`
     and `resulting_hz`.
     """
@@ -314,7 +329,8 @@ def choose_roi(cam, found, target_hz=None, candidates=ROI_HEIGHT_CANDIDATES):
     max_width, max_height = cam.max_frame_size
     margin = max(found['height'], ROI_MIN_MARGIN_ROWS)
     needed = found['height'] + 2 * margin
-    full_width = min(roi_width_for(cam), max_width)
+    full_width = min(roi_width_for(cam) if full_width is None else full_width,
+                     max_width)
 
     def place(height, width):
         height, width = min(height, max_height), min(width, max_width)
@@ -638,9 +654,56 @@ def pixel_format_for(cam):
     return PIXEL_FORMAT or cam.deepest_format
 
 
+_TAKE_FROM_FILE = object()   # so that manual_roi(None) can mean 'none typed'
+
+
+def manual_roi(spec=_TAKE_FROM_FILE):
+    """MANUAL_ROI in BINNED pixels, or None when the block is not in use.
+
+    The block at the top is typed in sensor pixels, as the camera GUIs report
+    them, and both wrappers take binned ones - so every number is divided by
+    BINNING here. Offsets round down and sizes up to a multiple of 4: the
+    wrappers snap *down* to whatever increment the camera enforces (4 and 2 on
+    these two), so a size rounded up survives that snap while one rounded down
+    would lose another row. The ROI applied can therefore be a few sensor
+    pixels larger than the one typed, and is never smaller.
+
+    Raises rather than guessing if a key is missing or a size is not positive:
+    a half-written ROI would otherwise capture the wrong rows in silence.
+    """
+    spec = MANUAL_ROI if spec is _TAKE_FROM_FILE else spec
+    if spec is None:
+        return None
+    keys = ('offset_x', 'offset_y', 'width', 'height')
+    if set(spec) != set(keys):
+        raise ValueError(f'MANUAL_ROI takes exactly {keys} in sensor pixels, '
+                         f'as the camera GUI shows them; got {sorted(spec)}')
+    if min(int(spec[key]) for key in keys) < 0:
+        raise ValueError(f'MANUAL_ROI cannot be negative: {spec}')
+    if int(spec['width']) <= 0 or int(spec['height']) <= 0:
+        raise ValueError(f'MANUAL_ROI needs a positive width and height: {spec}')
+    roi = {}
+    for offset_key, size_key in (('offset_x', 'width'), ('offset_y', 'height')):
+        offset, size = int(spec[offset_key]), int(spec[size_key])
+        start = offset // BINNING
+        end = -(-(offset + size) // BINNING)          # ceil, to cover the box
+        roi[offset_key] = start
+        roi[size_key] = -(-(end - start) // 4) * 4    # ceil to the increment
+    return roi
+
+
 def roi_width_for(cam):
-    """ROI width in binned pixels: the whole sensor unless pinned."""
+    """ROI width in binned pixels: manual, pinned, or the whole sensor."""
+    manual = manual_roi()
+    if manual is not None:
+        return manual['width']
     return ROI_WIDTH or cam.max_frame_size[0]
+
+
+def roi_offset_x_for():
+    """ROI x offset in binned pixels: manual if it is set, else ROI_OFFSET_X."""
+    manual = manual_roi()
+    return ROI_OFFSET_X if manual is None else manual['offset_x']
 
 
 def host_t0_bias_s(make):
@@ -690,29 +753,53 @@ def previous_roi(root=None):
 
 
 def fallback_roi():
-    """The ROI for a run that skips the reconnaissance.
+    """The ROI for a run that skips the reconnaissance and has none typed.
 
-    Pinned by ROI_OFFSET_Y and ROI_HEIGHT if they are set; otherwise the last
-    capture's, which was at least measured at some point. Never a number left
-    over from whenever this file happened to be written.
+    The last capture's, which was at least measured at some point - never a
+    number left over from whenever this file happened to be written. An ROI
+    typed into MANUAL_ROI is handled before this, in resolve_roi().
     """
-    if (ROI_OFFSET_Y is None) != (ROI_HEIGHT is None):
-        raise RuntimeError('pin both ROI_OFFSET_Y and ROI_HEIGHT or neither - '
-                           'half a pinned ROI is not enough to place one.')
-    if ROI_OFFSET_Y is not None:
-        print(f'  ROI pinned in the file: {ROI_HEIGHT} rows at offset_y '
-              f'{ROI_OFFSET_Y}')
-        return ROI_OFFSET_Y, ROI_HEIGHT
     found = previous_roi()
     if found is None:
         raise RuntimeError(
             'no ROI to fall back on: the mode has not been located and no '
             'previous capture is on disk. Locate it first - LOCATE_FIRST = '
-            'True, or drop --no-locate - which is the normal way round.')
+            'True, or drop --no-locate - which is the normal way round; or '
+            'type one into MANUAL_ROI.')
     offset_y, height, path = found
     print(f'  reusing the ROI measured for {path.parent.name}: {height} rows '
           f'at offset_y {offset_y}')
     return offset_y, height
+
+
+def resolve_roi(cam, locate):
+    """Where the ROI for this run comes from, in binned pixels.
+
+    Three sources, in this order: an ROI typed into MANUAL_ROI, the
+    reconnaissance, or the ROI of the last capture. Returns
+    (offset_y, roi_height, mode_location, roi_choice); the last two are None
+    unless the mode was actually located - nothing downstream may pretend it
+    was measured when it was typed - and roi_choice is the choose_roi() dict,
+    with the margin and the rate it settled for, which the session records.
+    """
+    manual = manual_roi()
+    if manual is not None:
+        print(f"  ROI typed into MANUAL_ROI: {manual['width']}x"
+              f"{manual['height']} binned at offset "
+              f"({manual['offset_x']}, {manual['offset_y']}) = sensor "
+              f"{manual['width'] * BINNING}x{manual['height'] * BINNING} at "
+              f"({manual['offset_x'] * BINNING}, "
+              f"{manual['offset_y'] * BINNING}); the mode is not located")
+        return manual['offset_y'], manual['height'], None, None
+    if not locate:
+        offset_y, roi_height = fallback_roi()
+        return offset_y, roi_height, None, None
+    print('--- locating the mode (whole sensor) ---')
+    mode_location = locate_mode(cam)
+    report_mode_location(mode_location)
+    apply_camera_basics(cam)
+    choice = choose_roi(cam, mode_location)
+    return choice['offset_y'], choice['height'], mode_location, choice
 
 
 # %% [Step 2] Configuring the camera ----------------------------------------
@@ -722,7 +809,8 @@ def configure(cam, offset_y, roi_height):
         raise ValueError('configure() needs a measured ROI: locate the mode '
                          'first, or take one from fallback_roi().')
     pixel_format, binning_info = apply_camera_basics(cam)
-    roi = cam.set_roi(roi_width_for(cam), roi_height, ROI_OFFSET_X, offset_y)
+    roi = cam.set_roi(roi_width_for(cam), roi_height,
+                      roi_offset_x_for(), offset_y)
     cam.exposure_us = EXPOSURE_US
     cam.gain_db = GAIN_DB
     cam.frame_rate_hz = FRAME_RATE_HZ
@@ -853,17 +941,7 @@ def capture(serial_number=None, output_root=None,
     cam = camera_cls(serial_number)
     cam.open()
     try:
-        mode_location = None
-        offset_y = roi_height = None
-        if not locate:
-            offset_y, roi_height = fallback_roi()
-        if locate:
-            print('--- locating the mode (whole sensor) ---')
-            mode_location = locate_mode(cam)
-            report_mode_location(mode_location)
-            apply_camera_basics(cam)
-            roi_choice = choose_roi(cam, mode_location)
-            offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
+        offset_y, roi_height, mode_location, _ = resolve_roi(cam, locate)
 
         checks = configure(cam, offset_y, roi_height)
 
@@ -966,19 +1044,10 @@ def capture_synchronized(serial_number=None, output_root=None,
     cam.open()
     scope = PicoScope4000A(scope_serial)
     try:
-        mode_location = None
-        offset_y = roi_height = None
-        if not locate:
-            offset_y, roi_height = fallback_roi()
-        if locate:
-            print('--- locating the mode (whole sensor) ---')
-            mode_location = locate_mode(cam)
-            report_mode_location(mode_location)
-            apply_camera_basics(cam)
-            roi_choice = choose_roi(cam, mode_location)
-            offset_y, roi_height = roi_choice['offset_y'], roi_choice['height']
+        offset_y, roi_height, mode_location, roi_choice = resolve_roi(
+            cam, locate)
         checks = configure(cam, offset_y, roi_height)
-        if mode_location is not None:
+        if roi_choice is not None:
             checks['roi_choice'] = roi_choice
         burst_s = n_frames / checks['resulting_hz']
 
@@ -1227,24 +1296,28 @@ def _self_test():
 
     # a small central mode: the smallest height that still covers it wins
     small_mode = _found(480, 560)
-    choice = choose_roi(_FakeCam(), small_mode, target_hz=100.0)
+    choice = choose_roi(_FakeCam(), small_mode, target_hz=100.0,
+                          full_width=_FakeCam.max_frame_size[0])
     assert choice['covers'], choice
     assert choice['resulting_hz'] >= 98.0, choice
     assert choice['margin_rows'] >= small_mode['height'], choice
     assert choice['note'] is None, choice
 
     # a larger mode has to be given a taller ROI
-    bigger = choose_roi(_FakeCam(), _found(400, 640), target_hz=100.0)
+    bigger = choose_roi(_FakeCam(), _found(400, 640), target_hz=100.0,
+                       full_width=_FakeCam.max_frame_size[0])
     assert bigger['height'] > choice['height'], (choice, bigger)
 
     # a mode near the top edge is followed rather than centred, and still fits
-    edge = choose_roi(_FakeCam(), _found(20, 100), target_hz=100.0)
+    edge = choose_roi(_FakeCam(), _found(20, 100), target_hz=100.0,
+                     full_width=_FakeCam.max_frame_size[0])
     assert edge['offset_y'] == 0, edge
     assert edge['covers'], edge
 
     # when margin and frame rate cannot both be had, the rate is kept and the
     # compromise is reported rather than made silently
-    tight = choose_roi(_FakeCam(), _found(300, 740), target_hz=100.0)
+    tight = choose_roi(_FakeCam(), _found(300, 740), target_hz=100.0,
+                      full_width=_FakeCam.max_frame_size[0])
     assert tight['note'] is not None, tight
     assert tight['resulting_hz'] >= 98.0, 'the frame rate is the hard constraint'
     # a camera that charges for columns narrows the width rather than
@@ -1253,7 +1326,8 @@ def _self_test():
     # the width and misses it at full width - the case the narrowing exists for
     wide = choose_roi(_FakeCam(seconds_per_row=1.29e-5, seconds_per_pixel=4e-8),
                       _found(480, 560, col_min=450, col_max=560),
-                      target_hz=100.0)
+                      target_hz=100.0,
+                      full_width=_FakeCam.max_frame_size[0])
     assert wide['width'] < 1024, wide
     assert wide['covers'] and wide['resulting_hz'] >= 98.0, wide
     assert 'columns as well as rows' in (wide['note'] or ''), wide
@@ -1329,9 +1403,35 @@ def _self_test():
     print(f'  {FRAME_RATE_HZ:g} Hz -> exposure {EXPOSURE_US:.0f} us, '
           f'{EXPOSURE_GAP_US:.0f} us of gap, derived not typed')
 
-    # the ROI is measured at every run, not remembered from whenever this file
-    # was written; the only fallback is a previous capture
-    assert (ROI_OFFSET_Y is None) == (ROI_HEIGHT is None), 'pin both or neither'
+    # an ROI typed from the camera GUI is in sensor pixels and lands on binned
+    # ones that cover it - never a box smaller than the one that was drawn
+    assert manual_roi(None) is None, 'MANUAL_ROI = None means locate as usual'
+    typed = {'offset_x': 760, 'offset_y': 1208, 'width': 732, 'height': 734}
+    binned = manual_roi(typed)
+    for offset_key, size_key in (('offset_x', 'width'), ('offset_y', 'height')):
+        assert binned[offset_key] * BINNING <= typed[offset_key], binned
+        assert ((binned[offset_key] + binned[size_key]) * BINNING
+                >= typed[offset_key] + typed[size_key]), binned
+        assert binned[size_key] % 4 == 0, binned   # survives the snap down
+    assert binned == {'offset_x': 380, 'width': 368,
+                      'offset_y': 604, 'height': 368}, binned
+    for bad in ({'offset_x': 0, 'width': 8},                  # half a box
+                {'offset_x': 0, 'offset_y': 0, 'width': 0, 'height': 8},
+                {'offset_x': -4, 'offset_y': 0, 'width': 8, 'height': 8}):
+        try:
+            manual_roi(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'MANUAL_ROI {bad} should have been refused')
+    print(f'  MANUAL_ROI is typed in sensor pixels as the camera GUI shows '
+          f'them: {typed["width"]}x{typed["height"]} at '
+          f'({typed["offset_x"]}, {typed["offset_y"]}) -> binned '
+          f'{binned["width"]}x{binned["height"]} at ({binned["offset_x"]}, '
+          f'{binned["offset_y"]}), rounded out, never in')
+
+    # with none typed, the ROI is measured at every run and not remembered
+    # from whenever this file was written; the only fallback is a past capture
     with tempfile.TemporaryDirectory() as empty:
         assert previous_roi(empty) is None
         older = Path(empty) / 'a'
@@ -1463,15 +1563,7 @@ def main():
         cam = camera_cls(serial)
         cam.open()
         try:
-            offset_y = roi_height = None
-            if not locate:
-                offset_y, roi_height = fallback_roi()
-            if locate:
-                found = locate_mode(cam)
-                report_mode_location(found)
-                apply_camera_basics(cam)
-                choice = choose_roi(cam, found)
-                offset_y, roi_height = choice['offset_y'], choice['height']
+            offset_y, roi_height, _, _ = resolve_roi(cam, locate)
             configure(cam, offset_y, roi_height)
             print('\n--- light level ---')
             level = check_light_level(cam)
