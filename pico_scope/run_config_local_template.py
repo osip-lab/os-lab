@@ -83,7 +83,12 @@ class capture:
     # right only until the cavity is realigned or the camera nudged, and then
     # wrong silently - the capture still runs, on rows the mode has left - so
     # set this back to None when the comparison it was pinned for is done.
+    # 'xicamtool' takes whatever ROI was last set in xiCamTool, read from the
+    # per-serial file it writes when it closes - the same four numbers its ROI
+    # dialog shows, without transcribing them. XIMEA only: pylon Viewer keeps
+    # no equivalent, and says so rather than locating instead.
     MANUAL_ROI = None
+    # MANUAL_ROI = 'xicamtool'
     # MANUAL_ROI = {'offset_x': 560, 'offset_y': 272, 'width': 492, 'height': 544}
 
     # ROI in BINNED pixels, for the runs that size it themselves; MANUAL_ROI

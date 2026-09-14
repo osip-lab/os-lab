@@ -35,9 +35,11 @@ so every existing loader and analysis script keeps working untouched.
 import argparse
 import importlib
 import json
+import os
 import sys
 import time
 import warnings
+import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 from pathlib import Path
 
@@ -126,6 +128,9 @@ THROUGHPUT_BPS = None
 # for is done. This is the setting the config file exists for: it belongs to a
 # day's alignment, not to the repository.
 MANUAL_ROI = None
+# MANUAL_ROI = 'xicamtool' takes whatever ROI was last set in xiCamTool - see
+# xicamtool_roi(). The four numbers typed here are the ones that dialog shows,
+# so reading them from the file it already writes saves transcribing them.
 
 # ROI in BINNED pixels, for the runs that size it themselves; MANUAL_ROI wins
 # over both when it is set. None: the full sensor width. On the Basler width is
@@ -706,6 +711,94 @@ def pixel_format_for(cam):
     return PIXEL_FORMAT or cam.deepest_format
 
 
+
+# xiCamTool writes one of these per camera serial when it closes, and it is
+# where the four numbers that used to be transcribed into MANUAL_ROI by hand
+# already live. Host-side, so reading it needs no camera: it works with the
+# camera powered off and cannot contend with whatever else has the device open.
+XICAMTOOL = 'xicamtool'          # the MANUAL_ROI sentinel that asks for it
+XICAMTOOL_PARAMVAL = Path(os.environ.get('APPDATA', '')) / 'xiCamTool' / 'paramval'
+
+
+def xicamtool_roi(serial, directory=None):
+    """The ROI xiCamTool last had for this camera, in SENSOR pixels.
+
+    Returned in the same shape and the same units as a hand-typed MANUAL_ROI,
+    so it goes on through manual_roi() unchanged.
+
+    The file is per serial, and there is usually more than one - this machine
+    has a file for a camera last opened months ago - so it is chosen by the
+    serial of the camera actually resolved, never by which file is newest.
+
+    Only the ROI is taken. That file also records the exposure, the frame rate
+    and the gain, all of which this script sets deliberately: the exposure is
+    derived from the frame rate, and the gain is pinned at 0 because measuring
+    showed it only adds noise. Reading them back would quietly undo both.
+
+    The numbers are in xiAPI's downsampled coordinates, which is sensor pixels
+    only while downsampling is 1. It always has been here, but multiplying is
+    what makes that an assumption the code states rather than one it relies on.
+    """
+    directory = XICAMTOOL_PARAMVAL if directory is None else Path(directory)
+    path = Path(directory) / f'camera_values_{serial}.xml'
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"MANUAL_ROI = {XICAMTOOL!r} reads the ROI xiCamTool saved for "
+            f"camera {serial}, but {path} does not exist. Open that camera in "
+            f"xiCamTool once and close it again, or set MANUAL_ROI to None to "
+            f"locate the mode instead.")
+
+    values = ElementTree.parse(path).getroot().find('Values')
+    if values is None:
+        raise ValueError(f'{path} has no <Values> block; xiCamTool may have '
+                         f'been interrupted while writing it')
+
+    def number(tag):
+        node = values.find(tag)
+        if node is None or not (node.text or '').strip():
+            raise ValueError(
+                f'{path} records no {tag}, so the ROI it holds is incomplete. '
+                f'Set the ROI in xiCamTool and close it, or set MANUAL_ROI to '
+                f'None.')
+        return int(node.text)
+
+    scale = number('downsampling') if values.find('downsampling') is not None else 1
+    roi = {'offset_x': number('offsetX') * scale,
+           'offset_y': number('offsetY') * scale,
+           'width': number('width') * scale,
+           'height': number('height') * scale}
+    saved = datetime.fromtimestamp(path.stat().st_mtime)
+    print(f'  ROI from xiCamTool ({serial}), saved '
+          f'{saved.strftime("%Y-%m-%d %H:%M")}: sensor '
+          f'{roi["width"]}x{roi["height"]} at ({roi["offset_x"]}, '
+          f'{roi["offset_y"]})')
+    return roi
+
+
+def resolve_manual_roi(serial=None, make=None):
+    """Turn MANUAL_ROI = 'xicamtool' into the four numbers it stands for.
+
+    Done once, as soon as the camera is known, and written back into the
+    module: every later manual_roi() call then sees an ordinary typed ROI, and
+    the numbers actually used are what run_config_resolved.json records beside
+    the capture rather than the sentinel that asked for them.
+    """
+    global MANUAL_ROI
+    if MANUAL_ROI != XICAMTOOL:
+        return MANUAL_ROI
+    if make is not None and make != 'ximea':
+        raise RuntimeError(
+            f'MANUAL_ROI = {XICAMTOOL!r} reads a file xiCamTool writes, so it '
+            f'is for the XIMEA; this run is on the {make}. pylon Viewer keeps '
+            f'no equivalent - its settings are saved by hand, to .pfs files - '
+            f'so type the ROI into MANUAL_ROI or set it to None.')
+    if not serial:
+        raise RuntimeError(f'MANUAL_ROI = {XICAMTOOL!r} needs the serial of '
+                           f'the camera to know which file to read')
+    MANUAL_ROI = xicamtool_roi(serial)
+    return MANUAL_ROI
+
+
 _TAKE_FROM_FILE = object()   # so that manual_roi(None) can mean 'none typed'
 
 
@@ -1000,6 +1093,7 @@ def capture(serial_number=None, output_root=None,
             locate=True, prompt=True, make=None):
     """Locate the mode, configure, wait for the scope, record, save."""
     camera_cls, serial_number, make = resolve_camera(make, serial_number)
+    resolve_manual_roi(serial_number, make)
     cam = camera_cls(serial_number)
     cam.open()
     try:
@@ -1102,6 +1196,7 @@ def capture_synchronized(serial_number=None, output_root=None,
 
     n_frames = N_FRAMES if n_frames is None else n_frames
     camera_cls, serial_number, make = resolve_camera(make, serial_number)
+    resolve_manual_roi(serial_number, make)
     cam = camera_cls(serial_number)
     cam.open()
     scope = PicoScope4000A(scope_serial)
@@ -1500,6 +1595,75 @@ def _self_test():
           f'{binned["width"]}x{binned["height"]} at ({binned["offset_x"]}, '
           f'{binned["offset_y"]}), rounded out, never in')
 
+    # the ROI xiCamTool saved, read from the file it writes on close
+    with tempfile.TemporaryDirectory() as paramval:
+        xml = """<CameraParameterValues serial="TEST001">
+ <Values>
+  <downsampling type="int">1</downsampling>
+  <width type="int">492</width>
+  <offsetX type="int">560</offsetX>
+  <height type="int">544</height>
+  <offsetY type="int">272</offsetY>
+  <exposure type="float">5779</exposure>
+  <gain type="float">0.375</gain>
+ </Values>
+</CameraParameterValues>"""
+        (Path(paramval) / 'camera_values_TEST001.xml').write_text(xml,
+                                                                 encoding='utf-8')
+        from_tool = xicamtool_roi('TEST001', paramval)
+        assert from_tool == {'offset_x': 560, 'offset_y': 272,
+                             'width': 492, 'height': 544}, from_tool
+        # the same shape a hand-typed ROI has, so it goes on through unchanged
+        assert set(from_tool) == {'offset_x', 'offset_y', 'width', 'height'}
+        assert manual_roi(from_tool) == manual_roi(
+            {'offset_x': 560, 'offset_y': 272, 'width': 492, 'height': 544})
+
+        # downsampling is a multiplier, not a decoration: xiAPI reports the ROI
+        # in downsampled pixels and manual_roi() takes sensor ones
+        (Path(paramval) / 'camera_values_TEST002.xml').write_text(
+            xml.replace('"TEST001"', '"TEST002"')
+               .replace('<downsampling type="int">1<', '<downsampling type="int">2<'),
+            encoding='utf-8')
+        assert xicamtool_roi('TEST002', paramval) == {
+            'offset_x': 1120, 'offset_y': 544, 'width': 984, 'height': 1088}
+
+        # a file for another camera is not silently used instead
+        try:
+            xicamtool_roi('NOSUCH', paramval)
+        except FileNotFoundError as error:
+            assert 'NOSUCH' in str(error), error
+        else:
+            raise AssertionError('a missing camera file should have been refused')
+
+        # an incomplete file is refused rather than half-read
+        (Path(paramval) / 'camera_values_TEST003.xml').write_text(
+            '<CameraParameterValues><Values><width type="int">8</width>'
+            '</Values></CameraParameterValues>', encoding='utf-8')
+        try:
+            xicamtool_roi('TEST003', paramval)
+        except ValueError as error:
+            assert 'offsetX' in str(error) or 'height' in str(error), error
+        else:
+            raise AssertionError('a half-written file should have been refused')
+    print('  the ROI xiCamTool saved is read from its own per-serial file, in '
+          'sensor pixels, and only the ROI - not the exposure or gain it also '
+          'holds, which this script sets itself')
+
+    # the sentinel is for the XIMEA; the Basler has no file like it
+    saved_roi = MANUAL_ROI
+    try:
+        globals()['MANUAL_ROI'] = XICAMTOOL
+        try:
+            resolve_manual_roi('ANY', 'basler')
+        except RuntimeError as error:
+            assert 'pylon' in str(error), error
+        else:
+            raise AssertionError('the sentinel should not apply to a Basler')
+    finally:
+        globals()['MANUAL_ROI'] = saved_roi
+    print("  MANUAL_ROI = 'xicamtool' says so plainly on a Basler rather "
+          "than quietly locating instead")
+
     # with none typed, the ROI is measured at every run and not remembered
     # from whenever this file was written; the only fallback is a past capture
     with tempfile.TemporaryDirectory() as empty:
@@ -1624,6 +1788,10 @@ def main():
         return
 
     camera_cls, serial, make = resolve_camera(args.camera, args.serial)
+    # As soon as the camera is known, so the 'levels' and 'locate' paths below
+    # see the same ROI a capture would. Idempotent: once it has resolved,
+    # MANUAL_ROI is an ordinary dict and the capture paths leave it alone.
+    resolve_manual_roi(serial, make)
 
     if action == 'locate':
         cam = camera_cls(serial)
