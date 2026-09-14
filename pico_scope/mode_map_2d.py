@@ -30,6 +30,15 @@ both the FSR in scope-seconds and (from the cavity length) the FSR in MHz:
     5. The row is normalized: (y - baseline) / reference peak height, the
        reference being the 0th- or the 1st-order mode (NORMALIZE_TO).
 
+Beside the map, a second figure plots what the rows measure as curves against
+the swept parameter: the two modes' widths, their spacing, and - with
+SHOW_NA_AND_SHORT_ARM on - the NA and the small arm length that the
+cavity-design lens scan ties to each row's spacing, the same pair of numbers
+pico_scope/extract_df_and_fsr_from_scope_csv.py reports for a single
+measurement. That scan is the slow part of a run: it is one per measurement,
+the long arm usually being the very parameter swept. Turn the flag off for a
+quick map of widths and spacings alone.
+
 Usage
 -----
     edit MEASUREMENTS (and Y_AXIS_LABEL) below, then
@@ -75,7 +84,9 @@ import pandas as pd
 # this file is run directly (Python only puts the script's own folder on
 # sys.path, not the repo root the absolute imports assume).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pico_scope.mode_analysis import cavity_fsr_mhz  # noqa: E402
+from pico_scope.mode_analysis import (cavity_fsr_mhz,  # noqa: E402
+                                      get_na_interpolators,
+                                      lookup_na_and_short_arm)
 from pico_scope.mode_marking import (SELECTION_INSTRUCTIONS,  # noqa: E402
                                      mark_pairs)
 # The sidecar itself lives in pico_scope.mode_marks_cache, shared with
@@ -113,11 +124,29 @@ MEASUREMENTS = {
 Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
 
 # --- the cavity being measured (edit this when the setup changes) ----------
-# Only the FSR is needed here (it is the frequency ruler), so no element list:
-# FSR = c / 2L with L = long arm + mid arm + short arm. The long arm is asked
-# for once per file, as in the sibling scripts, so it is not configured here.
+# The FSR is the frequency ruler every row is scaled by: FSR = c / 2L with
+# L = long arm + mid arm + short arm. The long arm is asked for once per file,
+# as in the sibling scripts, so it is not configured here.
 MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 SHORT_ARM_LENGTH = 0.7e-2         # [m] near mirror -> lens
+
+# The element list is needed only for the NA / small-arm panel below, which
+# runs the same cavity-design lens scan the sibling scripts run - once per
+# measurement, since the long arm is usually the very parameter being swept.
+# Element names come from the cavity-design catalog; list them in optical order.
+# To see the available names:
+#   python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
+CAVITY_ELEMENTS = [
+    'LASER_OPTIK_MIRROR',
+    'EDMUND_4MM_ASPHERIC_16701',
+    'COASTLINE_20CM_MIRROR',
+]
+SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
+N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
+# The lens scan is the slow part of a run (one per measurement, seconds each).
+# Turn it off for a quick map of widths and spacings alone; the third trends
+# panel then simply does not appear.
+SHOW_NA_AND_SHORT_ARM = True
 
 # --- analysis / plotting knobs ---------------------------------------------
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
@@ -293,7 +322,10 @@ def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
 
     Returns {'f': [MHz from the 0th order], 'i': [normalized intensity],
              'df_mhz', 'df_mhz_mean', 'fwhm_0_mhz', 'fwhm_1_mhz', 'fsr_mhz',
-             'fsr_s', 'fsr_s_mean', 'mhz_per_s', 'flipped', 'normalized_to'}.
+             'fsr_s', 'fsr_s_mean', 'mhz_per_s', 'flipped', 'normalized_to',
+             'na', 'short_arm_m'}. The last two are NaN here - they come from
+    the cavity-design lens scan, which needs the long arm this function is
+    never told; add_na_and_short_arm() fills them in.
     """
     normalize_to = check_normalize_to(NORMALIZE_TO if normalize_to is None
                                       else normalize_to)
@@ -421,7 +453,41 @@ def build_row(x, y, marks, fsr_mhz, trim_widths=TRIM_WIDTHS_BEFORE_ZEROTH,
             'mhz_per_s': mhz_per_s,
             'flipped': direction < 0,
             'normalized_to': normalize_to,
-            'n_pairs': len(pairs)}
+            'n_pairs': len(pairs),
+            'na': float('nan'),
+            'short_arm_m': float('nan')}
+
+
+def add_na_and_short_arm(row, long_arm_m):
+    """Fill the row's 'na' and 'short_arm_m' from the cavity-design lens scan.
+
+    The same simulation pico_scope/extract_df_and_fsr_from_scope_csv.py runs on
+    one measurement, run here on every one of them: the lens scan is inverted at
+    the row's own spacing ('df_mhz', the one the map draws and the panel above
+    plots) to give the NA and the small arm length that produce it. It is the
+    slow part of a run, and it is one scan per measurement rather than one per
+    map, because the long arm is usually the very parameter being swept -
+    mode_analysis caches by geometry, so a map that sweeps something else pays
+    for it only once.
+
+    No plot is asked of the simulation: sixteen dependency windows would be of
+    no use, and get_na_interpolators() bypasses its cache whenever one is.
+
+    A row whose spacing the scan never reached keeps its NaNs instead of
+    aborting the run - the lens span at the top of this file is fixed while the
+    measurements are not, and one unreachable row must not cost the other
+    fifteen. Widen SHORT_ARM_LENGTHS if a whole map comes back empty.
+    """
+    mode_spacing_interp, _, na_error = get_na_interpolators(
+        elements=CAVITY_ELEMENTS, long_arm=long_arm_m, mid_arm=MID_ARM_LENGTH,
+        short_arm_lengths=SHORT_ARM_LENGTHS, N_points=N_points,
+        plot_system=False)
+    if mode_spacing_interp is None:
+        raise RuntimeError(f'cavity-design NA simulation unavailable: {na_error}')
+    na, short_arm = lookup_na_and_short_arm(row['df_mhz'], mode_spacing_interp)
+    row['na'] = float('nan') if na is None else na
+    row['short_arm_m'] = float('nan') if short_arm is None else short_arm
+    return row
 
 
 # %% [Step 3] Rows -> a common grid ------------------------------------------
@@ -509,15 +575,30 @@ def plot_map(keys, rows, x_edges, y_edges, z, y_label=Y_AXIS_LABEL):
 
 
 def plot_trends(keys, rows, y_label=Y_AXIS_LABEL):
-    """The map's two readings as numbers, against the swept parameter.
+    """The map's readings as numbers, against the swept parameter.
 
-    Upper axis: the width of the 0th- and the 1st-order mode, together on one
-    axis so they can be compared directly. Lower axis: the spacing between
+    Top axis: the width of the 0th- and the 1st-order mode, together on one
+    axis so they can be compared directly. Middle axis: the spacing between
     them. Both are fitted quantities - what the map shows as ridges, this
     shows as curves.
+
+    Bottom axis, when the rows carry what add_na_and_short_arm() gives them:
+    the small arm length that produces each row's spacing, with the NA on a
+    twinned axis - the same pairing, and the same inversion of the same lens
+    scan, as the left panel of the cavity-design dependencies figure. The two
+    curves are one quantity read twice: the NA is what the cavity is
+    characterized by, the small arm length is where the lens has to sit to give
+    it. The panel is left out when no row got them (SHOW_NA_AND_SHORT_ARM off,
+    or every spacing outside the simulated scan).
     """
-    fig, (ax_width, ax_spacing) = plt.subplots(2, 1, sharex=True,
-                                               figsize=(8, 7))
+    short_arms = np.array([row['short_arm_m'] for row in rows], dtype=float)
+    nas = np.array([row['na'] for row in rows], dtype=float)
+    show_cavity = bool(np.any(np.isfinite(short_arms)) or np.any(np.isfinite(nas)))
+
+    n_panels = 3 if show_cavity else 2
+    fig, axes = plt.subplots(n_panels, 1, sharex=True,
+                             figsize=(8, 3.5 * n_panels))
+    ax_width, ax_spacing = axes[0], axes[1]
 
     ax_width.plot(keys, [row['fwhm_0_mhz'] for row in rows], 'o-',
                   color='tab:blue', label='0th order')
@@ -532,14 +613,34 @@ def plot_trends(keys, rows, y_label=Y_AXIS_LABEL):
     ax_width.set_ylabel('Mode width, FWHM [MHz]')
     ax_width.legend()
     ax_width.grid(alpha=0.3)
-    ax_width.set_title(f"Mode width and spacing vs {y_label.lower()}")
+    # the title sits on the top axis but names the whole figure, so it has to
+    # say whether the cavity geometry is down there too
+    ax_width.set_title(
+        f"Mode width, spacing and cavity geometry vs {y_label.lower()}"
+        if show_cavity else f"Mode width and spacing vs {y_label.lower()}")
 
     ax_spacing.plot(keys, [row['df_mhz'] for row in rows], 'o-',
                     color='tab:green')
     ax_spacing.set_ylabel('0th -> 1st mode spacing [MHz]')
-    ax_spacing.set_xlabel(y_label)
     ax_spacing.grid(alpha=0.3)
 
+    if show_cavity:
+        ax_arm = axes[2]
+        # in mm: the whole simulated lens scan is a fraction of a millimetre wide
+        ax_arm.plot(keys, short_arms * 1e3, 'o-', color='tab:purple',
+                    label='small arm length')
+        ax_arm.set_ylabel('Small arm length [mm]')
+        ax_arm.grid(alpha=0.3)
+        # dashed on the twinned axis: the two curves carry the same information
+        # and would otherwise hide each other wherever they happen to coincide
+        ax_na = ax_arm.twinx()
+        ax_na.plot(keys, nas, 'x--', color='tab:red', label='NA')
+        ax_na.set_ylabel('NA')
+        handles_arm, labels_arm = ax_arm.get_legend_handles_labels()
+        handles_na, labels_na = ax_na.get_legend_handles_labels()
+        ax_arm.legend(handles_arm + handles_na, labels_arm + labels_na)
+
+    axes[-1].set_xlabel(y_label)
     fig.tight_layout()
     return fig
 
@@ -548,17 +649,27 @@ def print_table(keys, rows, y_label=Y_AXIS_LABEL):
     # 'df' is the row's own spacing, the one the map draws; '<df>' the average
     # over every marked pair. They part company when the scan pace drifts, and
     # seeing both is what says so.
+
+    # The simulated columns are only printed when a row actually has them -
+    # a map drawn with SHOW_NA_AND_SHORT_ARM off would otherwise carry two
+    # columns of nothing.
+    show_cavity = any(np.isfinite(row['na']) or np.isfinite(row['short_arm_m'])
+                      for row in rows)
+    cavity_header = f" | {'NA':>7} | {'arm [mm]':>9}" if show_cavity else ''
     header = (f"{y_label:>18} | {'df [MHz]':>10} | {'<df> [MHz]':>10} | "
               f"{'FWHM0 [MHz]':>11} | "
-              f"{'FWHM1 [MHz]':>11} | {'FSR [MHz]':>10} | {'MHz/s':>10} | scan")
+              f"{'FWHM1 [MHz]':>11} | {'FSR [MHz]':>10} | {'MHz/s':>10}"
+              f"{cavity_header} | scan")
     print()
     print(header)
     print('-' * len(header))
     for key, row in zip(keys, rows):
+        cavity = (f" | {row['na']:>7.4f} | {row['short_arm_m'] * 1e3:>9.4f}"
+                  if show_cavity else '')
         print(f"{key:>18g} | {row['df_mhz']:>10.4f} | "
               f"{row['df_mhz_mean']:>10.4f} | {row['fwhm_0_mhz']:>11.4f} | "
               f"{row['fwhm_1_mhz']:>11.4f} | {row['fsr_mhz']:>10.2f} | "
-              f"{row['mhz_per_s']:>10.4g} | "
+              f"{row['mhz_per_s']:>10.4g}{cavity} | "
               f"{'down (flipped)' if row['flipped'] else 'up'}")
     print()
 
@@ -578,6 +689,8 @@ def save_outputs(folder, map_fig, trend_fig, keys, rows, centres, z):
              fwhm_0_mhz=[row['fwhm_0_mhz'] for row in rows],
              fwhm_1_mhz=[row['fwhm_1_mhz'] for row in rows],
              fsr_mhz=[row['fsr_mhz'] for row in rows],
+             na=[row['na'] for row in rows],
+             short_arm_m=[row['short_arm_m'] for row in rows],
              normalized_to=rows[0]['normalized_to'],
              y_axis_label=Y_AXIS_LABEL)
     print(f"Saved {png_path}")
@@ -625,6 +738,15 @@ def main(measurements=None, y_label=None, normalize_to=None):
               f"(averaged over the pairs: {row['df_mhz_mean']:.4f} MHz), "
               f"0th-order FWHM = {row['fwhm_0_mhz']:.4f} MHz"
               f"{', scan flipped' if row['flipped'] else ''}")
+        if SHOW_NA_AND_SHORT_ARM:
+            add_na_and_short_arm(row, record['long_arm_m'])
+            if np.isfinite(row['na']):
+                print(f"  NA = {row['na']:.4f} at a small arm length of "
+                      f"{row['short_arm_m'] * 1e3:.4f} mm")
+            else:
+                print("  the simulated lens scan does not reach this row's "
+                      "spacing - no NA, no small arm length (widen "
+                      "SHORT_ARM_LENGTHS)")
         keys.append(float(key))
         rows.append(row)
 
@@ -854,6 +976,32 @@ def _self_test():
     assert np.allclose(spacing_axis.lines[0].get_ydata(),
                        [row['df_mhz'] for row in rows])
     plt.close(figure)
+
+    # ... and with the simulated pair filled in, a third panel carrying the
+    # small arm length in mm and, on its twin, the NA (no cavity-design project
+    # needed: what add_na_and_short_arm() would have written is written here).
+    cavity_rows = [dict(row, na=0.1 + 0.001 * index,
+                        short_arm_m=7.2e-3 + 1e-6 * index)
+                   for index, row in enumerate(rows)]
+    figure = plot_trends(keys, cavity_rows, y_label='Long arm length')
+    width_axis, spacing_axis, arm_axis, na_axis = figure.axes
+    assert np.allclose(arm_axis.lines[0].get_ydata(),
+                       [row['short_arm_m'] * 1e3 for row in cavity_rows])
+    assert np.allclose(na_axis.lines[0].get_ydata(),
+                       [row['na'] for row in cavity_rows])
+    assert arm_axis.get_xlabel() == 'Long arm length', arm_axis.get_xlabel()
+    assert not spacing_axis.get_xlabel(), spacing_axis.get_xlabel()
+    plt.close(figure)
+    print('trends third panel ok (small arm length + NA)')
+
+    # a map whose spacings the lens scan never reached keeps its NaNs, and the
+    # panel - and the table's two columns - simply do not appear
+    figure = plot_trends(keys, rows, y_label='Long arm length')
+    assert len(figure.axes) == 2, len(figure.axes)
+    plt.close(figure)
+    print_table(keys, rows, y_label='Long arm length')
+    print_table(keys, cavity_rows, y_label='Long arm length')
+
     print('mode_map_2d self-test passed')
 
 

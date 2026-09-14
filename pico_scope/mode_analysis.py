@@ -121,23 +121,48 @@ def fit_six_lorentzians(x, y, x0_guess, x1_guess, d_guess,
             dict(zip(SIX_LORENTZIAN_PARAMS, (float(v) for v in perr))))
 
 
+def short_arm_from_interp(interp, value):
+    """The small arm length [m] the simulation ties to `value`, or None.
+
+    The cavity-design scan is inverted twice - once to an NA, once to the lens
+    position that produces it - so it hangs a `.short_arm_m` interpolator on
+    every NA interpolator it returns. Reading it here means the lens position
+    comes along wherever an NA does, at no extra cost.
+
+    None when the interpolator carries no `.short_arm_m` (a caller's own
+    stand-in, as in the self-test) or when the lookup is not finite. `value`
+    is whatever `interp` itself takes - a mode spacing in Hz, or a df / FSR
+    ratio - since both forms carry the matching `.short_arm_m`.
+    """
+    short_arm_interp = getattr(interp, 'short_arm_m', None)
+    if short_arm_interp is None:
+        return None
+    short_arm = float(short_arm_interp(value))
+    return short_arm if np.isfinite(short_arm) else None
+
+
 def sideband_results(x0, x1, d, s0, s1, f_sb_mhz, na_interp=None):
     """Scale the fitted geometry by the sideband frequency (the sidebands sit
-    at +/- f_sb, i.e. +/- d in x-units) and look up the NA if an interpolator
-    (mode spacing [Hz] -> NA) is given."""
+    at +/- f_sb, i.e. +/- d in x-units) and look up the NA - and the small arm
+    length that goes with it - if an interpolator (mode spacing [Hz] -> NA) is
+    given."""
     mode_spacing = abs(x1 - x0) / d * f_sb_mhz   # [MHz]
     linewidth_0 = s0 / d * f_sb_mhz              # [MHz] (HWHM)
     linewidth_1 = s1 / d * f_sb_mhz              # [MHz] (HWHM)
-    na = float(na_interp(mode_spacing * 1e6)) if na_interp is not None else None
-    if na is not None and not np.isfinite(na):
-        # the interpolator returns NaN outside the simulated range; NaN is
-        # not JSON-compliant and not a meaningful NA either
-        na = None
+    na = short_arm = None
+    if na_interp is not None:
+        na = float(na_interp(mode_spacing * 1e6))
+        if not np.isfinite(na):
+            # the interpolator returns NaN outside the simulated range; NaN is
+            # not JSON-compliant and not a meaningful NA either
+            na = None
+        short_arm = short_arm_from_interp(na_interp, mode_spacing * 1e6)
     return {
         'mode_spacing_MHz': mode_spacing,
         'linewidth_0_HWHM_MHz': linewidth_0,
         'linewidth_1_HWHM_MHz': linewidth_1,
         'NA': na,
+        'short_arm_m': short_arm,
     }
 
 
@@ -203,11 +228,11 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None,
     analyzed one, centred otherwise); each analyzed pair contributes
     df = |x02 - x01| and df / FSR. With `fsr_mhz` (cavity_fsr_mhz()) df is
     scaled to MHz; with `na_over_fsr_interp` ((df / FSR) -> NA) each pair
-    gets an NA (None outside the simulated range). `widths` is an optional
-    list parallel to `positions` holding each pair's fitted HWHMs
-    [gamma1, gamma2] in x-units (None, or a short list, where a position was
-    clicked rather than fitted); the rows then also carry both peaks' measured
-    FWHM in MHz. Returns a list of len(positions) - 1 row dicts.
+    gets an NA and the small arm length that produces it (both None outside
+    the simulated range). `widths` is an optional list parallel to `positions`
+    holding each pair's fitted HWHMs [gamma1, gamma2] in x-units (None, or a
+    short list, where a position was clicked rather than fitted); the rows then
+    also carry both peaks' measured FWHM in MHz. Returns a list of len(positions) - 1 row dicts.
     """
     if len(positions) < 2:
         raise ValueError('need at least two fitted pairs to get an FSR')
@@ -225,11 +250,12 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None,
             raise ValueError('two pairs share the same first-peak position')
         df = abs(positions[i][1] - positions[i][0])
         df_over_fsr = df / fsr
-        na = None
+        na = short_arm = None
         if na_over_fsr_interp is not None:
             na = float(na_over_fsr_interp(df_over_fsr))
             if not np.isfinite(na):
                 na = None  # outside the simulated range (and not JSON-safe)
+            short_arm = short_arm_from_interp(na_over_fsr_interp, df_over_fsr)
         pair_widths = list(widths[i]) if widths is not None and widths[i] else []
         pair_widths += [None] * (2 - len(pair_widths))
         rows.append({
@@ -237,6 +263,7 @@ def pair_positions_results(positions, fsr_mhz=None, na_over_fsr_interp=None,
             'df': float(df),
             'df_over_fsr': float(df_over_fsr),
             'NA': na,
+            'short_arm_m': short_arm,
             'df_MHz': (df_over_fsr * fsr_mhz) if fsr_mhz is not None else None,
             'fwhm_0_MHz': _fwhm_mhz(pair_widths[0], fsr, fsr_mhz),
             'fwhm_1_MHz': _fwhm_mhz(pair_widths[1], fsr, fsr_mhz),
@@ -257,12 +284,14 @@ def _mean_std(rows, key):
 
 def pair_summary(rows):
     """Mean / std over the pairs (ddof=1, as pandas does) of df / FSR, df [MHz],
-    NA and each peak's FWHM [MHz]; stds are None with a single row, and the NA /
-    MHz fields are None when no pair got an NA / when the rows were built without
-    an FSR in MHz (the FWHM fields also when they were built without widths)."""
+    NA, the small arm length [m] and each peak's FWHM [MHz]; stds are None with
+    a single row, and the NA / small-arm / MHz fields are None when no pair got
+    an NA / when the rows were built without an FSR in MHz (the FWHM fields also
+    when they were built without widths)."""
     ratios = np.array([row['df_over_fsr'] for row in rows], dtype=float)
     df_mhz_mean, df_mhz_std = _mean_std(rows, 'df_MHz')
     na_mean, na_std = _mean_std(rows, 'NA')
+    short_arm_mean, short_arm_std = _mean_std(rows, 'short_arm_m')
     fwhm_0_mean, fwhm_0_std = _mean_std(rows, 'fwhm_0_MHz')
     fwhm_1_mean, fwhm_1_std = _mean_std(rows, 'fwhm_1_MHz')
     return {
@@ -273,6 +302,8 @@ def pair_summary(rows):
         'df_MHz_std': df_mhz_std,
         'NA_mean': na_mean,
         'NA_std': na_std,
+        'short_arm_m_mean': short_arm_mean,
+        'short_arm_m_std': short_arm_std,
         'fwhm_0_MHz_mean': fwhm_0_mean,
         'fwhm_0_MHz_std': fwhm_0_std,
         'fwhm_1_MHz_mean': fwhm_1_mean,
@@ -315,7 +346,10 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
     """Return (mode_spacing_interp, mode_spacing_over_fsr_interp, error).
 
     mode_spacing_interp maps mode spacing [Hz] -> NA;
-    mode_spacing_over_fsr_interp maps (df / FSR) -> NA.
+    mode_spacing_over_fsr_interp maps (df / FSR) -> NA. Both carry a
+    `.short_arm_m` giving the small arm length [m] that produces the same
+    spacing - see short_arm_from_interp() - so the lens position costs no
+    second run of the simulation.
     `elements` names the cavity's optical elements in optical order (see
     list_cavity_elements()); a name that is not in the catalog is an error the
     caller must fix, so it is raised, not reported.
@@ -365,6 +399,27 @@ def get_na_interpolators(long_arm=LONG_ARM_LENGTH, mid_arm=MID_ARM_LENGTH,
     return result
 
 
+def lookup_na_and_short_arm(mode_spacing_MHz, na_interp):
+    """(NA, small arm length [m]) for a measured spacing - (None, None) when
+    the simulated lens scan never reached it.
+
+    sideband_results() and pair_positions_results() let the simulation's
+    ModeSpacingOutOfRange through, and rightly so: a single measurement the
+    scan does not cover is a SHORT_ARM_LENGTHS the user has to widen. A sweep
+    is different - it is a whole series of measurements against one fixed scan
+    span, and one row falling outside must not cost the other fifteen - so this
+    turns that one case into (None, None).
+    """
+    out_of_range = _import_simulation().ModeSpacingOutOfRange
+    try:
+        na = float(na_interp(mode_spacing_MHz * 1e6))
+    except out_of_range:
+        return None, None
+    if not np.isfinite(na):
+        return None, None
+    return na, short_arm_from_interp(na_interp, mode_spacing_MHz * 1e6)
+
+
 # ------------------------------------------------------------------ self-test
 def _self_test():
     rng = np.random.default_rng(seed=7)
@@ -389,18 +444,32 @@ def _self_test():
                                params['s0'], params['s1'], f_sb_mhz=25.0)
     expected_spacing = abs(true['x1'] - true['x0']) / true['d'] * 25.0  # 100 MHz
     assert abs(results['mode_spacing_MHz'] - expected_spacing) < 1.0, results
-    assert results['NA'] is None
+    assert results['NA'] is None and results['short_arm_m'] is None
     print(f"fit ok: mode spacing {results['mode_spacing_MHz']:.2f} MHz "
           f"(expected {expected_spacing:.2f}), "
           f"HWHM0 {results['linewidth_0_HWHM_MHz']:.3f} MHz, "
           f"HWHM1 {results['linewidth_1_HWHM_MHz']:.3f} MHz")
 
     # fake interpolator exercises the NA path without the cavity project
+    def fake_na_interp(mode_spacing_Hz):
+        return mode_spacing_Hz / 1e9
+
     results = sideband_results(params['x0'], params['x1'], params['d'],
                                params['s0'], params['s1'], f_sb_mhz=25.0,
-                               na_interp=lambda hz: hz / 1e9)
+                               na_interp=fake_na_interp)
     assert abs(results['NA'] - expected_spacing / 1e3) < 0.01
+    # a stand-in without a .short_arm_m must leave the lens position out, not raise
+    assert results['short_arm_m'] is None
     print(f"NA lookup path ok (fake interpolator): NA = {results['NA']:.4f}")
+
+    # ... and one carrying a .short_arm_m, as the cavity-design one does
+    fake_na_interp.short_arm_m = lambda hz: 7.2e-3 + hz / 1e15
+    results = sideband_results(params['x0'], params['x1'], params['d'],
+                               params['s0'], params['s1'], f_sb_mhz=25.0,
+                               na_interp=fake_na_interp)
+    expected_arm = 7.2e-3 + expected_spacing * 1e6 / 1e15
+    assert abs(results['short_arm_m'] - expected_arm) < 1e-9, results
+    print(f"small-arm lookup path ok: {results['short_arm_m'] * 1e3:.4f} mm")
 
     # ---- pairs (df / FSR): three synthetic pairs, FSR 0.3, df/FSR 0.2
     fsr_true, df_true = 0.3, 0.06
@@ -424,24 +493,31 @@ def _self_test():
         assert abs(params['x01'] - x01) < 0.002, params
         assert abs(params['x02'] - (x01 + df_true)) < 0.002, params
 
+    def fake_ratio_interp(df_over_fsr):
+        return df_over_fsr * 2
+
+    fake_ratio_interp.short_arm_m = lambda ratio: 7.2e-3 + ratio * 1e-4
     rows = pair_positions_results(positions, fsr_mhz=cavity_fsr_mhz(),
-                                  na_over_fsr_interp=lambda ratio: ratio * 2)
+                                  na_over_fsr_interp=fake_ratio_interp)
     assert len(rows) == 2
     for row in rows:
         assert abs(row['fsr'] - fsr_true) < 0.005, row
         assert abs(row['df_over_fsr'] - df_true / fsr_true) < 0.02, row
         assert abs(row['NA'] - 2 * row['df_over_fsr']) < 1e-9, row
+        assert abs(row['short_arm_m'] - (7.2e-3 + row['df_over_fsr'] * 1e-4)) < 1e-12, row
     summary = pair_summary(rows)
     assert summary['n_pairs'] == 2 and summary['df_over_fsr_std'] is not None
+    assert summary['short_arm_m_mean'] is not None
     print(f"pairs path ok: df/FSR = {summary['df_over_fsr_mean']:.4f} "
           f"± {summary['df_over_fsr_std']:.4f} (expected {df_true / fsr_true:.4f}), "
           f"FSR = {cavity_fsr_mhz():.1f} MHz")
 
     # a NaN-returning interpolator must yield NA = None, never NaN
     rows = pair_positions_results(positions, na_over_fsr_interp=lambda r: float('nan'))
-    assert all(row['NA'] is None for row in rows)
+    assert all(row['NA'] is None and row['short_arm_m'] is None for row in rows)
     summary = pair_summary(rows)
     assert summary['NA_mean'] is None and summary['NA_std'] is None
+    assert summary['short_arm_m_mean'] is None
     print('pairs NaN-NA path ok (None, not NaN)')
     print('mode_analysis self-test passed')
 

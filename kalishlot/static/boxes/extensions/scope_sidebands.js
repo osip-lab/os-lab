@@ -63,9 +63,14 @@ export const sidebandsExtension = {
         const r = result.results;
         const na = r.NA != null ? r.NA.toFixed(4)
           : `unavailable${r.na_error ? ` (${r.na_error})` : ''}`;
+        // The same inversion of the same lens scan as the NA, read on the axis
+        // one can act on at the bench. In mm: the whole simulated scan is a
+        // fraction of a millimetre wide.
+        const arm = r.short_arm_m != null
+          ? ` | small arm = ${(r.short_arm_m * 1e3).toFixed(4)} mm` : '';
         return `mode spacing = ${r.mode_spacing_MHz.toFixed(3)} MHz | `
           + `HWHM₀ = ${r.linewidth_0_HWHM_MHz.toFixed(3)} MHz | `
-          + `HWHM₁ = ${r.linewidth_1_HWHM_MHz.toFixed(3)} MHz | NA = ${na}`;
+          + `HWHM₁ = ${r.linewidth_1_HWHM_MHz.toFixed(3)} MHz | NA = ${na}${arm}`;
       },
       copy() {
         const r = result?.results;
@@ -74,8 +79,9 @@ export const sidebandsExtension = {
           text: `${r.mode_spacing_MHz.toFixed(4)}\t`
             + `${r.linewidth_0_HWHM_MHz.toFixed(4)}\t`
             + `${r.linewidth_1_HWHM_MHz.toFixed(4)}\t`
-            + `${r.NA != null ? r.NA.toFixed(4) : 'N/A'}`,
-          note: 'copied: mode spacing, HWHM₀, HWHM₁, NA',
+            + `${r.NA != null ? r.NA.toFixed(4) : 'N/A'}\t`
+            + `${r.short_arm_m != null ? (r.short_arm_m * 1e3).toFixed(4) : 'N/A'}`,
+          note: 'copied: mode spacing, HWHM₀, HWHM₁, NA, small arm [mm]',
         };
       },
       draw(u, helpers) {

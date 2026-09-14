@@ -42,10 +42,15 @@ Pipeline
     configuration block at the top of this file; nothing has to be edited in
     the cavity-design project. The measured spacing goes in with it, so the
     dependency plot comes back with it marked on both panels (on the left
-    panel, at the small arm length that would produce it).
-10. Print mode spacing, linewidths and NA together.
-11. Append a one-line record (long arm length, mode spacing, NA, waveform
-    buffer) to numerical-results.txt in the folder of the original data file.
+    panel, at the small arm length that would produce it) and both results -
+    the NA and that small arm length - spelled out in the figure's title.
+10. Print mode spacing, linewidths, NA and the small arm length together. The
+    last two are one inversion of one lens scan read on two axes: the NA is
+    what the cavity is characterized by, the small arm length is where the
+    lens has to sit to give it.
+11. Append a one-line record (long arm length, mode spacing, NA, small arm
+    length, waveform buffer) to numerical-results.txt in the folder of the
+    original data file.
 
 Note for future development: steps 4-6 already produce raw coordinate guesses
 (x0_guess, x1_guess, d_guess). A future "coordinate-only" mode can skip the fit
@@ -284,7 +289,9 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
 
     If `na_interp` is given (the mode-spacing -> NA interpolator from the
     cavity-design simulation), the numerical aperture is looked up from the
-    mode spacing and printed alongside the other parameters.
+    mode spacing and printed alongside the other parameters, together with the
+    small arm length that produces that spacing - the same inversion of the
+    same lens scan, read on the axis one can act on at the bench.
 
     This is the seam for the future coordinate-only mode: call it with values
     obtained from clicks instead of from the fit.
@@ -296,6 +303,7 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
     linewidth_0 = results['linewidth_0_HWHM_MHz']
     linewidth_1 = results['linewidth_1_HWHM_MHz']
     na = results['NA']
+    short_arm = results['short_arm_m']
 
     width = 64
     bar = '=' * width
@@ -316,6 +324,9 @@ def report_results(x0, x1, d, s0, s1, f_sb_mhz, fit_params=None, fit_errors=None
     if na is not None:
         print('-' * width)
         print(row("Numerical aperture  NA", na, ""))
+    if short_arm is not None:
+        # in mm: the whole simulated lens scan is a fraction of a millimetre wide
+        print(row("Small arm length (simulated)", short_arm * 1e3, "mm"))
     print('-' * width)
     print(row("  (0th-order FWHM)", 2 * linewidth_0, "MHz"))
     print(row("  (1st-order FWHM)", 2 * linewidth_1, "MHz"))
@@ -368,11 +379,14 @@ results = report_results(
 # Appends a one-line record to numerical-results.txt in the folder of the
 # original file (the .psdata/.csv the user copied, not the temporary CSV).
 na_text = f"{results['NA']:.4f}" if results['NA'] is not None else "N/A"
+short_arm_text = (f"{results['short_arm_m'] * 1e3:.4f} mm"
+                  if results['short_arm_m'] is not None else "N/A")
 append_numerical_result_line(
     input_path,
     f"long_arm_length = {long_arm_length:.4g} m, "
     f"mode_spacing = {results['mode_spacing_MHz']:.4f} MHz, "
     f"NA = {na_text}, "
+    f"short_arm_length = {short_arm_text}, "
     f"waveform_buffer = {waveform_buffer}",
 )
 

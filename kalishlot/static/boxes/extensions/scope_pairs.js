@@ -73,13 +73,20 @@ export const pairsExtension = {
             : `unavailable${r.na_error ? ` (${r.na_error})` : ''}`;
           // the measured linewidths (FWHM) of a pair's two modes
           const fwhm = (mean, std) => mean != null ? meanStd(mean, std, 3) : 'n/a';
+          // The same inversion of the same lens scan as the NA, read on the axis
+          // one can act on at the bench. In mm: the whole simulated scan is a
+          // fraction of a millimetre wide.
+          const arm = r.short_arm_m_mean != null
+            ? ` | small arm = ${meanStd(r.short_arm_m_mean * 1e3,
+                r.short_arm_m_std != null ? r.short_arm_m_std * 1e3 : null, 4)} mm`
+            : '';
           return `${nPairs} pairs | df/FSR = `
             + `${meanStd(r.df_over_fsr_mean, r.df_over_fsr_std, 4)}`
             + ` | df = ${(r.df_over_fsr_mean * r.fsr_mhz).toFixed(2)} MHz`
             + ` (FSR = ${r.fsr_mhz.toFixed(1)} MHz)`
             + ` | FWHM = ${fwhm(r.fwhm_0_MHz_mean, r.fwhm_0_MHz_std)}`
             + ` / ${fwhm(r.fwhm_1_MHz_mean, r.fwhm_1_MHz_std)} MHz`
-            + ` | NA = ${na}`;
+            + ` | NA = ${na}${arm}`;
         }
         if (r?.error) return r.error;
         if (nPairs === 1) {
@@ -98,9 +105,11 @@ export const pairsExtension = {
             + `${r.NA_mean != null ? r.NA_mean.toFixed(4) : 'N/A'}\t`
             + `${cell(r.NA_std, 4)}\t`
             + `${cell(r.fwhm_0_MHz_mean, 4)}\t${cell(r.fwhm_0_MHz_std, 4)}\t`
-            + `${cell(r.fwhm_1_MHz_mean, 4)}\t${cell(r.fwhm_1_MHz_std, 4)}`,
+            + `${cell(r.fwhm_1_MHz_mean, 4)}\t${cell(r.fwhm_1_MHz_std, 4)}\t`
+            + `${cell(r.short_arm_m_mean != null ? r.short_arm_m_mean * 1e3 : null, 4)}\t`
+            + `${cell(r.short_arm_m_std != null ? r.short_arm_m_std * 1e3 : null, 4)}`,
           note: 'copied: n pairs, df/FSR (mean, std), NA (mean, std), '
-            + 'FWHM of each mode [MHz] (mean, std)',
+            + 'FWHM of each mode [MHz] (mean, std), small arm [mm] (mean, std)',
         };
       },
       draw(u, helpers) {

@@ -165,6 +165,10 @@ def compute_and_record(marks, long_arm_length, mark_target_path):
 
     na_text = (f"{summary['NA_mean']:.4f}" if summary["NA_mean"] is not None
               else "unavailable (df/FSR outside the simulated range)")
+    # The same inversion as the NA, read on the axis one can act on at the bench.
+    # In mm: the whole simulated lens scan is a fraction of a millimetre wide.
+    short_arm_text = (f"{summary['short_arm_m_mean'] * 1e3:.4f} mm"
+                      if summary["short_arm_m_mean"] is not None else "unavailable")
     df_mhz_text = (f"{summary['df_MHz_mean']:.4f} MHz"
                   if summary["df_MHz_mean"] is not None else "unavailable")
     linewidth_text = ", ".join(
@@ -177,7 +181,8 @@ def compute_and_record(marks, long_arm_length, mark_target_path):
                     f"mode_spacing = {df_mhz_text}, "
                     f"df_over_fsr = {summary['df_over_fsr_mean']:.4f}, "
                     f"{linewidth_text}, "
-                    f"NA = {na_text}")
+                    f"NA = {na_text}, "
+                    f"short_arm_length = {short_arm_text}")
     if summary["df_over_fsr_std"] is not None:
         results_text += f" (std over pairs: df_over_fsr {summary['df_over_fsr_std']:.4f}"
         if summary["df_MHz_std"] is not None:
@@ -187,7 +192,14 @@ def compute_and_record(marks, long_arm_length, mark_target_path):
                 results_text += f", linewidth_{i} {summary[f'fwhm_{i}_MHz_std']:.4f} MHz"
         if summary["NA_std"] is not None:
             results_text += f", NA {summary['NA_std']:.4f}"
+        if summary["short_arm_m_std"] is not None:
+            results_text += (f", short_arm_length "
+                             f"{summary['short_arm_m_std'] * 1e3:.4f} mm")
         results_text += ")"
+    # The two results the simulation gives, side by side: the NA the cavity is
+    # characterized by and the lens position that produces it.
+    print(f"Mean over the pairs: NA = {na_text}, "
+          f"small arm length = {short_arm_text}")
     append_numerical_result_line(mark_target_path, results_text)
 
 
