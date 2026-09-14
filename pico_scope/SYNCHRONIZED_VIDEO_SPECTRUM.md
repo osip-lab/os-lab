@@ -223,6 +223,14 @@ Zoom (the matplotlib magnifier) to see the frame bands. The **red band** on the
 trace is the 10 ms exposure of the frame on screen: everything inside it went
 into that one image.
 
+The **green trace** is the temperature-modulation ramp (Channel B), on its own
+y axis to the right. It says which way the laser is being scanned at any
+instant, which the transmission alone cannot. It gets its own axis because the
+two are not comparable - tens of millivolts against volts - and one shared
+scale would flatten the transmission into a line. It is carried, never fitted
+against, so it cannot move a frame; a record without it is drawn exactly as
+before.
+
 The frame shown is the one the offset names, with nothing interposed. An
 unrefined offset can be off by up to about a frame, which is enough to show a
 resonance's dark neighbour instead of the resonance itself; `--refine` brings it
@@ -1281,8 +1289,9 @@ than believed.
 
 **So the fine alignment is genuinely optional now**, as hoped: the calibrated
 host clock is good to about one frame, and `--refine` takes it to a hundredth of
-one. A viewer that snaps to the brightest frame within +-1 absorbs most of what
-is left.
+one. (This originally leaned on the viewer's snap-to-brightest to absorb the
+last frame of error; that was removed on 2026-09-14 as unused, and `--refine`
+is what closes the gap.)
 
 Re-measure the bias if the driver, the frame rate or the block configuration
 changes.
@@ -1314,23 +1323,26 @@ preferring `t0_fitted_s` when `--refine` has been run and falling back to the
 calibrated host clock otherwise. A Phase 1 capture takes `--scope` and is
 aligned by fitting.
 
-## Snap to brightest
+## Snap to brightest — removed 2026-09-14
 
-On by default, toggled with **b**. The calibrated host clock is good to about a
-frame, which is enough to show the dark neighbour of a resonance instead of the
-resonance, so the viewer takes the brightest frame within +-1 of the one the
-offset names. It invents nothing - a resonance genuinely brighter than both its
-neighbours is the frame that was meant - and it makes the un-refined offset
-usable, which is what "fine alignment is optional" needs in practice.
+It was on by default and toggled with **b**: the calibrated host clock is good
+to about a frame, which is enough to show the dark neighbour of a resonance
+instead of the resonance, so the viewer took the brightest frame within +-1 of
+the one the offset names.
+
+It was never used, and it was removed. The reasoning it rested on has been
+overtaken: `--refine` takes the offset to a hundredth of a frame, so the error
+it compensated for is one you fix rather than paper over, and a viewer that
+quietly shows a *different* frame from the one the offset names is the wrong
+thing to have running by default while identifying a mode.
 
 ## Verified
 
 `--self-test` runs under Agg and drives the handlers with synthetic events:
-frame lookup exact inside windows and clamping outside, snapping bounded to one
-frame and never moving to a dimmer one, motion over the spectrum moving the
-image while motion elsewhere does not, click pinning and releasing, arrow keys
-stepping and clamping at both ends, and the highlighted band tracking the frame
-at exactly one exposure wide.
+frame lookup exact inside windows and clamping outside, motion over the
+spectrum moving the image while motion elsewhere does not, click pinning and
+releasing, arrow keys stepping and clamping at both ends, and the highlighted
+band tracking the frame at exactly one exposure wide.
 
 Against the real capture of 2026-08-26 20:08:53: hovering the strongest
 resonance selects frame 76, whose window 973.19-983.09 ms contains that peak,

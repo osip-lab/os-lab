@@ -40,6 +40,20 @@ The frame shown is the one the offset names, with nothing interposed: good to
 roughly a frame when the offset comes from the calibrated host clock alone, and
 to a hundredth of one after `mode_video_sync.py --refine`.
 
+## The second channel
+
+When the record carries one, the temperature-modulation ramp is drawn over the
+spectrum in green, on its own y axis to the right. That axis is not decoration:
+the transmission is tens of millivolts and the ramp is volts, so one shared
+scale would flatten the transmission into a line. What the ramp is for is the
+*direction* - which way the laser is being scanned at the instant under the
+cursor, which the transmission alone cannot say.
+
+It is carried, never fitted against: the alignment uses the transmission only,
+so the ramp cannot move a frame. A record without the channel - every capture
+made before it was recorded, and any .psdata exported without the column - is
+drawn exactly as it was, with no second axis and no legend.
+
 Frame boundaries are drawn as light shading so the 10 ms granularity is visible
 - a peak narrower than one band was integrated whole into a single image.
 """
@@ -81,11 +95,12 @@ import numpy as np  # noqa: E402
 from matplotlib.patches import Ellipse  # noqa: E402
 from matplotlib.widgets import CheckButtons  # noqa: E402
 
-from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E402
-                                        frame_brightness, frame_start_times,
-                                        frame_windows, latest_session,
-                                        load_session, load_session_trace,
-                                        nearest_frame, release_frames)
+from pico_scope.mode_video_sync import (ScopeTrace, fit_session,  # noqa: E402
+                                        frame_at_time, frame_brightness,
+                                        frame_start_times, frame_windows,
+                                        latest_session, load_session,
+                                        load_session_trace, nearest_frame,
+                                        release_frames)
 
 # The same fitter kalishlot's camera boxes use, straight from the device
 # layer - one routine, so a mode measured here and one measured in the
@@ -147,11 +162,13 @@ class ModeSpectrumViewer:
 
         lo, hi = self.windows[0, 0], self.windows[-1, 1]
         inside = (self.trace.t >= lo) & (self.trace.t <= hi)
-        self.ax_trace.plot(self.trace.t[inside] * 1e3,
-                           self.trace.signal[inside] * 1e3, lw=0.8)
+        transmission, = self.ax_trace.plot(
+            self.trace.t[inside] * 1e3, self.trace.signal[inside] * 1e3,
+            lw=0.8, color='tab:blue', label='Channel D (transmission)')
         self.ax_trace.set_ylabel('Channel D [mV]')
         self.ax_trace.set_title(title, fontsize=10)
         self.ax_trace.tick_params(labelbottom=False)
+        self._build_aux(inside, transmission)
 
         # Frame boundaries as light shading: the eye can then see that a peak
         # narrower than one band went into a single image whole.
@@ -191,6 +208,41 @@ class ModeSpectrumViewer:
         self.image.set_clim(0, max(int(np.asarray(self.frames).max()), 1))
 
         self._build_fit_controls()
+
+    def _build_aux(self, inside, transmission):
+        """The second channel, on its own y axis, when the record has one.
+
+        Its own axis because the two are not comparable: the transmission is
+        tens of millivolts and the temperature ramp is volts, so sharing a
+        scale would flatten the transmission - the signal everything else here
+        is about - into a line.
+
+        A record without it (every capture before it was recorded, and any
+        .psdata exported without the column) leaves the figure exactly as it
+        was: no twin axis, no legend, nothing moved.
+        """
+        self.ax_aux = None
+        if not self.trace.has_aux:
+            return
+
+        self.ax_aux = self.ax_trace.twinx()
+        # The twin is created on top, which would draw the ramp over the
+        # crimson cursor and the highlighted exposure band - the two things the
+        # viewer exists to point at. Putting it behind and making the host
+        # axes' own background transparent keeps the ramp visible underneath
+        # while the markers stay on top of it.
+        self.ax_aux.set_zorder(self.ax_trace.get_zorder() - 1)
+        self.ax_trace.patch.set_visible(False)
+
+        ramp, = self.ax_aux.plot(self.trace.t[inside] * 1e3,
+                                 self.trace.aux[inside], lw=0.8,
+                                 color='tab:green', alpha=0.75,
+                                 label=self.trace.aux_label or 'aux channel')
+        label = self.trace.aux_label or 'aux channel'
+        self.ax_aux.set_ylabel(f'{label} [V]', fontsize=9, color='tab:green')
+        self.ax_aux.tick_params(axis='y', labelsize=8, colors='tab:green')
+        self.ax_trace.legend(handles=[transmission, ramp], loc='upper right',
+                             fontsize=8, framealpha=0.7)
 
     def _build_fit_controls(self):
         """The fit checkbox, and the overlay it draws on the image."""
@@ -542,6 +594,44 @@ def _self_test():
     assert viewer.frame_for_time(windows[-1, 1] + 5.0) == n - 1
     assert viewer.frame_for_time(windows[0, 0] - 5.0) == 0
     print('  frame_for_time is exact inside windows and clamps outside')
+
+    # A record with no second channel - which is every capture made before it
+    # was recorded - must look exactly as it did: no twin axis, no legend.
+    assert not trace.has_aux
+    assert viewer.ax_aux is None, 'no aux channel, no second axis'
+    assert viewer.ax_trace.get_legend() is None
+    assert viewer.ax_trace.patch.get_visible(), \
+        'the host axes keeps its own background when there is nothing behind it'
+    print('  a capture without the second channel is drawn exactly as before')
+
+    # With one, it gets its own y axis rather than sharing the transmission's:
+    # volts against tens of millivolts would flatten the transmission to a line
+    ramp = 2.5 * np.sin(2 * np.pi * trace.t / max(trace.t[-1] - trace.t[0], 1e-9))
+    with_aux = ScopeTrace(trace.t, trace.signal, 's', 'V', None,
+                          aux=ramp, aux_unit='V',
+                          aux_label='Temperature modulation Voltage')
+    aux_viewer = ModeSpectrumViewer(with_aux, frames, windows, brightness,
+                                    'aux')
+    assert aux_viewer.ax_aux is not None, 'the second channel needs its own axis'
+    assert aux_viewer.ax_aux is not aux_viewer.ax_trace
+    assert 'Temperature modulation Voltage' in aux_viewer.ax_aux.get_ylabel()
+    assert aux_viewer.ax_trace.get_legend() is not None, 'two traces, one legend'
+    # behind the cursor and the exposure band, which are what the viewer points at
+    assert aux_viewer.ax_aux.get_zorder() < aux_viewer.ax_trace.get_zorder()
+    assert not aux_viewer.ax_trace.patch.get_visible(), \
+        'the host background would hide the channel drawn behind it'
+    # the two axes are on one timebase and the ramp keeps its own scale
+    low, high = aux_viewer.ax_aux.get_ylim()
+    assert high > 1.0, (low, high)     # volts, not the transmission's millivolts
+    assert aux_viewer.ax_aux.get_xlim() == aux_viewer.ax_trace.get_xlim()
+    # and the frame mapping is untouched by it: the alignment uses the
+    # transmission alone and the second channel is carried, never fitted
+    for probe in (3, 27, 61, 99):
+        assert (aux_viewer.frame_for_time(windows[probe].mean())
+                == viewer.frame_for_time(windows[probe].mean()) == probe)
+    aux_viewer.close_fit()
+    print('  the second channel gets its own y axis, behind the markers, and '
+          'changes no frame the viewer maps to')
 
     # the hover handler drives the display through synthetic events
     class _Event:

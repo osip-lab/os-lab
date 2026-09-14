@@ -62,6 +62,14 @@ SEARCH_WINDOW_S = 0.25  # half-width of the offset search, when refining
 TIME_COLUMN = 'Time'
 SIGNAL_COLUMN = 'Channel D'      # cavity transmission, as in mode_map_2d.py
 
+# A second channel, carried alongside the transmission and shown with it: the
+# ramp that drives the laser temperature, which is what says which way the scan
+# is going at any instant. It is optional everywhere - '' switches it off, and
+# a record that never had it (every capture before this existed, and any CSV
+# without the column) loads and plots exactly as it did.
+AUX_COLUMN = 'Channel B'
+AUX_LABEL = 'Temperature modulation Voltage'
+
 from pico_scope import run_config  # noqa: E402
 CONFIG_CHANGES = run_config.apply('sync', globals())
 
@@ -79,23 +87,41 @@ VOLT_UNITS = {'v': 1.0, 'mv': 1e-3, 'uv': 1e-6, 'µv': 1e-6}
 
 
 class ScopeTrace:
-    """A scope channel in seconds and volts, whatever the CSV said."""
+    """A scope channel in seconds and volts, whatever the CSV said.
 
-    def __init__(self, t, signal, time_unit, signal_unit, path=None):
+    Optionally a second channel on the same timebase: `aux`, the temperature
+    ramp. It is carried rather than fitted against - the alignment uses the
+    transmission alone - and it is `None` whenever the record has no such
+    channel, which is every capture made before it was recorded. Everything
+    that reads a trace must go on working in that case, so `has_aux` is the
+    only thing anyone should branch on.
+    """
+
+    def __init__(self, t, signal, time_unit, signal_unit, path=None,
+                 aux=None, aux_unit='V', aux_label=''):
         self.t = t
         self.signal = signal
         self.time_unit = time_unit
         self.signal_unit = signal_unit
         self.path = path
+        self.aux = aux
+        self.aux_unit = aux_unit
+        self.aux_label = aux_label
+
+    @property
+    def has_aux(self):
+        """Whether this record carries the second channel at all."""
+        return self.aux is not None and len(self.aux) == len(self.t)
 
     @property
     def duration(self):
         return float(self.t[-1] - self.t[0])
 
     def __repr__(self):
+        aux = f', +{self.aux_label or "aux"}' if self.has_aux else ''
         return (f'ScopeTrace({self.t.size} samples, '
                 f'{self.t[0]:.6g}..{self.t[-1]:.6g} s, '
-                f'from ({self.time_unit})/({self.signal_unit}))')
+                f'from ({self.time_unit})/({self.signal_unit}){aux})')
 
 
 class OffsetFit:
@@ -181,7 +207,8 @@ def _unit_scale(token, table, what):
                          f'{sorted(table)}')
 
 
-def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN):
+def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN,
+                   aux_column=AUX_COLUMN, aux_label=AUX_LABEL):
     """Read a PicoScope CSV export into seconds and volts.
 
     Row 1 is the header, row 2 the units and row 3 blank. Unlike the older
@@ -189,6 +216,11 @@ def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN):
     from the same instrument disagree about whether `Time` is seconds or
     milliseconds, and a silent factor of 1000 would put every frame in the
     wrong place.
+
+    The aux column is taken when the export has one and skipped when it does
+    not. Missing it is not an error: most exports predate it, and the one
+    column this loader cannot do without is the transmission that the
+    alignment is fitted against.
     """
     path = Path(path)
     header = pd.read_csv(path, nrows=1)
@@ -198,12 +230,27 @@ def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN):
     if missing:
         raise KeyError(f'{path.name} has no column(s) {missing}; it has '
                        f'{list(frame.columns)}')
-    frame = frame.loc[:, [time_column, signal_column]].dropna()
+
+    # Dropped together with the rest, so a row missing any channel is missing
+    # from all of them and the two stay on one timebase.
+    wanted = [time_column, signal_column]
+    has_aux = bool(aux_column) and aux_column in frame.columns
+    if has_aux:
+        wanted.append(aux_column)
+    frame = frame.loc[:, wanted].dropna()
+
     time_scale = _unit_scale(units[time_column], TIME_UNITS, 'time')
     signal_scale = _unit_scale(units[signal_column], VOLT_UNITS, 'voltage')
+    aux = aux_unit = None
+    if has_aux:
+        aux_unit = units[aux_column]
+        aux = (frame[aux_column].to_numpy(float)
+               * _unit_scale(aux_unit, VOLT_UNITS, 'voltage'))
     return ScopeTrace(frame[time_column].to_numpy(float) * time_scale,
                       frame[signal_column].to_numpy(float) * signal_scale,
-                      units[time_column], units[signal_column], path)
+                      units[time_column], units[signal_column], path,
+                      aux=aux, aux_unit='V',
+                      aux_label=aux_label if has_aux else '')
 
 
 def latest_session(root=None):
@@ -714,6 +761,86 @@ def _self_test():
         assert np.allclose(load_scope_csv(path).t, [0.0, 1.0])
     print('  CSV units row honoured: ms -> s and mV -> V')
 
+    # --- the optional second channel ---------------------------------------
+    # The one thing that must not regress: a record without it loads and reads
+    # exactly as before, and nothing downstream may assume the channel is there.
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / 'trace.csv'
+        without = ('Time,Channel D\n(ms),(mV)\n\n'
+                   '0.0,1000.0\n1.0,2000.0\n2.0,3000.0\n')
+        path.write_text(without, encoding='utf-8')
+        loaded = load_scope_csv(path)
+        assert loaded.aux is None and not loaded.has_aux
+        assert loaded.aux_label == ''
+        assert np.allclose(loaded.signal, [1.0, 2.0, 3.0])
+
+        # and with it, on the same timebase and in volts
+        path.write_text('Time,Channel B,Channel D\n(ms),(V),(mV)\n\n'
+                        '0.0,-2.5,1000.0\n1.0,0.0,2000.0\n2.0,2.5,3000.0\n',
+                        encoding='utf-8')
+        loaded = load_scope_csv(path)
+        assert loaded.has_aux
+        assert np.allclose(loaded.aux, [-2.5, 0.0, 2.5]), loaded.aux
+        assert loaded.aux_label == AUX_LABEL
+        assert len(loaded.aux) == len(loaded.t), 'one timebase for both'
+        # the transmission is untouched by the extra column
+        assert np.allclose(loaded.signal, [1.0, 2.0, 3.0])
+
+        # millivolts on the aux column are scaled like any other voltage
+        path.write_text('Time,Channel B,Channel D\n(ms),(mV),(mV)\n\n'
+                        '0.0,-2500.0,1000.0\n1.0,2500.0,2000.0\n',
+                        encoding='utf-8')
+        assert np.allclose(load_scope_csv(path).aux, [-2.5, 2.5])
+
+        # asking for a column the export does not have is not an error - most
+        # exports predate it - while a missing transmission still is
+        path.write_text(without, encoding='utf-8')
+        assert load_scope_csv(path, aux_column='Channel C').aux is None
+        assert load_scope_csv(path, aux_column='').aux is None
+        try:
+            load_scope_csv(path, signal_column='Channel C')
+        except KeyError:
+            pass
+        else:
+            raise AssertionError('a missing signal column must still fail')
+    print('  the second channel is read when the export has it, skipped when '
+          'it does not, and never required')
+
+    # The same, for the file a Phase 2 capture writes for itself. This is the
+    # path that must stay backward compatible: every capture taken before the
+    # second channel was recorded has an npz with no 'aux' array and a session
+    # with no 'aux' block, and has to load as though nothing had changed.
+    with tempfile.TemporaryDirectory() as folder:
+        folder = Path(folder)
+        t_scope = np.linspace(0.0, 1.0, 64)
+        volts = 0.02 * np.sin(2 * np.pi * 3 * t_scope)
+        ramp = 2.5 * np.sin(2 * np.pi * t_scope)
+
+        def _write(arrays, scope_extra):
+            np.savez_compressed(folder / 's_scope.npz', **arrays)
+            (folder / 's_session.json').write_text(
+                json.dumps({'scope': dict({'file': 's_scope.npz',
+                                           'channel': 'D'}, **scope_extra),
+                            'sync': {'t0_host_s': 0.0}}), encoding='utf-8')
+
+        _write({'t': t_scope, 'signal': volts}, {})
+        old = load_session_trace(folder)
+        assert not old.has_aux and old.aux is None
+        assert old.aux_label == ''
+        assert np.allclose(old.signal, volts) and np.allclose(old.t, t_scope)
+
+        _write({'t': t_scope, 'signal': volts, 'aux': ramp},
+               {'aux': {'channel': 'B', 'label': AUX_LABEL, 'range_v': 5.0}})
+        new = load_session_trace(folder)
+        assert new.has_aux and np.allclose(new.aux, ramp)
+        assert new.aux_label == AUX_LABEL
+        # the transmission is bit-identical either way: nothing about the
+        # alignment changes because a second channel happens to be present
+        assert np.allclose(new.signal, old.signal)
+        assert np.allclose(new.t, old.t)
+    print('  a capture written before the second channel existed loads '
+          'unchanged, and one with it carries it alongside')
+
     # the run-button configuration has to name something this file can do
     assert ACTION in ('refine', 'fit', 'self-test'), ACTION
     print('self-test passed')
@@ -740,7 +867,14 @@ def load_session_trace(session_path):
             f'with PicoScope 7 driving the scope. Pass the .psdata with '
             f'--scope instead.')
     data = np.load(session_path.parent / session['scope']['file'])
-    return ScopeTrace(data['t'], data['signal'], 's', 'V', session_path)
+    # Captures made before the second channel was recorded have no 'aux' array
+    # and no 'aux' block in the session, and must load exactly as they did.
+    aux_meta = session['scope'].get('aux') or {}
+    aux = data['aux'] if 'aux' in data.files else None
+    return ScopeTrace(data['t'], data['signal'], 's', 'V', session_path,
+                      aux=aux, aux_unit='V',
+                      aux_label=aux_meta.get('label', AUX_LABEL) if aux is not None
+                      else '')
 
 
 def refine_session(session_path, window_s=0.25, verbose=True):

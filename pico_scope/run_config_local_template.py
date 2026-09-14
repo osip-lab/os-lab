@@ -123,6 +123,18 @@ class capture:
                                     # (a blocked beam, say) does not pick the
                                     # most sensitive range available
 
+    # A second channel, recorded alongside the transmission and shown with it
+    # in the viewer: the ramp driving the laser temperature, which is what says
+    # which way the scan is going at any instant. It is never fitted against -
+    # the alignment uses the transmission alone - so a channel that turns out
+    # to be unconnected costs a flat line and nothing else. None switches it
+    # off, and captures made without it load and plot exactly as they did.
+    SCOPE_AUX_CHANNEL = 'B'
+    SCOPE_AUX_LABEL = 'Temperature modulation Voltage'
+    SCOPE_AUX_RANGE_V = 5.0         # it swings about 5 Vpp; the scope snaps
+                                    # this to the nearest range containing it
+    SCOPE_AUX_COUPLING = 'DC'       # the level matters, not just the swing
+
     # --- what the capture is checked against -------------------------------
     MASK_THRESHOLD = 0.15     # fraction of the peak-to-peak that counts as lit
     # A clipped peak is the one thing that reliably breaks the alignment fit:
@@ -199,6 +211,11 @@ class sync:
 
     TIME_COLUMN = 'Time'
     SIGNAL_COLUMN = 'Channel D'   # cavity transmission, as in mode_map_2d.py
+    # The second channel, when a hand-exported .psdata has one. '' switches it
+    # off; an export without the column is not an error, just a trace with no
+    # second channel, which is what every earlier export is.
+    AUX_COLUMN = 'Channel B'
+    AUX_LABEL = 'Temperature modulation Voltage'
 
 
 class show:

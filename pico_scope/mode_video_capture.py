@@ -165,6 +165,18 @@ SCOPE_AUTORANGE_MIN_V = 0.02    # floor, so a probe that caught no signal (a
                                 # blocked beam, say) does not pick the most
                                 # sensitive range available
 
+# A second channel, recorded alongside the transmission and shown with it in
+# the viewer: the ramp driving the laser temperature, which is what says which
+# way the scan is going at any instant. It is never fitted against - the
+# alignment uses the transmission alone - so a channel that turns out to be
+# unconnected costs a flat line and nothing else. None switches it off, and
+# captures made without it load and plot exactly as they did.
+SCOPE_AUX_CHANNEL = 'B'
+SCOPE_AUX_LABEL = 'Temperature modulation Voltage'
+SCOPE_AUX_RANGE_V = 5.0         # it swings about 5 Vpp; the scope snaps this
+                                # to the nearest range that still contains it
+SCOPE_AUX_COUPLING = 'DC'       # the level matters, not just the swing
+
 # ps4000aRunBlock returns before the scope has actually begun sampling, so the
 # host-clock estimate of where frame 0 sits is systematically early. Part of
 # that delay is the camera's own arming time, so the bias is per make and
@@ -267,9 +279,15 @@ def derive_exposure():
 derive_exposure()
 
 
-def output_root():
+def default_output_root():
     """Where captures go when nothing is prompted for: OUTPUT_ROOT if it names
-    somewhere, else the local bank mode_video_sync searches."""
+    somewhere, else the local bank mode_video_sync searches.
+
+    Not called `output_root`: both capture functions take an argument of that
+    name, which would shadow this and resolve to None - and they only reach the
+    fallback *after* the burst has been recorded, so the failure would cost the
+    capture rather than the run.
+    """
     return Path(OUTPUT_ROOT) if OUTPUT_ROOT else SESSION_ROOT
 
 
@@ -885,7 +903,7 @@ def previous_roi(root=None):
 
     Returns `(offset_y, height, path)`, or None if nothing has been captured.
     """
-    root = output_root() if root is None else Path(root)
+    root = default_output_root() if root is None else Path(root)
     sessions = sorted(root.glob('*/*_session.json'),
                       key=lambda q: q.stat().st_mtime, reverse=True)
     for path in sessions:
@@ -1130,7 +1148,7 @@ def capture(serial_number=None, output_root=None,
                   'gaps.')
 
         root = output_root if output_root is not None else (
-            prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else output_root())
+            prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
         stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
         folder = Path(root) / stamp
         session_path, mask = save_session(
@@ -1232,8 +1250,21 @@ def capture_synchronized(serial_number=None, output_root=None,
             SCOPE_CHANNEL, enabled=True, coupling=SCOPE_COUPLING,
             range_v=range_v)
         range_v = channel_config['range_v']  # snapped to what the hardware offers
+        aux_channel = SCOPE_AUX_CHANNEL
+        if aux_channel == SCOPE_CHANNEL:
+            raise ValueError(
+                f'SCOPE_AUX_CHANNEL is {aux_channel!r}, the same channel as '
+                f'SCOPE_CHANNEL - the transmission and the temperature ramp '
+                f'are two different signals and need two channels')
+        aux_config = None
+        if aux_channel:
+            aux_config = scope.configure_channel(
+                aux_channel, enabled=True, coupling=SCOPE_AUX_COUPLING,
+                range_v=SCOPE_AUX_RANGE_V)
+            print(f'  channel {aux_channel}, +-{aux_config["range_v"]:g} V '
+                  f'{SCOPE_AUX_COUPLING}, {SCOPE_AUX_LABEL}')
         for name in ('A', 'B', 'C', 'D'):
-            if name != SCOPE_CHANNEL:
+            if name not in (SCOPE_CHANNEL, aux_channel):
                 scope.configure_channel(name, enabled=False)
         scope.configure_trigger(enabled=False)   # start immediately
         duration = burst_s + 2 * SCOPE_PAD_S
@@ -1284,16 +1315,21 @@ def capture_synchronized(serial_number=None, output_root=None,
               f'{make} calibration')
 
     root = output_root if output_root is not None else (
-        prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else output_root())
+        prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
     folder = Path(root) / stamp
     session_path, mask = save_session(
         folder, stamp, frames, meta, timing, checks, camera_info,
         mode_location)
 
-    # the scope trace lives with the capture, so no .psdata is needed
+    # the scope trace lives with the capture, so no .psdata is needed. The aux
+    # array is simply absent when no aux channel was recorded, which is what
+    # every earlier capture looks like and what the loader already expects.
     signal = volts[SCOPE_CHANNEL]
-    np.savez_compressed(folder / f'{stamp}_scope.npz', t=t_scope, signal=signal)
+    arrays = {'t': t_scope, 'signal': signal}
+    if aux_config is not None and aux_channel in volts:
+        arrays['aux'] = volts[aux_channel]
+    np.savez_compressed(folder / f'{stamp}_scope.npz', **arrays)
     session = json.loads(session_path.read_text(encoding='utf-8'))
     session['scope'] = {
         'file': f'{stamp}_scope.npz',
@@ -1307,6 +1343,13 @@ def capture_synchronized(serial_number=None, output_root=None,
         'serial': scope_info['serial'],
         'variant': scope_info['variant'],
     }
+    if 'aux' in arrays:
+        session['scope']['aux'] = {
+            'channel': aux_channel,
+            'label': SCOPE_AUX_LABEL,
+            'range_v': aux_config['range_v'],
+            'coupling': SCOPE_AUX_COUPLING,
+        }
     session['sync'].update({
         'method': 'host_clock',
         't0_host_s': t0_host,
