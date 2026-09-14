@@ -43,7 +43,15 @@ The constants still declared at the top of each script are its **defaults**,
 and they carry the reasoning for each number - the config replaces them at
 import. A name a script does not have is an error rather than a silent no-op,
 so a misspelled setting stops the run instead of letting it proceed on the old
-value. Delete a setting to fall back to the script's default.
+value. To go back to a default, set the value rather than deleting the line.
+
+**The file keeps itself complete.** A setting added to the template later is
+appended to your `run_config_local.py` - with its comments - the next time
+anything runs, and it says what it added. Without that the file froze at
+whatever the template held the day it was created: the new setting worked, from
+the script's default, but was nowhere to be seen or edited in the one file that
+is meant to hold everything. Only the local file is topped up; a `--config`
+file written for one experiment is deliberately partial and is left alone.
 
 `python pico_scope/run_mode_video_pipeline.py --config my_experiment.py` runs
 from another file, so several named configs can sit side by side; the

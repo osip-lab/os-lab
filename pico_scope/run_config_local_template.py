@@ -12,8 +12,11 @@ ACTION, three have a SESSION, and they mean different things:
     show      pico_scope/mode_video_sync_show.py     the viewer
     mark      pico_scope/mode_video_sync_mark.py     the viewer plus annotation
 
-A name a script does not have is an error, not a silent no-op - delete a
-setting to fall back to the script's own default, but do not misspell one.
+A name a script does not have is an error, not a silent no-op, so a misspelled
+setting stops the run instead of being quietly ignored. To go back to a
+default, set the value - do not delete the line: run_config_local.py is kept
+complete, and a setting missing from it is added back from here the next time
+anything runs, which is what stops it falling behind as settings are added.
 
 Every capture writes the config it ran under next to its frames
 (run_config_used.py and run_config_resolved.json), so the settings stay part of
