@@ -37,7 +37,6 @@ from utilities.utils import wait_for_path_from_clipboard
 ACTION = 'mark'        # 'mark' | 'self-test'
 SESSION = wait_for_path_from_clipboard(filetype='folder')
 SCOPE_FILE = ''        # the .psdata of a Phase 1 capture; '' for Phase 2
-SNAP_TO_BRIGHTEST = True
 
 # --- the cavity being measured (edit this when the setup changes) ----------
 # Kept as its own block rather than imported from extract_df_and_fsr_from_scope_csv.py:
@@ -82,10 +81,10 @@ from utilities.utils import append_numerical_result_line, ask_long_arm_length, \
 
 
 def explore(session_path, trace, frames, windows, brightness, session,
-           source, snap):
+           source):
     """Open the video-synced viewer; block until the user closes it."""
     title = f'{Path(session_path).name} - {source}'
-    viewer = ModeSpectrumViewer(trace, frames, windows, brightness, title, snap,
+    viewer = ModeSpectrumViewer(trace, frames, windows, brightness, title,
                                 pixel_size_mm=session_pixel_size_mm(session),
                                 camera_label=camera_label(session))
     print('Explore the synced video - hover the spectrum to see each mode, '
@@ -227,7 +226,7 @@ def _self_test():
         print('  load_synced_trace resolves the Phase 2 scope file and windows')
 
         viewer = ModeSpectrumViewer(trace, loaded_frames, windows, brightness,
-                                    'self-test', snap=False)
+                                    'self-test')
         assert viewer.index == 0
         release_frames(loaded_frames)
         print('  the viewer builds from the loaded trace/frames/windows')
@@ -258,9 +257,6 @@ def main():
     parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata recorded alongside a Phase 1 capture; '
                              'omit for a Phase 2 capture, which carries its own')
-    parser.add_argument('--no-snap', action='store_true',
-                        help='show the frame the offset names, without snapping '
-                             'to the brightest neighbour')
     args = parser.parse_args()
 
     if args.self_test or ACTION == 'self-test':
@@ -271,11 +267,10 @@ def main():
 
     session = args.session or latest_session()
     print(f'session: {session}')
-    snap = SNAP_TO_BRIGHTEST and not args.no_snap
     (trace, frames, windows, brightness, session_dict, source,
      mark_target_path) = load_synced_trace(session, args.scope)
 
-    explore(session, trace, frames, windows, brightness, session_dict, source, snap)
+    explore(session, trace, frames, windows, brightness, session_dict, source)
     marks, long_arm_length = annotate(trace, mark_target_path)
     release_frames(frames)
     compute_and_record(marks, long_arm_length, mark_target_path)

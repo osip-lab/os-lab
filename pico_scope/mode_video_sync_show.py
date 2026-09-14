@@ -17,7 +17,6 @@ guesswork: every instant of the trace maps to a definite frame.
   whose exposure covers that instant.
 - **Click** to pin a frame, click again to unpin and resume following.
 - **Left / right arrows** step one frame; **shift** steps ten.
-- **b** toggles snap-to-brightest (on by default, see below).
 - **fit Gaussian** (the checkbox, or **f**) fits a 2D Gaussian to the frame on
   screen and draws its 1/e^2 contour, reporting the beam radii in millimetres.
 
@@ -37,16 +36,9 @@ the bare pitch would halve every width reported. A capture that records no
 pixel size at all gets the widths in pixels and says so, rather than inventing
 a scale.
 
-## Snap to brightest
-
-The offset between the two records is good to roughly a frame when it comes
-from the calibrated host clock alone, and to a hundredth of one after
-`mode_video_sync.py --refine`. A whole frame of error is enough to show the
-dark neighbour of a resonance rather than the resonance itself, so by default
-the viewer snaps to the brightest frame within +-1 of the one the offset names.
-That absorbs the residual error without inventing anything: a resonance
-genuinely brighter than both its neighbours is the frame you meant. Press **b**
-to see the unsnapped mapping.
+The frame shown is the one the offset names, with nothing interposed: good to
+roughly a frame when the offset comes from the calibrated host clock alone, and
+to a hundredth of one after `mode_video_sync.py --refine`.
 
 Frame boundaries are drawn as light shading so the 10 ms granularity is visible
 - a peak narrower than one band was integrated whole into a single image.
@@ -61,7 +53,6 @@ from pathlib import Path
 ACTION = 'show'      # 'show' | 'self-test'
 SESSION = ''         # capture folder; '' means the most recent one
 SCOPE_FILE = ''      # the .psdata of a Phase 1 capture; '' for Phase 2
-SNAP_TO_BRIGHTEST = True
 
 import matplotlib
 matplotlib.use('Agg' if (ACTION == 'self-test' or '--self-test' in sys.argv)
@@ -86,11 +77,9 @@ from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E40
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
 from gaussian_fit import FitLoop  # noqa: E402
 
-SNAP_RADIUS = 1          # frames either side, when snapping to the brightest
 SHADE_ALPHA = 0.06      # faint: at 120 frames these are stripes until you zoom
 HELP_TEXT = ('move: follow the cursor   click: pin/unpin   '
-             'left/right: step (shift = 10)   b: snap-to-brightest   '
-             'f: fit a Gaussian')
+             'left/right: step (shift = 10)   f: fit a Gaussian')
 
 # Matches kalishlot's CameraFitMixin.FIT_REBINNING, so the browser and this
 # viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
@@ -116,12 +105,11 @@ class ModeSpectrumViewer:
     """
 
     def __init__(self, trace, frames, windows, brightness, title='',
-                 snap=True, pixel_size_mm=None, camera_label=''):
+                 pixel_size_mm=None, camera_label=''):
         self.trace = trace
         self.frames = frames
         self.windows = np.asarray(windows)
         self.brightness = np.asarray(brightness)
-        self.snap = snap
         self.pinned = None
         self.index = 0
         self.background = None
@@ -341,10 +329,6 @@ class ModeSpectrumViewer:
         index = frame_at_time(self.windows, t_seconds)
         if index is None:                       # dead time, or past the burst
             index = nearest_frame(self.windows, t_seconds)
-        if self.snap:
-            low = max(0, index - SNAP_RADIUS)
-            high = min(len(self.brightness), index + SNAP_RADIUS + 1)
-            index = low + int(np.argmax(self.brightness[low:high]))
         return index
 
     def show_frame(self, index, redraw=True):
@@ -362,8 +346,7 @@ class ModeSpectrumViewer:
         self.image_title.set_text(
             f'frame {index} of {len(self.frames) - 1}   '
             f'{self.windows[index, 0] * 1e3:.2f}-{self.windows[index, 1] * 1e3:.2f} ms   '
-            f'brightness {self.brightness[index]:.2f}   [{state}'
-            f'{", snap" if self.snap else ""}]')
+            f'brightness {self.brightness[index]:.2f}   [{state}]')
         self.submit_fit()
         if redraw:
             self._blit()
@@ -419,8 +402,6 @@ class ModeSpectrumViewer:
             self.pinned = self.index - step
         elif key == 'right':
             self.pinned = self.index + step
-        elif key == 'b':
-            self.snap = not self.snap
         elif key == 'f':
             self.toggle_fit()
             return
@@ -476,14 +457,14 @@ def load_synced_trace(session_path, scope_path=None):
            mark_target_path)
 
 
-def viewer_from_session(session_path, scope_path=None, snap=True):
+def viewer_from_session(session_path, scope_path=None):
     """Build a viewer from a capture - see load_synced_trace() for how it is
     aligned."""
     session_path = Path(session_path)
     trace, frames, windows, brightness, session, source, _ = load_synced_trace(
         session_path, scope_path)
     title = f'{session_path.name} - {source}'
-    return ModeSpectrumViewer(trace, frames, windows, brightness, title, snap,
+    return ModeSpectrumViewer(trace, frames, windows, brightness, title,
                               pixel_size_mm=session_pixel_size_mm(session),
                               camera_label=camera_label(session))
 
@@ -541,7 +522,7 @@ def _self_test():
     windows = frame_windows(starts, exposure, t0)
 
     viewer = ModeSpectrumViewer(trace, frames, windows, brightness,
-                                'self-test', snap=False)
+                                'self-test')
     assert viewer.index == 0
 
     # the frame for an instant is the frame whose window contains it
@@ -555,18 +536,6 @@ def _self_test():
     assert viewer.frame_for_time(windows[-1, 1] + 5.0) == n - 1
     assert viewer.frame_for_time(windows[0, 0] - 5.0) == 0
     print('  frame_for_time is exact inside windows and clamps outside')
-
-    # snapping moves to a brighter neighbour, and only by one frame
-    viewer.snap = True
-    peak = int(np.argmax(brightness))
-    for offset in (-1, 0, 1):
-        probe = np.clip(peak + offset, 0, n - 1)
-        snapped = viewer.frame_for_time(windows[probe].mean())
-        assert abs(snapped - probe) <= SNAP_RADIUS
-        assert brightness[snapped] >= brightness[probe] - 1e-9
-    assert viewer.frame_for_time(windows[peak].mean()) == peak
-    viewer.snap = False
-    print('  snap-to-brightest moves at most one frame, and never to a dimmer one')
 
     # the hover handler drives the display through synthetic events
     class _Event:
@@ -607,10 +576,7 @@ def _self_test():
     for _ in range(30):
         viewer.on_key(_Key('shift+left'))
     assert viewer.index == 0, 'stepping past the start clamps'
-    snap_before = viewer.snap
-    viewer.on_key(_Key('b'))
-    assert viewer.snap is not snap_before, 'b toggles snapping'
-    print('  arrow keys step and clamp; b toggles snapping')
+    print('  arrow keys step and clamp')
 
     # the highlighted band must track the frame being shown
     viewer.show_frame(33, redraw=False)
@@ -642,7 +608,7 @@ def _self_test():
     # a fit of a known blob: the 1/e^2 radii come back in millimetres
     sigma_px = 3.0
     fit_viewer = ModeSpectrumViewer(trace, frames, windows, brightness,
-                                    'fit', snap=False, pixel_size_mm=0.011,
+                                    'fit', pixel_size_mm=0.011,
                                     camera_label='ximea 11.0 um/px')
     from gaussian_fit import fit_gaussian
     ok, pars = fit_gaussian(np.asarray(frames[int(np.argmax(brightness))],
@@ -706,9 +672,6 @@ def main():
     parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata recorded alongside a Phase 1 capture; '
                              'omit for a Phase 2 capture, which carries its own')
-    parser.add_argument('--no-snap', action='store_true',
-                        help='show the frame the offset names, without snapping '
-                             'to the brightest neighbour')
     args = parser.parse_args()
 
     if args.self_test or ACTION == 'self-test':
@@ -719,8 +682,7 @@ def main():
 
     session = args.session or latest_session()
     print(f'session: {session}')
-    snap = SNAP_TO_BRIGHTEST and not args.no_snap
-    viewer = viewer_from_session(session, args.scope, snap=snap)
+    viewer = viewer_from_session(session, args.scope)
     plt.show()
     viewer.close_fit()
     release_frames(viewer.frames)

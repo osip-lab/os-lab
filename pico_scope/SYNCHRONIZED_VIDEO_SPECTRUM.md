@@ -188,17 +188,15 @@ the clock's own jitter settles the matter even when `depth` is low. Only a
   frame whose exposure covers that instant
 - **click** to pin that frame; click again to release
 - **left / right arrows** step one frame, **shift** ten
-- **b** toggles snap-to-brightest
 
 Zoom (the matplotlib magnifier) to see the frame bands. The **red band** on the
 trace is the 10 ms exposure of the frame on screen: everything inside it went
 into that one image.
 
-**Snap-to-brightest is on by default** and is worth understanding. The offset
-can be off by up to about a frame, which is enough to show a resonance's dark
-neighbour instead of the resonance. So the viewer takes the brightest frame
-within one either side of the one the offset names. Press **b** to see the raw
-mapping - if the two differ, the snapped one is almost always what you meant.
+The frame shown is the one the offset names, with nothing interposed. An
+unrefined offset can be off by up to about a frame, which is enough to show a
+resonance's dark neighbour instead of the resonance itself; `--refine` brings it
+to a hundredth of a frame.
 
 **Programmatically**, if you have a peak time and want its frame:
 
