@@ -21,17 +21,44 @@ answers are written down.
 Everything below this section is the design record - why it is built the way it
 is, and what was measured along the way. This section is how to run it.
 
-## Press Run
+## One config file
 
-Each of the three scripts is driven by a block at the top of its own file, in
-the same style as `pico_scope/mode_map_2d.py`. Open the file, edit the block,
-press Run in PyCharm. No arguments, no run configuration.
+Every run parameter of all four scripts lives in
 
-| file | block | what Run does by default |
+    pico_scope/run_config_local.py
+
+which is **git-ignored** and created for you, from `run_config_local_template.py`,
+the first time anything runs. Edit it and press Run in PyCharm; no arguments, no
+run configuration, and nothing tracked to modify. One class per script, because
+the names collide on purpose - all four have an `ACTION`:
+
+| class | script | what Run does by default |
 | --- | --- | --- |
-| `mode_video_capture.py` | `ACTION`, `DRIVE_SCOPE`, `LOCATE_FIRST` | captures, driving both instruments |
-| `mode_video_sync.py` | `ACTION`, `SESSION` | refines the newest capture |
-| `mode_video_sync_show.py` | `ACTION`, `SESSION` | opens the newest capture in the viewer |
+| `capture` | `mode_video_capture.py` | captures, driving both instruments |
+| `sync` | `mode_video_sync.py` | refines the newest capture |
+| `show` | `mode_video_sync_show.py` | opens the newest capture in the viewer |
+| `mark` | `mode_video_sync_mark.py` | opens a capture and annotates it |
+
+The constants still declared at the top of each script are its **defaults**,
+and they carry the reasoning for each number - the config replaces them at
+import. A name a script does not have is an error rather than a silent no-op,
+so a misspelled setting stops the run instead of letting it proceed on the old
+value. Delete a setting to fall back to the script's default.
+
+`python pico_scope/run_mode_video_pipeline.py --config my_experiment.py` runs
+from another file, so several named configs can sit side by side; the
+individual scripts take `--config` too, and the command line still overrides
+both.
+
+**The settings are still part of the record.** They used to be in git, so a
+commit could say what a measurement was taken with. Every capture now writes
+
+    run_config_used.py         the config file verbatim, comments and all
+    run_config_resolved.json   the values actually in force, derived ones
+                               included (the exposure, the ROI that was picked)
+
+next to its frames - per capture rather than per commit, and holding what was
+resolved rather than only what was typed.
 
 **Leaving `SESSION = ''` means "the most recent capture"**, so the usual round
 trip is: Run the capture, Run the viewer. No paths to copy.
@@ -48,7 +75,7 @@ block, for scripting.
 Then check the light, because the transmission drifts enough between sessions
 that yesterday's setting is not reliable:
 
-    ACTION = 'levels'    # then press Run
+    capture.ACTION = 'levels'    # then press Run
     # or: python pico_scope/mode_video_capture.py --levels
 
 It reports the peak of four capture-length bursts. You want the **worst burst
@@ -71,7 +98,7 @@ the light. Judge by the brightest, and ignore the spread figure.
 
 ## Capturing
 
-    ACTION = 'capture'   # DRIVE_SCOPE = True, then press Run
+    capture.ACTION = 'capture'   # DRIVE_SCOPE = True, then press Run
     # or: python pico_scope/mode_video_capture.py --scope
 
 One Run drives both instruments. It finds the mode on the sensor, sizes the
@@ -104,11 +131,14 @@ written are worked out at every run instead:
   deliberately - comparing two captures frame for frame, say - type the four
   numbers the camera GUI shows (xiCamTool or pylon Viewer, in sensor pixels)
   into `MANUAL_ROI`; it overrides both routes and skips the reconnaissance,
-  and `None` puts it back.
-- **the exposure** - derived as `1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US`, so
-  changing the frame rate alone stays correct. The gap is 1% of the period
-  with a 100 us floor; the exposure must stay under the period or it becomes
-  the cap on the rate itself.
+  and `None` puts it back. This is the setting the config file exists for: it
+  belongs to a day's alignment, not to the repository.
+- **the exposure** - `EXPOSURE_US = None` derives it from `FRAME_RATE_HZ`,
+  after the config is applied, so changing the frame rate alone stays correct.
+  The gap is 1% of the period with a 100 us floor; the exposure must stay under
+  the period or it becomes the cap on the rate itself. Set a number to pin a
+  shorter exposure instead - but a stale one left over from another rate is
+  exactly what deriving it avoids.
 
 ## Which camera
 
@@ -159,7 +189,7 @@ times, is what rules out their having found a common alias.
 
 ## Sharpening the alignment (optional)
 
-    ACTION = 'refine'    # SESSION = '' takes the newest capture; press Run
+    sync.ACTION = 'refine'    # SESSION = '' takes the newest capture; press Run
     # or: python pico_scope/mode_video_sync.py --session <folder> --refine
 
 The capture's own offset is already good to about a frame. This takes it to a
@@ -177,7 +207,7 @@ the clock's own jitter settles the matter even when `depth` is low. Only a
 
 ## Looking at the result
 
-    ACTION = 'show'      # SESSION = '' takes the newest capture; press Run
+    show.ACTION = 'show'      # SESSION = '' takes the newest capture; press Run
     # or: python pico_scope/mode_video_sync_show.py --session <folder>
 
 ## Choosing a peak and seeing its mode

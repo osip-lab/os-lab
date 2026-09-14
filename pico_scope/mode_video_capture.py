@@ -45,6 +45,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from camera_core import burst_timing  # noqa: E402
+from pico_scope import run_config  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
 from utilities.utils import wait_for_path_from_clipboard  # noqa: E402
@@ -57,9 +58,13 @@ CAMERA_BACKENDS = {
     'ximea': ('ximea_cam', 'ximea_cameras', 'XimeaCamera'),
 }
 
-# --- what happens when this file is run (edit these, then press Run) -------
-# Nothing here needs the command line; the arguments exist for scripting and
-# override these when given.
+# --- the run parameters, and where they really come from -------------------
+# Everything from here to the end of the calibration block is a *default*.
+# The values a run actually uses come from pico_scope/run_config_local.py,
+# which is git-ignored and created from run_config_local_template.py on first
+# use - see run_config.py. The declarations stay here because they carry the
+# reasoning for each number, and because the self-tests must run with no config
+# file at all. run_config.apply() overwrites them at the end of this block.
 ACTION = 'capture'      # 'capture' | 'levels' | 'locate' | 'self-test'
 CAMERA = None           # 'basler' | 'ximea' | None = the only one connected
 DRIVE_SCOPE = True      # False: you record the scope yourself in PicoScope 7
@@ -80,14 +85,15 @@ STRICT_LEVELS = False   # True: refuse to capture when the light clips.
 # between cameras that are both connected; resolve_camera() then says which.
 SERIAL_NUMBER = None
 FRAME_RATE_HZ = 100           # see the peak-blending check below
-# The exposure follows the frame rate rather than being typed out beside it:
-# as long as the period allows, less the gap the sensor needs between frames.
-# Asking for the whole period does not fail loudly, it quietly lowers the rate,
-# and the inverse-minus-a-bit had to be recomputed by hand at every new rate.
-# The floor is what stops the gap vanishing at high rates, where 1% of a short
-# period is less than the sensor wants.
-EXPOSURE_GAP_US = max(100.0, 0.01 * 1e6 / FRAME_RATE_HZ)
-EXPOSURE_US = 1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US   # 9900 us at 100 Hz
+# None: the exposure follows the frame rate rather than being typed out beside
+# it - as long as the period allows, less the gap the sensor needs between
+# frames. Asking for the whole period does not fail loudly, it quietly lowers
+# the rate, and the inverse-minus-a-bit had to be recomputed by hand at every
+# new rate. Deriving it matters more now that the rate is set from a config
+# file: a typed exposure left over from another rate would silently cap it.
+# derive_exposure() below turns None into the number; a value pins it instead.
+EXPOSURE_US = None              # 9900 us at 100 Hz
+EXPOSURE_GAP_US = None          # the gap that leaves; derived alongside
 N_FRAMES = 120                  # 1.2 s at 100 Hz
 # None: the deepest format the camera offers - Mono12 on the Basler, Mono10 on
 # the XIMEA, whose sensor has no more to give. Depth is wanted for headroom: as
@@ -117,9 +123,9 @@ THROUGHPUT_BPS = None
 # skipped. Typed numbers are right only until the cavity is realigned or the
 # camera nudged, and then wrong silently - the capture still runs, on rows the
 # mode has left - so set this back to None when the comparison it was pinned
-# for is done.
-MANUAL_ROI = {'offset_x': 636, 'offset_y': 674, 'width': 344, 'height': 450}
-# MANUAL_ROI = None
+# for is done. This is the setting the config file exists for: it belongs to a
+# day's alignment, not to the repository.
+MANUAL_ROI = None
 
 # ROI in BINNED pixels, for the runs that size it themselves; MANUAL_ROI wins
 # over both when it is set. None: the full sensor width. On the Basler width is
@@ -183,10 +189,36 @@ HOST_T0_BIAS_S = {'basler': 0.0399, 'ximea': -0.1451}
 # --- what the capture is checked against -----------------------------------
 MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as lit
 
+# A clipped peak is the one thing that reliably breaks the alignment fit: the
+# camera stops tracking the photodiode exactly where the signal is strongest.
+# Measured earlier on this setup, 1% of samples clipped is survivable and 5%
+# is not, so the gate is set well below that.
+MAX_SATURATED_FRACTION = 0.001   # 0.1% of pixel samples
+TARGET_PEAK_FRACTION = 0.7       # aim the brightest pixel here, of full scale
+# One burst is not enough to judge the level. At a fixed light level the peak
+# varies about 2.3x from burst to burst, because it depends on which resonance
+# that burst happened to catch - measured over 12 bursts on 2026-08-26, peak
+# 1778 to 4095 while the mean stayed within 27-32. A check made from a single
+# burst therefore passes and then lets the real capture clip, which is exactly
+# what happened twice. So several bursts are taken and the verdict is formed
+# from the worst of them, with headroom for a future burst brighter still.
+LEVEL_BURSTS = 4
+# The pre-flight bursts must be as long as the capture. A shorter one samples
+# fewer free spectral ranges and so has fewer chances to catch a strong
+# resonance, which biases the predicted peak low: measured, 120-frame bursts
+# reach about 15% higher than 40-frame ones at the same light level. None means
+# "same as the capture".
+LEVEL_BURST_FRAMES = None
+LEVEL_SAFETY = 1.3               # margin above the brightest burst yet seen
+LEVEL_TOO_DIM_FRACTION = 0.10    # below this the capture works but wastes range
+LEVEL_CLIPPED_STEP_DB = 6.0      # blind back-off while the peak is censored
+
 # --- where captures are written --------------------------------------------
-# Shared with mode_video_sync, so that leaving its SESSION empty finds the
-# capture this script just wrote.
-OUTPUT_ROOT = SESSION_ROOT
+# None: the local bank mode_video_sync uses, so that leaving its SESSION empty
+# finds the capture this script just wrote. A path overrides it. Resolved
+# through output_root() rather than read directly, so that a config file
+# leaving it None still lands in the shared bank.
+OUTPUT_ROOT = None
 
 # Prompt for the Dropbox measurement folder to save each capture into,
 # instead of the fixed local OUTPUT_ROOT above - data is identified by its
@@ -195,6 +227,45 @@ OUTPUT_ROOT = SESSION_ROOT
 # testing); leaving --session-style auto-discovery under OUTPUT_ROOT working
 # only when this is False.
 PROMPT_FOR_OUTPUT_ROOT = True
+
+# --- the config file replaces the defaults above ---------------------------
+# Before any def below, because several of them bind a constant as a default
+# argument (measure_light_level's n_bursts=LEVEL_BURSTS), and a default
+# argument is fixed when the def runs, not when it is called. Applying the
+# config afterwards would leave those bound to the values this file ships with
+# while every other use saw the config's - the kind of split that would show up
+# as one setting mysteriously not taking effect.
+CONFIG_CHANGES = run_config.apply('capture', globals())
+
+
+def derive_exposure():
+    """Turn EXPOSURE_US = None into the exposure the frame rate allows.
+
+    The whole period less the gap the sensor needs between frames - 1% of the
+    period, floored at 100 us so the gap does not vanish at high rates, where
+    1% of a short period is less than the sensor wants. Asking for the whole
+    period does not fail loudly, it quietly lowers the frame rate.
+
+    Derived after the config is applied rather than beside FRAME_RATE_HZ, so
+    that a config raising the rate raises the exposure with it. A config that
+    names an exposure keeps it, and only the gap is worked back out.
+    """
+    global EXPOSURE_US, EXPOSURE_GAP_US
+    if EXPOSURE_US is None:
+        EXPOSURE_GAP_US = max(100.0, 0.01 * 1e6 / FRAME_RATE_HZ)
+        EXPOSURE_US = 1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US
+    else:
+        EXPOSURE_GAP_US = 1e6 / FRAME_RATE_HZ - EXPOSURE_US
+    return EXPOSURE_US
+
+
+derive_exposure()
+
+
+def output_root():
+    """Where captures go when nothing is prompted for: OUTPUT_ROOT if it names
+    somewhere, else the local bank mode_video_sync searches."""
+    return Path(OUTPUT_ROOT) if OUTPUT_ROOT else SESSION_ROOT
 
 
 def prompt_for_output_root():
@@ -450,29 +521,10 @@ def report_mode_location(found, roi_height=None):
 
 
 # %% [Step 1b] Checking the light level --------------------------------------
-# A clipped peak is the one thing that reliably breaks the alignment fit: the
-# camera stops tracking the photodiode exactly where the signal is strongest.
-# Measured earlier on this setup, 1% of samples clipped is survivable and 5%
-# is not, so the gate is set well below that.
-MAX_SATURATED_FRACTION = 0.001   # 0.1% of pixel samples
-TARGET_PEAK_FRACTION = 0.7       # aim the brightest pixel here, of full scale
-# One burst is not enough to judge the level. At a fixed light level the peak
-# varies about 2.3x from burst to burst, because it depends on which resonance
-# that burst happened to catch - measured over 12 bursts on 2026-08-26, peak
-# 1778 to 4095 while the mean stayed within 27-32. A check made from a single
-# burst therefore passes and then lets the real capture clip, which is exactly
-# what happened twice. So several bursts are taken and the verdict is formed
-# from the worst of them, with headroom for a future burst brighter still.
-LEVEL_BURSTS = 4
-# The pre-flight bursts must be as long as the capture. A shorter one samples
-# fewer free spectral ranges and so has fewer chances to catch a strong
-# resonance, which biases the predicted peak low: measured, 120-frame bursts
-# reach about 15% higher than 40-frame ones at the same light level. None means
-# "same as the capture".
-LEVEL_BURST_FRAMES = None
-LEVEL_SAFETY = 1.3               # margin above the brightest burst yet seen
-LEVEL_TOO_DIM_FRACTION = 0.10    # below this the capture works but wastes range
-LEVEL_CLIPPED_STEP_DB = 6.0      # blind back-off while the peak is censored
+# Its constants are in the block at the top of the file with the rest of the
+# run parameters: measure_light_level() binds LEVEL_BURSTS as a default
+# argument, which is fixed when the def runs, so they must be settled before
+# any def in this file - and the config is applied up there.
 
 
 def measure_light_level(cam, n_bursts=LEVEL_BURSTS, n_frames=None):
@@ -740,7 +792,7 @@ def previous_roi(root=None):
 
     Returns `(offset_y, height, path)`, or None if nothing has been captured.
     """
-    root = Path(OUTPUT_ROOT if root is None else root)
+    root = output_root() if root is None else Path(root)
     sessions = sorted(root.glob('*/*_session.json'),
                       key=lambda q: q.stat().st_mtime, reverse=True)
     for path in sessions:
@@ -931,6 +983,16 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     np.save(folder / mask_name, mask)
     session_path = folder / f'{stem}_session.json'
     session_path.write_text(text, encoding='utf-8')
+
+    # The run parameters, beside the data they produced. They used to be in
+    # git, so a commit could say what a measurement was taken with; they live
+    # in a git-ignored config file now, and this is what replaces that record -
+    # per capture rather than per commit, and holding what was resolved rather
+    # than only what was typed. Both capture paths come through here, so a
+    # capture run straight from this script is recorded the same as one the
+    # pipeline drove.
+    run_config.dump_into(folder,
+                         resolved=run_config.resolved_values('capture', globals()))
     return session_path, mask
 
 
@@ -974,7 +1036,7 @@ def capture(serial_number=None, output_root=None,
                   'gaps.')
 
         root = output_root if output_root is not None else (
-            prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else OUTPUT_ROOT)
+            prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else output_root())
         stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
         folder = Path(root) / stamp
         session_path, mask = save_session(
@@ -1127,7 +1189,7 @@ def capture_synchronized(serial_number=None, output_root=None,
               f'{make} calibration')
 
     root = output_root if output_root is not None else (
-        prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else OUTPUT_ROOT)
+        prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else output_root())
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
     folder = Path(root) / stamp
     session_path, mask = save_session(
@@ -1413,8 +1475,16 @@ def _self_test():
         assert ((binned[offset_key] + binned[size_key]) * BINNING
                 >= typed[offset_key] + typed[size_key]), binned
         assert binned[size_key] % 4 == 0, binned   # survives the snap down
-    assert binned == {'offset_x': 380, 'width': 368,
-                      'offset_y': 604, 'height': 368}, binned
+    # Spelled out from BINNING rather than written as a literal: the binning
+    # is a config setting now, and a literal that only held at 2 would fail
+    # this test for a run that legitimately uses another one.
+    expected = {}
+    for offset_key, size_key in (('offset_x', 'width'), ('offset_y', 'height')):
+        start = typed[offset_key] // BINNING
+        end = -(-(typed[offset_key] + typed[size_key]) // BINNING)
+        expected[offset_key] = start
+        expected[size_key] = -(-(end - start) // 4) * 4
+    assert binned == expected, (binned, expected)
     for bad in ({'offset_x': 0, 'width': 8},                  # half a box
                 {'offset_x': 0, 'offset_y': 0, 'width': 0, 'height': 8},
                 {'offset_x': -4, 'offset_y': 0, 'width': 8, 'height': 8}):
@@ -1496,6 +1566,10 @@ def _self_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--config', default=None,
+                        help='config file to run from, instead of '
+                             'run_config_local.py; read at import, so it is '
+                             'already in force by the time this is parsed')
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
     parser.add_argument('--locate', action='store_true',
@@ -1527,8 +1601,10 @@ def main():
                              'recording it by hand in PicoScope 7 (which must '
                              'then be closed - only one program can own it)')
     args = parser.parse_args()
+    print(run_config.describe('capture', CONFIG_CHANGES))
 
-    # No arguments: do what the block at the top of the file says.
+    # No arguments: do what the config says, which is the block at the top of
+    # this file as the config file overrode it.
     action = ACTION
     if args.self_test:
         action = 'self-test'
@@ -1539,7 +1615,9 @@ def main():
     locate = LOCATE_FIRST and not args.no_locate
     strict_levels = STRICT_LEVELS or args.strict_levels
     if args.frames:
-        globals()['N_FRAMES'] = args.frames
+        globals()['N_FRAMES'] = args.frames    # the command line wins over
+                                               # the config, which wins over
+                                               # the default declared above
 
     if action == 'self-test':
         _self_test()

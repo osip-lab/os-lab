@@ -14,3 +14,4 @@ utilities/.ipynb_checkpoints/
 /settings/local/
 kalishlot/device_state.json
 kalishlot/log_state.json
+pico_scope/run_config_local.py

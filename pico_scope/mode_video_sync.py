@@ -48,9 +48,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# --- what happens when this file is run (edit these, then press Run) -------
+# --- the run parameters (defaults; the config file overrides them) ---------
+# The values a run uses come from pico_scope/run_config_local.py, which is
+# git-ignored - see run_config.py. These declarations stay because they carry
+# the reasoning, and because the self-test must run with no config file.
 # Nothing here needs the command line; the arguments exist for scripting and
-# override these when given.
+# override both when given.
 ACTION = 'refine'       # 'refine' | 'fit' | 'self-test'
 SESSION = ''            # capture folder; '' means the most recent one
 SCOPE_FILE = ''         # the .psdata of a Phase 1 capture; '' for Phase 2
@@ -58,6 +61,9 @@ SEARCH_WINDOW_S = 0.25  # half-width of the offset search, when refining
 
 TIME_COLUMN = 'Time'
 SIGNAL_COLUMN = 'Channel D'      # cavity transmission, as in mode_map_2d.py
+
+from pico_scope import run_config  # noqa: E402
+CONFIG_CHANGES = run_config.apply('sync', globals())
 
 # Where captures are written, shared with mode_video_capture.py so that an
 # empty SESSION can find the newest one.
@@ -957,11 +963,14 @@ def fit_session(session_path, scope_path, signal_column=SIGNAL_COLUMN,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--config', default=None,
+                        help='config file to run from, instead of '
+                             'run_config_local.py')
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
     parser.add_argument('--session', default=SESSION or None,
                         help='capture folder or *_session.json; defaults to '
-                             'SESSION in this file, or the newest capture')
+                             'SESSION in the config, or the newest capture')
     parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata or .csv recorded at the same time')
     parser.add_argument('--signal-column', default=SIGNAL_COLUMN,
@@ -978,8 +987,9 @@ def main():
                              '(1-based); by default every buffer is fitted and '
                              'the one whose margin is best is the one used')
     args = parser.parse_args()
+    print(run_config.describe('sync', CONFIG_CHANGES))
 
-    # No arguments: do what the block at the top of the file says.
+    # No arguments: do what the config says.
     action = ACTION
     if args.self_test:
         action = 'self-test'

@@ -48,11 +48,29 @@ import argparse
 import sys
 from pathlib import Path
 
-# --- what happens when this file is run (edit these, then press Run) -------
-# Nothing here needs the command line; the arguments exist for scripting.
+# --- the run parameters (defaults; the config file overrides them) ---------
+# The values a run uses come from pico_scope/run_config_local.py, which is
+# git-ignored - see run_config.py. Nothing here needs the command line; the
+# arguments exist for scripting and override both when given.
 ACTION = 'show'      # 'show' | 'self-test'
 SESSION = ''         # capture folder; '' means the most recent one
 SCOPE_FILE = ''      # the .psdata of a Phase 1 capture; '' for Phase 2
+SHADE_ALPHA = 0.06   # faint: at 120 frames these are stripes until you zoom
+# Matches kalishlot's CameraFitMixin.FIT_REBINNING, so the browser and this
+# viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
+# frame and agrees with 2x to better than 1% on the widths.
+FIT_REBINNING = 4
+# fit_gaussian bounds amplitude and offset at 4095, the 12-bit full scale it
+# was written for. A binned frame can exceed that - 2x2 summing 10-bit XIMEA
+# pixels reaches 4092, but 4x4 would reach 16368 - so a frame that scales
+# past it is divided down before fitting and the amplitude scaled back.
+FIT_MAX_LEVEL = 4095
+
+# Applied before matplotlib, because the backend below is chosen from ACTION
+# and a config that asks for 'self-test' has to reach that line first.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pico_scope import run_config  # noqa: E402
+CONFIG_CHANGES = run_config.apply('show', globals())
 
 import matplotlib
 matplotlib.use('Agg' if (ACTION == 'self-test' or '--self-test' in sys.argv)
@@ -63,7 +81,6 @@ import numpy as np  # noqa: E402
 from matplotlib.patches import Ellipse  # noqa: E402
 from matplotlib.widgets import CheckButtons  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E402
                                         frame_brightness, frame_start_times,
                                         frame_windows, latest_session,
@@ -77,20 +94,9 @@ from pico_scope.mode_video_sync import (fit_session, frame_at_time,  # noqa: E40
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
 from gaussian_fit import FitLoop  # noqa: E402
 
-SHADE_ALPHA = 0.06      # faint: at 120 frames these are stripes until you zoom
 HELP_TEXT = ('move: follow the cursor   click: pin/unpin   '
              'left/right: step (shift = 10)   f: fit a Gaussian')
-
-# Matches kalishlot's CameraFitMixin.FIT_REBINNING, so the browser and this
-# viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
-# frame and agrees with 2x to better than 1% on the widths.
-FIT_REBINNING = 4
 FIT_POLL_MS = 80        # how often the GUI thread looks for a finished fit
-# fit_gaussian bounds amplitude and offset at 4095, the 12-bit full scale it
-# was written for. A binned frame can exceed that - 2x2 summing 10-bit XIMEA
-# pixels reaches 4092, but 4x4 would reach 16368 - so a frame that scales
-# past it is divided down before fitting and the amplitude scaled back.
-FIT_MAX_LEVEL = 4095
 
 
 class ModeSpectrumViewer:
@@ -664,6 +670,9 @@ def _self_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--config', default=None,
+                        help='config file to run from, instead of '
+                             'run_config_local.py')
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
     parser.add_argument('--session', default=SESSION or None,
@@ -673,6 +682,7 @@ def main():
                         help='the .psdata recorded alongside a Phase 1 capture; '
                              'omit for a Phase 2 capture, which carries its own')
     args = parser.parse_args()
+    print(run_config.describe('show', CONFIG_CHANGES))
 
     if args.self_test or ACTION == 'self-test':
         _self_test()

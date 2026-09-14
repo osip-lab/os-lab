@@ -30,12 +30,18 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from utilities.utils import wait_for_path_from_clipboard
 
-# --- what happens when this file is run (edit these, then press Run) -------
-# Nothing here needs the command line; the arguments exist for scripting.
+# --- the run parameters (defaults; the config file overrides them) ---------
+# The values a run uses come from pico_scope/run_config_local.py, which is
+# git-ignored - see run_config.py. Nothing here needs the command line; the
+# arguments exist for scripting and override both when given.
 ACTION = 'mark'        # 'mark' | 'self-test'
-SESSION = wait_for_path_from_clipboard(filetype='folder')
+# 'clipboard' asks for the folder when the script runs, which is how this is
+# normally used. It used to call wait_for_path_from_clipboard() right here, at
+# module scope - so merely importing this file, or running its self-test,
+# blocked on a clipboard prompt that nobody had asked for. It is a sentinel now
+# and the prompt happens in main(), where it belongs.
+SESSION = 'clipboard'  # 'clipboard' | '' = the newest capture | a path
 SCOPE_FILE = ''        # the .psdata of a Phase 1 capture; '' for Phase 2
 
 # --- the cavity being measured (edit this when the setup changes) ----------
@@ -52,6 +58,11 @@ MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 SHORT_ARM_LENGTH = 0.7e-2   # [m] near mirror -> lens (the physical one, not the simulation's scan)
 
+# Applied before the backend choice below, which reads ACTION.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pico_scope import run_config  # noqa: E402
+CONFIG_CHANGES = run_config.apply('mark', globals())
+
 # a literal '--self-test' is ensured below before mode_video_sync_show is
 # imported, so its own backend check (which only looks at sys.argv, not this
 # file's ACTION) picks the same backend and does not fight this line.
@@ -64,7 +75,6 @@ matplotlib.use('Agg' if _SELF_TEST else 'Qt5Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pico_scope.mode_analysis import (cavity_fsr_mhz, get_na_interpolators,  # noqa: E402
                                       pair_positions_results, pair_summary)
 from pico_scope.mode_marking import mark_pairs, positions_and_widths  # noqa: E402
@@ -247,17 +257,35 @@ def _self_test():
     print('self-test passed')
 
 
+def resolve_session():
+    """The capture to mark, from SESSION.
+
+    'clipboard' asks for it, which is the usual way in; '' takes the newest
+    capture; anything else is the path itself. The prompt happens here rather
+    than at module scope so that importing this file, or running --self-test,
+    does not stop and wait for a path nobody asked for.
+    """
+    if SESSION == 'clipboard':
+        return wait_for_path_from_clipboard(filetype='folder')
+    return SESSION or latest_session()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--config', default=None,
+                        help='config file to run from, instead of '
+                             'run_config_local.py')
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
-    parser.add_argument('--session', default=SESSION or None,
-                        help='capture folder or *_session.json; defaults to '
-                             'SESSION in this file, or the newest capture')
+    parser.add_argument('--session', default=None,
+                        help="capture folder or *_session.json; defaults to "
+                             "SESSION in the config - 'clipboard' to be asked "
+                             "for it, '' for the newest capture")
     parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata recorded alongside a Phase 1 capture; '
                              'omit for a Phase 2 capture, which carries its own')
     args = parser.parse_args()
+    print(run_config.describe('mark', CONFIG_CHANGES))
 
     if args.self_test or ACTION == 'self-test':
         _self_test()
@@ -265,7 +293,7 @@ def main():
     if ACTION != 'mark':
         raise SystemExit(f'ACTION must be mark or self-test, not {ACTION!r}')
 
-    session = args.session or latest_session()
+    session = args.session or resolve_session()
     print(f'session: {session}')
     (trace, frames, windows, brightness, session_dict, source,
      mark_target_path) = load_synced_trace(session, args.scope)
