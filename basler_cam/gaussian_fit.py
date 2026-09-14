@@ -128,12 +128,21 @@ class FitLoop:
     called from the fitting thread. Frames whose signal is below `min_signal`
     counts above background are not fitted; on_result gets success=False and
     pars={'reason': 'low signal'}.
+
+    `fitter` is the routine that does the fitting, called as
+    fitter(frame, rebinning=..., manual_guess=...) -> (success, parameters).
+    It defaults to this module's fit_gaussian, which reports the beam along
+    the image's axes; the offline analysis scripts pass
+    utilities.utils.fit_gaussian_beam instead, which reports it along the
+    beam's own. Only the threading is shared - what a parameter dict holds is
+    the fitter's business, and the caller's to read.
     """
 
-    def __init__(self, on_result, rebinning=4, min_signal=50):
+    def __init__(self, on_result, rebinning=4, min_signal=50, fitter=None):
         self.on_result = on_result
         self.rebinning = rebinning
         self.min_signal = min_signal
+        self.fitter = fit_gaussian if fitter is None else fitter
         # optional initial guess {'x_0', 'y_0', 'sigma'} in full-resolution
         # pixels (e.g. from a user-drawn circle); None = automatic guess
         self.guess = None
@@ -176,8 +185,8 @@ class FitLoop:
                 if peak - background < self.min_signal:
                     self.on_result(False, {'reason': 'low signal'})
                     continue
-                success, parameters = fit_gaussian(frame, rebinning=self.rebinning,
-                                                   manual_guess=self.guess)
+                success, parameters = self.fitter(frame, rebinning=self.rebinning,
+                                                  manual_guess=self.guess)
                 self.on_result(success, parameters)
             except Exception as error:
                 self.on_result(False, {'reason': str(error)})

@@ -17,8 +17,11 @@ Pipeline
    keep: everything outside it is replaced by its CROP_FILL_PERCENTILE-th
    percentile, which takes a second spot or a bright edge out of the fit.
    SKIP_MANUAL_GUESS_KEY leaves the guess to the fit. Then fit a 2D Gaussian to
-   that frame: spot sizes w_x, w_y in pixels -> metres via
-   PIXEL_SIZE_BASLER_CAMERA.
+   that frame (utilities.utils.fit_gaussian_beam): spot sizes w_minor, w_major
+   in pixels -> metres via PIXEL_SIZE_BASLER_CAMERA. They are named after the
+   beam's own principal axes, not the image's - a tilted mode has no width
+   "along x", and which of the two is the wider one is what the measurement
+   is about.
 5. Map each spot size to the short arm's NA, by whichever route NA_FROM_SPOT_SIZE
    selects:
    - 'simulation': the cavity-design simulation
@@ -31,7 +34,14 @@ Pipeline
    - 'ratio': the fixed linear ratio NA = NA_TO_SPOT_SIZE_RATIO * w, which was
      calibrated once against a measured spectrum. No simulation is run.
    - None: no NA at all, only the spot sizes.
-6. Print the spot sizes and NAs, and append a one-line record to
+6. With SHOW_SHORT_ARM_LENGTH, run the cavity's lens-position scan
+   (pico_scope/mode_analysis.py, the one the mode-spacing scripts use) and read
+   off where the lens has to be for the NA just measured. It answers with TWO
+   positions per NA: the mode spacing falls monotonically as the lens moves out,
+   but the NA falls to a minimum near collimation and climbs again past it, so an
+   NA on its own names a lens position on each branch. A mode-spacing measurement
+   - or knowing which side of collimation the lens came from - tells them apart.
+7. Print the spot sizes, NAs and lens positions, and append a one-line record to
    numerical-results.txt in the folder of the video.
 """
 
@@ -45,12 +55,15 @@ from matplotlib.backend_bases import MouseButton
 from matplotlib.patches import Circle, Ellipse
 from matplotlib.widgets import SpanSelector
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
-from basler_cam.mode_position_capture_gui import fit_gaussian
 from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
+                             fit_gaussian_beam, gaussian_beam_image,
                              wait_for_path_from_clipboard)
 # The spot size -> NA mapping comes from the cavity-design project; this module
 # forwards the geometry below to it and caches the scan.
 from utilities.media_tools.spot_size_analysis import get_spot_size_to_na, na_from_spot_size
+# ... and the lens-position scan that says where the lens has to be for the NA
+# that comes out. The same one the PicoScope mode-spacing scripts run.
+from pico_scope.mode_analysis import get_na_interpolators
 
 matplotlib.use('Qt5Agg')  # Or 'TkAgg' if Qt5Agg doesn't work
 PIXEL_SIZE_BASLER_CAMERA = 5.5e-6  # 5.5 microns
@@ -71,8 +84,8 @@ CROP_TO_CIRCLE_KEY = 'm'
 # 'ratio'      - the fixed linear ratio just underneath, no simulation;
 # None         - report the spot sizes only.
 NA_FROM_SPOT_SIZE = 'simulation'
-# Used by the 'ratio' route: NA_x = NA_TO_SPOT_SIZE_RATIO * w_x with w in
-# METRES, so the ratio is in 1/m. This one was extracted from the
+# Used by the 'ratio' route: NA_minor = NA_TO_SPOT_SIZE_RATIO * w_minor with w
+# in METRES, so the ratio is in 1/m. This one was extracted from the
 # video/spectrum of .\2026-07-13\25MHz\1 35 - it holds for that geometry only,
 # which is why the simulation route exists.
 NA_TO_SPOT_SIZE_RATIO = 0.0545 * 1000
@@ -108,6 +121,23 @@ N_points = 200            # long-arm NAs simulated across the scanned range
 # sizes the mapping is defined over. None keeps the simulation's own range (its
 # NA floor .. 0.01); widen it if a measured spot size comes back out of range.
 NA_LONG_ARM_RANGE = None
+
+# --- where the lens has to be for the NA that comes out --------------------
+# A second, separate simulation: the lens-position scan of the whole cavity
+# (pico_scope/mode_analysis.py, the one the mode-spacing scripts run), read from
+# the NA rather than from a mode spacing. It costs a scan per run, so it can be
+# turned off. Note that it answers with TWO lens positions - see the report.
+SHOW_SHORT_ARM_LENGTH = True
+# The cavity itself, in optical order, end mirror to end mirror - not the path
+# to the camera that OUTGOING_ELEMENTS describes. Catalog names again:
+#   python -c "from pico_scope.mode_analysis import list_cavity_elements; print(*list_cavity_elements(), sep='\n')"
+CAVITY_ELEMENTS = [
+    'LASER_OPTIK_MIRROR',
+    'EDMUND_4MM_ASPHERIC_16701',
+    'COASTLINE_20CM_MIRROR',
+]
+SHORT_ARM_LENGTHS = (0.5e-4, 2e-4)  # [m] lens-scan span around the collimation point
+LENS_SCAN_N_POINTS = 300            # lens positions simulated across it
 
 
 def load_video_as_numpy(video_path):
@@ -402,7 +432,13 @@ if MANUAL_INITIAL_GUESS:
     selected_frame, manual_guess, crops = mark_gaussian_on_frame(selected_frame)
 else:
     manual_guess = None
-gauss, pars = fit_gaussian(selected_frame, rebinning=2, manual_guess=manual_guess)
+fit_ok, pars = fit_gaussian_beam(selected_frame, rebinning=2, manual_guess=manual_guess)
+if not fit_ok:
+    print("The 2D Gaussian fit did not converge - the numbers below are the "
+          "initial guess, not a fit. Re-drag the mode's diameter, or crop away "
+          "whatever else is in the frame.")
+# the fitted model on the frame's own grid, for the cross-sections below
+gauss = gaussian_beam_image(pars, selected_frame.shape)
 
 sy, sx = selected_frame.shape
 x0, y0 = int(pars['x_0']), int(pars['y_0'])
@@ -421,10 +457,10 @@ ax.imshow(selected_frame, cmap='gray', origin='upper')
 # used to be drawn at other widths hid the spot they were describing. Ellipse
 # takes full axes, so each is twice the corresponding radius.
 ax.add_patch(Ellipse((pars['x_0'], pars['y_0']),
-                     width=2 * pars['w_x'], height=2 * pars['w_y'],
-                     # the fit's angle rotates the coordinates, so the
-                     # ellipse itself is rotated the other way
-                     angle=-np.degrees(pars['angle']),
+                     width=2 * pars['w_major'], height=2 * pars['w_minor'],
+                     # fit_gaussian_beam reports the major axis' direction in
+                     # the convention Ellipse takes, so there is no sign to flip
+                     angle=pars['major_axis_deg'],
                      edgecolor='r', facecolor='none', linewidth=1.5))
 
 hax.plot(np.arange(sx), selected_frame[y0, :])
@@ -432,12 +468,13 @@ hax.plot(np.arange(sx), gauss[y0, :])
 vax.plot(selected_frame[:, x0], np.arange(sy))
 vax.plot(gauss[:, x0], np.arange(sy))
 
-w_x_m = pars['w_x'] * PIXEL_SIZE_BASLER_CAMERA
-w_y_m = pars['w_y'] * PIXEL_SIZE_BASLER_CAMERA
-w_x_mm = w_x_m * 1e3
-w_y_mm = w_y_m * 1e3
+w_minor_m = pars['w_minor'] * PIXEL_SIZE_BASLER_CAMERA
+w_major_m = pars['w_major'] * PIXEL_SIZE_BASLER_CAMERA
+w_minor_mm = w_minor_m * 1e3
+w_major_mm = w_major_m * 1e3
 
-fig.suptitle(f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm", fontsize=14)
+fig.suptitle(f"w_minor = {w_minor_mm:.3f} mm,  w_major = {w_major_mm:.3f} mm  "
+             f"(major axis {pars['major_axis_deg']:+.1f}°)", fontsize=14)
 fig.tight_layout()
 fig.subplots_adjust(top=0.93)
 # Without a running event loop, the window would stay blank until the final
@@ -446,11 +483,13 @@ fig.subplots_adjust(top=0.93)
 plt.pause(0.1)
 
 # %% Map the spot sizes to the NA in the short arm --------------------------
-# One NA per axis - both routes are rotationally symmetric, so each spot size is
-# mapped on its own. An NA left None is one the chosen route could not give (see
-# the printed reason); the spot sizes are reported either way.
-NAs = {'x': None, 'y': None}
-spot_sizes_m = {'x': w_x_m, 'y': w_y_m}
+# One NA per principal axis - both routes are rotationally symmetric, so each
+# spot size is mapped on its own. The axes are the beam's own (minor and major),
+# not the image's: a tilted mode's widths are not its extents along x and y. An
+# NA left None is one the chosen route could not give (see the printed reason);
+# the spot sizes are reported either way.
+NAs = {'minor': None, 'major': None}
+spot_sizes_m = {'minor': w_minor_m, 'major': w_major_m}
 
 if NA_FROM_SPOT_SIZE == 'simulation':
     # The spot size <-> NA relation comes from the cavity-design project (path
@@ -466,8 +505,8 @@ if NA_FROM_SPOT_SIZE == 'simulation':
         intracavity_elements=INTRACAVITY_ELEMENTS,
         N_points=N_points,
         NA_long_arm_range=NA_LONG_ARM_RANGE,
-        measured_spot_sizes_m=(w_x_m, w_y_m),
-        measured_labels=('w_x', 'w_y'),
+        measured_spot_sizes_m=(w_minor_m, w_major_m),
+        measured_labels=('w_minor', 'w_major'),
         plot=True,  # always: the plot is what carries the measurement markers
     )
     if na_error is not None:
@@ -486,6 +525,43 @@ elif NA_FROM_SPOT_SIZE is not None:
     raise ValueError(f"NA_FROM_SPOT_SIZE is {NA_FROM_SPOT_SIZE!r}; expected "
                      f"'simulation', 'ratio' or None.")
 
+# %% Where the lens has to be for that NA ----------------------------------
+# The NA on its own does not say where the lens is. Along the lens scan the mode
+# spacing falls monotonically - one spacing, one lens position, which is what the
+# PicoScope scripts report - but the NA falls to a minimum near collimation and
+# climbs again past it, so it names one position on each side. Both are reported;
+# which of them the cavity is on takes a mode-spacing measurement, or simply
+# knowing which way the lens was walked in.
+short_arms_m = {axis: None for axis in NAs}
+na_minimum = None
+if SHOW_SHORT_ARM_LENGTH and any(na is not None for na in NAs.values()):
+    print("Running the lens-position scan for the small arm length...")
+    na_interp, _, lens_scan_error = get_na_interpolators(
+        elements=CAVITY_ELEMENTS, long_arm=long_arm_length,
+        mid_arm=MID_ARM_LENGTH, short_arm_lengths=SHORT_ARM_LENGTHS,
+        N_points=LENS_SCAN_N_POINTS, plot_system=False)
+    if na_interp is None:
+        print(f"Small arm length unavailable: {lens_scan_error}")
+    else:
+        na_minimum = na_interp.na_minimum
+        for axis, na in NAs.items():
+            if na is None:
+                continue
+            try:
+                short_arms_m[axis] = na_interp.short_arms_for_na(na)
+            except ValueError as error:
+                # an NA the scan never reaches is a fact about the measurement,
+                # not a reason to lose the spot sizes that are already in hand
+                print(f"Small arm length for NA_{axis} unavailable: {error}")
+
+
+def short_arm_text(arms_m):
+    """The lens positions for one NA, in mm - or why there are none."""
+    if not arms_m:
+        return 'unavailable'
+    return ' or '.join(f"{arm * 1e3:.4f} mm" for arm in arms_m)
+
+
 # Which route produced the NAs, for the report and the record: the two disagree
 # whenever the ratio's calibration geometry is not the one being measured, so a
 # logged NA is only readable next to the route it came from.
@@ -503,23 +579,38 @@ print('=' * width)
 print(f"  {'Frame time':<28}{selected_frame_time:>18.2f} s")
 print(f"  {'Long arm length':<28}{long_arm_length * 1e2:>18.4g} cm")
 print('-' * width)
-print(f"  {'Spot size w_x':<28}{w_x_mm:>18.4f} mm")
-print(f"  {'Spot size w_y':<28}{w_y_mm:>18.4f} mm")
+print(f"  {'Spot size w_minor':<28}{w_minor_mm:>18.4f} mm")
+print(f"  {'Spot size w_major':<28}{w_major_mm:>18.4f} mm")
+print(f"  {'Major axis direction':<28}{pars['major_axis_deg']:>18.2f} deg")
 if any(na is not None for na in NAs.values()):
     print('-' * width)
     for axis, na in NAs.items():
         if na is not None:
             print(f"  {'Short arm NA_' + axis:<28}{na:>18.4f}")
     print(f"  {'  (NA from)':<28}{na_route_text:>18}")
+if any(arms for arms in short_arms_m.values()):
+    print('-' * width)
+    for axis, arms in short_arms_m.items():
+        if arms:
+            print(f"  {'Small arm length, NA_' + axis:<28}{short_arm_text(arms):>18}")
+    if na_minimum is not None and any(len(arms or ()) > 1 for arms in short_arms_m.values()):
+        # the reason there are two of them, said once rather than per axis
+        print(f"    (two of them: the NA bottoms out at {na_minimum[1]:.4f}, "
+              f"at {na_minimum[0] * 1e3:.4f} mm)")
 print('=' * width)
 print()
 
 na_text = ', '.join(f"NA_{axis} = " + (f"{na:.4f}" if na is not None else "N/A")
                     for axis, na in NAs.items())
 results_text = (f"frame_time = {selected_frame_time:.2f} s, "
-                f"(w_x, w_y) = ({w_x_mm:.4f} mm, {w_y_mm:.4f} mm), "
+                f"(w_minor, w_major) = ({w_minor_mm:.4f} mm, {w_major_mm:.4f} mm), "
+                f"major_axis = {pars['major_axis_deg']:.2f} deg, "
                 f"long_arm_length = {long_arm_length:.4g} m, {na_text}, "
                 f"NA_from = {na_route_text}")
+if any(arms for arms in short_arms_m.values()):
+    results_text += ', ' + ', '.join(
+        f"short_arm_length_NA_{axis} = {short_arm_text(arms)}"
+        for axis, arms in short_arms_m.items() if arms)
 if crops:
     # A crop changes the fit, so the record has to say the frame was not the raw one.
     results_text += ', kept_circles = ' + '; '.join(
@@ -527,9 +618,17 @@ if crops:
 append_numerical_result_line(video_path, results_text)
 
 na_title = ',  '.join(f"NA_{axis} = {na:.4f}" for axis, na in NAs.items() if na is not None)
+# Each NA gives two lens positions, so the title names the axis each pair belongs
+# to - four numbers on one line would otherwise say nothing about which is which.
+arm_title = ',  '.join(f"small arm (NA_{axis}) = {short_arm_text(arms)}"
+                       for axis, arms in short_arms_m.items() if arms)
 if na_title:
-    fig.suptitle(f"w_x = {w_x_mm:.3f} mm,  w_y = {w_y_mm:.3f} mm\n{na_title}", fontsize=14)
-    fig.subplots_adjust(top=0.90)
+    title = (f"w_minor = {w_minor_mm:.3f} mm,  w_major = {w_major_mm:.3f} mm  "
+             f"(major axis {pars['major_axis_deg']:+.1f}°)\n{na_title}")
+    if arm_title:
+        title += f"\n{arm_title}"
+    fig.suptitle(title, fontsize=14)
+    fig.subplots_adjust(top=0.90 if not arm_title else 0.87)
     fig.canvas.draw_idle()
 
 # Keep all windows open (and responsive) after the report has been printed.

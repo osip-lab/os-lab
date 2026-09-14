@@ -74,11 +74,6 @@ SHADE_ALPHA = 0.06   # faint: at 120 frames these are stripes until you zoom
 # viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
 # frame and agrees with 2x to better than 1% on the widths.
 FIT_REBINNING = 4
-# fit_gaussian bounds amplitude and offset at 4095, the 12-bit full scale it
-# was written for. A binned frame can exceed that - 2x2 summing 10-bit XIMEA
-# pixels reaches 4092, but 4x4 would reach 16368 - so a frame that scales
-# past it is divided down before fitting and the amplitude scaled back.
-FIT_MAX_LEVEL = 4095
 
 # Applied before matplotlib, because the backend below is chosen from ACTION
 # and a config that asks for 'self-test' has to reach that line first.
@@ -102,12 +97,14 @@ from pico_scope.mode_video_sync import (ScopeTrace, fit_session,  # noqa: E402
                                         load_session_trace, nearest_frame,
                                         release_frames)
 
-# The same fitter kalishlot's camera boxes use, straight from the device
-# layer - one routine, so a mode measured here and one measured in the
-# browser cannot disagree. It lives under basler_cam/ for historical reasons
-# but is camera-agnostic; the XIMEA adapter uses it too.
+# Only the threading comes from the device layer; the fitting itself is
+# utilities.utils.fit_gaussian_beam, which reports the beam along its own
+# principal axes (minor and major) instead of along the image's. A tilted mode
+# has no width "along x", and the older routine's w_x / w_y named the image's
+# axes for widths that were measured along the beam's.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
 from gaussian_fit import FitLoop  # noqa: E402
+from utilities.utils import fit_gaussian_beam  # noqa: E402
 
 HELP_TEXT = ('move: follow the cursor   click: pin/unpin   '
              'left/right: step (shift = 10)   f: fit a Gaussian')
@@ -145,7 +142,6 @@ class ModeSpectrumViewer:
         self._fit_loop = None
         self._fit_result = None     # written by the fit thread, read by the timer
         self._fit_seen = None
-        self._fit_scale = 1.0
         self._fit_timer = None
 
         self._build_figure(title)
@@ -288,7 +284,8 @@ class ModeSpectrumViewer:
         if self.fitting:
             if self._fit_loop is None:
                 self._fit_loop = FitLoop(on_result=self._on_fit_result,
-                                         rebinning=FIT_REBINNING)
+                                         rebinning=FIT_REBINNING,
+                                         fitter=fit_gaussian_beam)
             self._fit_loop.start()
             self._start_fit_timer()
             self.submit_fit()
@@ -306,17 +303,14 @@ class ModeSpectrumViewer:
         """Hand the frame on screen to the fit thread."""
         if not self.fitting or self._fit_loop is None:
             return
-        frame = np.asarray(self.frames[self.index], dtype=float)
-        # fit_gaussian bounds amplitude and offset at 4095; scale a deeper
-        # frame down rather than letting the bound silently clip the fit.
-        peak = float(frame.max())
-        self._fit_scale = FIT_MAX_LEVEL / peak if peak > FIT_MAX_LEVEL else 1.0
-        self._fit_loop.submit(frame * self._fit_scale if self._fit_scale != 1.0
-                              else frame)
+        # Straight to the fitter, at the frame's own level:
+        # fit_gaussian_beam takes its amplitude bound from the data, so a deep
+        # binned frame needs no scaling down to fit inside a 12-bit one.
+        self._fit_loop.submit(np.asarray(self.frames[self.index], dtype=float))
 
     def _on_fit_result(self, success, parameters):
         """Called on the fit thread: only store, never touch an artist."""
-        self._fit_result = (success, parameters, self.index, self._fit_scale)
+        self._fit_result = (success, parameters, self.index)
 
     def _start_fit_timer(self):
         """Poll for finished fits on the GUI thread.
@@ -337,7 +331,7 @@ class ModeSpectrumViewer:
         self._fit_seen = result
         self.draw_fit(*result)
 
-    def draw_fit(self, success, parameters, index, scale=1.0):
+    def draw_fit(self, success, parameters, index):
         """Put a finished fit on the image. Safe to call directly in tests."""
         if not success:
             self.fit_ellipse.set_visible(False)
@@ -347,12 +341,15 @@ class ModeSpectrumViewer:
             self.fig.canvas.draw_idle()
             return
 
-        w_x, w_y = parameters['w_x'], parameters['w_y']
+        w_minor, w_major = parameters['w_minor'], parameters['w_major']
         self.fit_ellipse.set_center((parameters['x_0'], parameters['y_0']))
-        # w is the 1/e^2 radius, so the ellipse's full width is twice it.
-        self.fit_ellipse.set_width(2 * w_x)
-        self.fit_ellipse.set_height(2 * w_y)
-        self.fit_ellipse.set_angle(np.degrees(parameters['angle']))
+        # w is the 1/e^2 radius, so the ellipse's full width is twice it. The
+        # ellipse's width axis is its major one, and fit_gaussian_beam reports
+        # that axis' direction in the convention Ellipse takes - so the angle
+        # goes in as it comes out, with no sign to flip.
+        self.fit_ellipse.set_width(2 * w_major)
+        self.fit_ellipse.set_height(2 * w_minor)
+        self.fit_ellipse.set_angle(parameters['major_axis_deg'])
         self.fit_ellipse.set_visible(True)
         self.fit_centre.set_data([parameters['x_0']], [parameters['y_0']])
 
@@ -360,12 +357,13 @@ class ModeSpectrumViewer:
                  f'x0 {parameters["x_0"]:7.1f} px',
                  f'y0 {parameters["y_0"]:7.1f} px']
         if self.pixel_size_mm:
-            lines += [f'wx {w_x * self.pixel_size_mm:7.3f} mm',
-                      f'wy {w_y * self.pixel_size_mm:7.3f} mm']
+            lines += [f'w_minor {w_minor * self.pixel_size_mm:7.3f} mm',
+                      f'w_major {w_major * self.pixel_size_mm:7.3f} mm']
         else:
-            lines += [f'wx {w_x:7.1f} px', f'wy {w_y:7.1f} px',
+            lines += [f'w_minor {w_minor:7.1f} px', f'w_major {w_major:7.1f} px',
                       'pixel size unknown']
-        lines.append(f'amp {parameters["amplitude"] / scale:7.0f}')
+        lines.append(f'major axis {parameters["major_axis_deg"]:+6.1f} deg')
+        lines.append(f'amp {parameters["amplitude"]:7.0f}')
         if self.camera_label:
             lines.append(self.camera_label)
         self.fit_text.set_text('\n'.join(lines))
@@ -706,13 +704,13 @@ def _self_test():
     fit_viewer = ModeSpectrumViewer(trace, frames, windows, brightness,
                                     'fit', pixel_size_mm=0.011,
                                     camera_label='ximea 11.0 um/px')
-    from gaussian_fit import fit_gaussian
-    ok, pars = fit_gaussian(np.asarray(frames[int(np.argmax(brightness))],
-                                       dtype=float), rebinning=1)
+    ok, pars = fit_gaussian_beam(np.asarray(frames[int(np.argmax(brightness))],
+                                            dtype=float), rebinning=1)
     assert ok, 'the synthetic blob must fit'
     # the blob is exp(-(r/3)^2), i.e. sigma = 3/sqrt(2), and w = 2 sigma
     expected_w = 2 * sigma_px / np.sqrt(2)
-    assert np.isclose(pars['w_x'], expected_w, rtol=0.1), (pars['w_x'], expected_w)
+    for key in ('w_minor', 'w_major'):
+        assert np.isclose(pars[key], expected_w, rtol=0.1), (key, pars[key], expected_w)
     assert np.isclose(pars['x_0'], 16, atol=0.5), pars['x_0']
     assert np.isclose(pars['y_0'], 12, atol=0.5), pars['y_0']
 
@@ -720,14 +718,18 @@ def _self_test():
     assert fit_viewer.fit_ellipse.get_visible()
     centre = fit_viewer.fit_ellipse.get_center()
     assert np.isclose(centre[0], pars['x_0']) and np.isclose(centre[1], pars['y_0'])
-    # w is a radius, so the drawn contour is twice it across
-    assert np.isclose(fit_viewer.fit_ellipse.get_width(), 2 * pars['w_x'])
-    assert np.isclose(fit_viewer.fit_ellipse.get_height(), 2 * pars['w_y'])
+    # w is a radius, so the drawn contour is twice it across - and the
+    # ellipse's width axis is the beam's MAJOR one, turned by the angle the fit
+    # reports, with no sign flipped on the way
+    assert np.isclose(fit_viewer.fit_ellipse.get_width(), 2 * pars['w_major'])
+    assert np.isclose(fit_viewer.fit_ellipse.get_height(), 2 * pars['w_minor'])
+    assert np.isclose(fit_viewer.fit_ellipse.get_angle(), pars['major_axis_deg'])
     readout = fit_viewer.fit_text.get_text()
-    assert f'{pars["w_x"] * 0.011:7.3f} mm' in readout, readout
+    assert f'w_major {pars["w_major"] * 0.011:7.3f} mm' in readout, readout
+    assert 'major axis' in readout, readout
     assert 'ximea 11.0 um/px' in readout
-    print('  the fitted contour is drawn at 1/e^2 and the widths are '
-          'reported in millimetres, not pixels')
+    print("  the fitted contour is drawn at 1/e^2, along the beam's own axes, "
+          'and the widths are reported in millimetres, not pixels')
 
     # a failed fit says why instead of leaving a stale ellipse on screen
     fit_viewer.draw_fit(False, {'reason': 'low signal'}, 8)

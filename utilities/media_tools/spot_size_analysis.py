@@ -35,10 +35,11 @@ def get_spot_size_to_na(long_arm_length, mid_arm_length=None, lens_distance=None
     """Return (spot_size_to_NA, error).
 
     spot_size_to_NA maps a camera spot size [m] (the 1/e^2 intensity radius w, which is what
-    fit_gaussian's w_x / w_y are) to the NA in the cavity's short arm. Every distance is in metres;
-    the ones left None keep the simulation's own default. `plot=True` shows the simulated system in
-    one window - the two dependency panels plus the optical system underneath - with the spot sizes
-    in `measured_spot_sizes_m` (named by `measured_labels`, e.g. ('w_x', 'w_y')) marked on it.
+    utilities.utils.fit_gaussian_beam's w_minor / w_major are) to the NA in the cavity's short arm.
+    Every distance is in metres; the ones left None keep the simulation's own default. `plot=True`
+    shows the simulated system in one window - the two dependency panels plus the optical system
+    underneath - with the spot sizes in `measured_spot_sizes_m` (named by `measured_labels`, e.g.
+    ('w_minor', 'w_major')) marked on it.
 
     `outgoing_elements` names what the beam meets between the cavity and the camera, starting at the
     end mirror in transmission; `intracavity_elements` names the lens (or two, `mid_arm_length`

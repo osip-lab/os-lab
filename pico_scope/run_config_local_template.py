@@ -233,11 +233,6 @@ class show:
     # viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
     # frame and agrees with 2x to better than 1% on the widths.
     FIT_REBINNING = 4
-    # fit_gaussian bounds amplitude and offset at 4095, the 12-bit full scale it
-    # was written for. A binned frame can exceed that - 2x2 summing 10-bit XIMEA
-    # pixels reaches 4092, but 4x4 would reach 16368 - so a frame that scales
-    # past it is divided down before fitting and the amplitude scaled back.
-    FIT_MAX_LEVEL = 4095
 
 
 class mark:
