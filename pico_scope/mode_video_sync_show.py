@@ -20,6 +20,18 @@ guesswork: every instant of the trace maps to a definite frame.
 - **fit Gaussian** (the checkbox, or **f**) fits a 2D Gaussian to the frame on
   screen and draws its 1/e^2 contour, reporting the beam radii in millimetres.
 
+## Which capture it opens
+
+`--session` wins whenever it is given, which is how `run_mode_video_pipeline.py`
+hands over the burst just recorded: the viewer opens that folder even when it is
+not the newest one on the local bank, because a capture saved to a folder the
+user pasted is not where `latest_session()` would look.
+
+Run on its own the script takes the config's SESSION - `'clipboard'` asks for
+the folder when the viewer starts, `''` takes the newest capture, and anything
+else is the path itself. That is `mode_video_sync_mark.py`'s convention, so the
+two viewers are entered the same way.
+
 ## Fitting the mode
 
 The checkbox uses the same `gaussian_fit` routine as kalishlot's camera boxes,
@@ -67,7 +79,12 @@ from pathlib import Path
 # git-ignored - see run_config.py. Nothing here needs the command line; the
 # arguments exist for scripting and override both when given.
 ACTION = 'show'      # 'show' | 'self-test'
-SESSION = ''         # capture folder; '' means the most recent one
+# 'clipboard' asks for the folder when the script runs, which is how this is
+# normally used on its own; run_mode_video_pipeline.py passes --session instead
+# and never reaches the prompt. A sentinel rather than a call at module scope,
+# so importing this file or running its self-test does not stop and wait for a
+# path nobody asked for - the prompt happens in main(), where it belongs.
+SESSION = 'clipboard'  # 'clipboard' | '' = the newest capture | a path
 SCOPE_FILE = ''      # the .psdata of a Phase 1 capture; '' for Phase 2
 SHADE_ALPHA = 0.06   # faint: at 120 frames these are stripes until you zoom
 # Matches kalishlot's CameraFitMixin.FIT_REBINNING, so the browser and this
@@ -104,7 +121,8 @@ from pico_scope.mode_video_sync import (ScopeTrace, fit_session,  # noqa: E402
 # axes for widths that were measured along the beam's.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
 from gaussian_fit import FitLoop  # noqa: E402
-from utilities.utils import fit_gaussian_beam  # noqa: E402
+from utilities.utils import (fit_gaussian_beam,  # noqa: E402
+                             wait_for_path_from_clipboard)
 
 HELP_TEXT = ('move: follow the cursor   click: pin/unpin   '
              'left/right: step (shift = 10)   f: fit a Gaussian')
@@ -760,6 +778,23 @@ def _self_test():
     print('self-test passed')
 
 
+def resolve_session():
+    """The capture to open, from SESSION.
+
+    'clipboard' asks for it, which is the usual way in when the viewer is run
+    on its own; '' takes the newest capture; anything else is the path itself.
+    Only reached when --session was not given, so the pipeline's handover of
+    the burst it just recorded never stops for a clipboard.
+
+    The prompt happens here rather than at module scope so that importing this
+    file - mode_video_sync_mark.py does, for ModeSpectrumViewer - or running
+    --self-test does not block waiting for a path nobody asked for.
+    """
+    if SESSION == 'clipboard':
+        return wait_for_path_from_clipboard(filetype='folder')
+    return SESSION or latest_session()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--config', default=None,
@@ -767,9 +802,10 @@ def main():
                              'run_config_local.py')
     parser.add_argument('--self-test', action='store_true',
                         help='run the offline checks and exit')
-    parser.add_argument('--session', default=SESSION or None,
-                        help='capture folder or *_session.json; defaults to '
-                             'SESSION in this file, or the newest capture')
+    parser.add_argument('--session', default=None,
+                        help="capture folder or *_session.json; defaults to "
+                             "SESSION in the config - 'clipboard' to be asked "
+                             "for it, '' for the newest capture")
     parser.add_argument('--scope', default=SCOPE_FILE or None,
                         help='the .psdata recorded alongside a Phase 1 capture; '
                              'omit for a Phase 2 capture, which carries its own')
@@ -782,7 +818,7 @@ def main():
     if ACTION != 'show':
         raise SystemExit(f'ACTION must be show or self-test, not {ACTION!r}')
 
-    session = args.session or latest_session()
+    session = args.session or resolve_session()
     print(f'session: {session}')
     viewer = viewer_from_session(session, args.scope)
     plt.show()

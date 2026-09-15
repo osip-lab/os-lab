@@ -225,7 +225,11 @@ class show:
     """pico_scope/mode_video_sync_show.py"""
 
     ACTION = 'show'      # 'show' | 'self-test'
-    SESSION = ''         # capture folder; '' means the most recent one
+    # 'clipboard' asks for the folder by clipboard when the script runs;
+    # '' means the most recent capture; or put a path here. Ignored when
+    # run_mode_video_pipeline.py runs the viewer - it passes the capture it
+    # just recorded as --session, which wins over this.
+    SESSION = 'clipboard'
     SCOPE_FILE = ''      # the .psdata of a Phase 1 capture; '' for Phase 2
 
     SHADE_ALPHA = 0.06   # faint: at 120 frames these are stripes until you zoom

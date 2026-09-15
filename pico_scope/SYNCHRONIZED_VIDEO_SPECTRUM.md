@@ -36,7 +36,7 @@ the names collide on purpose - all four have an `ACTION`:
 | --- | --- | --- |
 | `capture` | `mode_video_capture.py` | captures, driving both instruments |
 | `sync` | `mode_video_sync.py` | refines the newest capture |
-| `show` | `mode_video_sync_show.py` | opens the newest capture in the viewer |
+| `show` | `mode_video_sync_show.py` | asks for a capture and opens it in the viewer |
 | `mark` | `mode_video_sync_mark.py` | opens a capture and annotates it |
 
 The constants still declared at the top of each script are its **defaults**,
@@ -70,6 +70,13 @@ resolved rather than only what was typed.
 
 **Leaving `SESSION = ''` means "the most recent capture"**, so the usual round
 trip is: Run the capture, Run the viewer. No paths to copy.
+
+The two viewers default to `SESSION = 'clipboard'` instead, which asks for the
+folder when the script starts - copy it in the file browser and it is picked up.
+That is for looking at a capture that is *not* the newest, which is most of what
+the viewers are opened for once a day's measurements have been filed away.
+`run_mode_video_pipeline.py` never reaches the prompt: it passes the capture it
+just recorded as `--session`, which wins over the config.
 
 `ACTION` selects what the file does - `'capture'`, `'levels'`, `'locate'` or
 `'self-test'` for the capture script, `'refine'` or `'fit'` for the sync,
@@ -215,7 +222,8 @@ the clock's own jitter settles the matter even when `depth` is low. Only a
 
 ## Looking at the result
 
-    show.ACTION = 'show'      # SESSION = '' takes the newest capture; press Run
+    show.ACTION = 'show'      # SESSION = 'clipboard' asks for the folder;
+                              # '' takes the newest capture; press Run
     # or: python pico_scope/mode_video_sync_show.py --session <folder>
 
 ## Choosing a peak and seeing its mode
