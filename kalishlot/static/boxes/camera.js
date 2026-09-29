@@ -13,6 +13,11 @@
 // Whether the crop happens in the camera or in the server is the adapter's
 // business; nothing here depends on which.
 //
+// The 'intensity' checkbox puts a strip chart beside the image: the median,
+// 99th percentile and maximum pixel value over the last 30 s, for watching
+// the light while a knob on the bench is turned. The server measures and
+// remembers that window; nothing is kept beyond it and nothing is saved.
+//
 // Returns a cleanup function that closes the socket.
 
 import { connectDeviceStream } from './stream.js';
@@ -31,6 +36,17 @@ const COLOR_ROI = 'rgba(255, 205, 70, 0.95)';
 const GRID_SPACING_MM = 1;
 const ROI_HANDLE_PX = 9;   // hit radius for the rectangle's handles, css px
 const ROI_MIN_PX = 16;     // matches CameraAdapterBase.MIN_ROI_PX
+
+// intensity strip chart: median = the background, p99 = the beam,
+// max = saturation (hence the warning color)
+const LEVELS_MIN_W = 240;  // the image gives up this much width for it
+// order matters: it is the order of the values the server sends after the
+// timestamp, i.e. point = [seconds ago, median, p99, max]
+const LEVELS_SERIES = [
+  { label: 'median', stroke: 'rgb(110, 170, 240)' },
+  { label: 'p99', stroke: 'rgb(255, 190, 60)' },
+  { label: 'max', stroke: 'rgb(232, 96, 96)' },
+];
 
 export function createCameraBox(device, container, sendCommand) {
   // fit coordinates are pixels of the frame the camera currently delivers —
@@ -58,6 +74,11 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="subgroup">
         <label class="field" title="1 mm grid, centered on the image">
           <input type="checkbox" class="cam-grid"> grid</label>
+      </span>
+      <span class="subgroup">
+        <label class="field"
+               title="strip chart beside the image: median, 99th percentile and maximum pixel value over the last 30 s — watch it while you change something on the bench">
+          <input type="checkbox" class="cam-levels"> intensity</label>
       </span>
       <span class="subgroup">
         <label class="field"
@@ -177,17 +198,28 @@ export function createCameraBox(device, container, sendCommand) {
   const videoCanvas = makeCanvas('#0e1015');
   const overlay = makeCanvas(null);            // ellipses + circles, on top
   overlay.style.touchAction = 'none';
+  // the intensity strip chart lives to the right of the column strip; it is
+  // a uPlot, so it gets a div rather than a canvas of ours
+  const levelsDiv = document.createElement('div');
+  levelsDiv.className = 'cam-levels-chart';
+  levelsDiv.style.position = 'absolute';
+  levelsDiv.hidden = true;
+  view.appendChild(levelsDiv);
 
-  function place(canvas, x, y, w, h) {
-    canvas.style.left = `${x}px`;
-    canvas.style.top = `${y}px`;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
+  function place(element, x, y, w, h) {
+    element.style.left = `${x}px`;
+    element.style.top = `${y}px`;
+    element.style.width = `${w}px`;
+    element.style.height = `${h}px`;
   }
 
   function layout() {
+    // the strip chart is given a minimum width out of the image's share, and
+    // then whatever else is left over — so widening the box grows the chart
+    const showChart = levelsCheck.checked;
+    const reserved = showChart ? LEVELS_MIN_W + GAP : 0;
     const scale = Math.max(Math.min(
-      (view.clientWidth - STRIP - GAP) / sensorW,
+      (view.clientWidth - STRIP - GAP - reserved) / sensorW,
       (view.clientHeight - STRIP - GAP) / sensorH), 0.01);
     const w = Math.round(sensorW * scale);
     const h = Math.round(sensorH * scale);
@@ -198,6 +230,13 @@ export function createCameraBox(device, container, sendCommand) {
     hCanvas.width = w; hCanvas.height = STRIP;
     vCanvas.width = STRIP; vCanvas.height = h;
     overlay.width = w; overlay.height = h;
+    levelsDiv.hidden = !showChart;
+    if (showChart) {
+      const x = w + GAP + STRIP + GAP;
+      const chartWidth = Math.max(view.clientWidth - x, LEVELS_MIN_W);
+      place(levelsDiv, x, STRIP + GAP, chartWidth, h);
+      sizeLevelsChart(chartWidth, h);
+    }
     redrawOverlay();
     drawStrips();
   }
@@ -409,6 +448,80 @@ export function createCameraBox(device, container, sendCommand) {
   // sent to the server, not shared across viewers.
   const gridCheck = container.querySelector('.cam-grid');
   gridCheck.onchange = () => redrawOverlay();
+
+  // ------------------------------------------------- intensity strip chart
+  // Median / 99th percentile / maximum pixel value over the last 30 s, for
+  // watching the light while something on the bench is changed. The server
+  // measures and keeps the window (it costs CPU there, so like the fit it is
+  // shared by every viewer rather than switched on per browser), and sends
+  // the whole window each time — this side only draws what it is given.
+  const levelsCheck = container.querySelector('.cam-levels');
+  const levelsWindowS = device.levels_window_s ?? 30;
+  let levelsChart = null;
+  let levelsPoints = null;   // newest window received, kept across re-layouts
+
+  function ensureLevelsChart() {
+    if (levelsChart) return levelsChart;
+    const axisStyle = {
+      stroke: '#9aa1b5',
+      font: '11px Consolas, monospace',
+      grid: { stroke: '#252a38' },
+      ticks: { stroke: '#2e3342' },
+    };
+    levelsChart = new uPlot({
+      width: LEVELS_MIN_W,
+      height: 160,
+      // x pinned to the whole window: a trace must not stretch sideways
+      // while the first 30 s are still filling up. y is left to auto-range —
+      // the point of the chart is small changes, not absolute levels.
+      scales: { x: { time: false, range: [-levelsWindowS, 0] } },
+      series: [
+        { label: 't (s)' },
+        ...LEVELS_SERIES.map((series) => ({
+          label: series.label,
+          stroke: series.stroke,
+          width: 1,
+          points: { show: false },
+          value: (u, v) => (v == null ? '-' : v.toFixed(1)),
+        })),
+      ],
+      axes: [axisStyle, { ...axisStyle, label: `counts / ${levelsMax}` }],
+      cursor: { drag: { x: false, y: false } },
+    }, [[0], [null], [null], [null]], levelsDiv);
+    return levelsChart;
+  }
+
+  function sizeLevelsChart(width, height) {
+    if (!levelsChart) return;
+    const legend = levelsDiv.querySelector('.u-legend');
+    levelsChart.setSize({
+      width: Math.max(width, 120),
+      height: Math.max(height - (legend ? legend.offsetHeight : 30) - 4, 60),
+    });
+  }
+
+  function drawLevels() {
+    if (!levelsCheck.checked || !levelsPoints) return;
+    const chart = ensureLevelsChart();
+    chart.setData([levelsPoints.map((point) => point[0]),
+                   ...LEVELS_SERIES.map((_series, i) =>
+                     levelsPoints.map((point) => point[i + 1]))]);
+  }
+
+  function showLevelsEnabled(enabled) {
+    levelsCheck.checked = enabled;
+    if (!enabled) levelsPoints = null;
+    else ensureLevelsChart();   // before layout(), which sizes it
+    layout();                   // the image gives up / takes back the width
+    drawLevels();
+  }
+
+  levelsCheck.onchange = () => {
+    showLevelsEnabled(levelsCheck.checked);
+    sendCommand(device.device_id,
+                levelsCheck.checked ? 'levels_on' : 'levels_off')
+      .catch((e) => { status.textContent = e.message; });
+  };
 
   // The crop changed: the image is a different frame now, so everything drawn
   // in the old frame's pixels is stale. The guess is the exception — the
@@ -795,6 +908,11 @@ export function createCameraBox(device, container, sendCommand) {
           ? { x: event.guess.x_0, y: event.guess.y_0, r: event.guess.sigma } : null;
         redrawOverlay();
         updateInfo();
+      } else if (event.type === 'levels_status') {
+        showLevelsEnabled(event.enabled);
+      } else if (event.type === 'levels') {
+        levelsPoints = event.points ?? [];
+        drawLevels();
       } else if (event.type === 'roi') {
         applyRoiState(event.roi, event.sensor_shape, event.sensor_full);
         status.textContent = event.roi
@@ -826,6 +944,8 @@ export function createCameraBox(device, container, sendCommand) {
       guess = describe.guess
         ? { x: describe.guess.x_0, y: describe.guess.y_0, r: describe.guess.sigma } : null;
       showThreshold(describe.fit_threshold ?? 0);
+      levelsPoints = describe.levels_points ?? null;
+      showLevelsEnabled(describe.levels ?? false);
       for (const setting of describe.settings ?? []) {
         showAppliedSetting(setting.name, setting.value);
       }
@@ -835,10 +955,13 @@ export function createCameraBox(device, container, sendCommand) {
   });
 
   showRoiState();
+  levelsPoints = device.levels_points ?? null;
+  showLevelsEnabled(device.levels ?? false);
   updateInfo();
 
   return function cleanup() {
     stream.close();
     resizeObserver.disconnect();
+    if (levelsChart) levelsChart.destroy();
   };
 }

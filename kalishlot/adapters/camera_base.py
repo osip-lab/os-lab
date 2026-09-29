@@ -3,9 +3,9 @@
 The frontend camera box (static/boxes/camera.js) is shared by ALL cameras —
 Basler, Ximea, synthetic, whatever comes next — and only speaks the generic
 vocabulary implemented here: commands play / pause / snap / set_setting plus
-the Gaussian-fit and ROI commands, events status / setting_applied /
-fit_status / fit / guess / roi / error, and a describe() with a settings
-schema.
+the Gaussian-fit, ROI and intensity-monitor commands, events status /
+setting_applied / fit_status / fit / guess / roi / levels / error, and a
+describe() with a settings schema.
 
 Adding a camera brand therefore means:
   1. a pure device-layer module for the SDK (no GUI imports),
@@ -35,13 +35,15 @@ import time
 
 from .base import DeviceAdapter
 from .camera_fit import CameraFitMixin
+from .camera_levels import CameraLevelsMixin
 
 CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
                    'fit_on', 'fit_off', 'set_guess', 'clear_guess',
-                   'set_fit_threshold', 'set_roi', 'clear_roi']
+                   'set_fit_threshold', 'set_roi', 'clear_roi',
+                   'levels_on', 'levels_off']
 
 
-class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
+class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, DeviceAdapter):
     """Shared camera behavior; subclasses provide only the hardware hooks.
 
     Hooks to implement (besides type_name / display_name / list_available):
@@ -84,6 +86,7 @@ class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
     def __init__(self, address):
         super().__init__(address)
         self._init_fit()
+        self._init_levels()
         self._playing = True
         # None, or {'x', 'y', 'width', 'height'} in UNCROPPED sensor pixels
         self._roi = None
@@ -155,6 +158,7 @@ class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
                               x // step:(x + width) // step]
         self._store_display_frame(display)
         self._store_fit_frame(frame)
+        self._store_levels_frame(frame)
 
     # ------------------------------------------------------------------ ROI
     def _set_roi(self, x, y, width, height):
@@ -211,6 +215,9 @@ class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
         """
         previous = self._roi
         self._roi = roi
+        # the intensity monitor is now measuring a different set of pixels,
+        # and a step in its trace should only ever mean the light changed
+        self._clear_levels()
         shift_x = (previous['x'] if previous else 0) - (roi['x'] if roi else 0)
         shift_y = (previous['y'] if previous else 0) - (roi['y'] if roi else 0)
         if self._fit_guess is not None:
@@ -270,10 +277,13 @@ class CameraAdapterBase(CameraFitMixin, DeviceAdapter):
                 'commands': list(CAMERA_COMMANDS),
                 'playing': self._playing,
                 'settings': self._settings_schema(),
-                **self.fit_describe()}
+                **self.fit_describe(),
+                **self.levels_describe()}
 
     def command(self, name, args):
         result = self.fit_command(name, args)
+        if result is None:
+            result = self.levels_command(name, args)
         if result is not None:
             return result
         if name == 'play':

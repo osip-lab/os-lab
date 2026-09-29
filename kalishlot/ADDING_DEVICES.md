@@ -98,7 +98,8 @@ Conventions the existing frontend already understands:
   (`_open/_close/_play/_pause/_snap/_apply_setting/_settings_schema/
   _sensor_shape`, plus `_store_camera_frame(frame, display)` from the frame
   thread; override `LEVELS_MAX`, `PIXEL_SIZE_MM`, `DISPLAY_DOWNSAMPLE`).
-  That already includes the ROI and the Gaussian fit — see below.
+  That already includes the ROI, the Gaussian fit and the intensity
+  monitor — see below.
   The frontend camera box is manufacturer-agnostic: register the new
   type_name in server.py DEVICE_TYPES and point it at the existing
   `createCameraBox` in app.js BOX_RENDERERS — no new JS needed.
@@ -129,6 +130,27 @@ Conventions the existing frontend already understands:
   translates onto the sensor. Everything else in the box (fit results, the
   guess circle, the cross-sections) is in those same current-frame pixels; the
   guess is carried across a crop and dropped when it falls outside.
+- **Intensity monitor** (cameras): `CameraLevelsMixin` in
+  `adapters/camera_levels.py`, already mixed into `CameraAdapterBase` — a new
+  camera inherits it and needs no work. Commands `levels_on` / `levels_off`,
+  events `levels_status` and the periodic `levels`, which carries the whole
+  visible window (median / 99th percentile / maximum pixel value) rather than
+  the newest point: `levels` is in `COALESCE_EVENT_TYPES`, so a dropped event
+  must cost a stalled viewer a late redraw and never a hole in the trace.
+  Times are sent as **seconds before now**, so nothing depends on the
+  browser's clock matching the server's. Three rules worth keeping:
+  - **the quantiles are subsampled, the maximum is not.** On a 2048x2048
+    frame the exact quantiles cost ~46 ms in the camera's own thread against
+    ~4 ms subsampled, for a 0.07% difference — but the maximum exists to
+    catch saturation, and subsampling would miss the one hot spot;
+  - **sampling is throttled** (`LEVELS_SAMPLE_INTERVAL_S`, with a 10%
+    tolerance so the throttle does not beat against the frame period), so a
+    100 Hz camera does not pay for a 10 Hz question;
+  - **a point is aged off when the window is sent, not only when it is
+    appended** — nothing appends on a paused camera, and the chart's x axis
+    means "seconds ago".
+  The window is never saved; it is deliberately not in `settings_snapshot()`,
+  and an ROI change clears it, because the pixels being measured changed.
 - **Gaussian fit** (cameras): mix in `CameraFitMixin` from
   `adapters/camera_fit.py` — call `_init_fit()` in `__init__`,
   `_store_fit_frame(frame)` from the frame thread with the full-resolution

@@ -62,7 +62,7 @@ JPEG_QUALITY = 80
 FRAME_POLL_S = 1 / 30  # how often each websocket checks for a newer frame
 # bulky periodic data events: a slow viewer gets only the newest one, so a
 # stalled browser tab can never build a backlog (same rule as video frames)
-COALESCE_EVENT_TYPES = {'scope_data', 'brightness'}
+COALESCE_EVENT_TYPES = {'scope_data', 'brightness', 'levels'}
 
 # ------------------------------------------------------------ idle watchdog
 # Seconds of inactivity before the browser gets a shutdown warning; the

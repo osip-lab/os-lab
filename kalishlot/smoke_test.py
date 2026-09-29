@@ -152,6 +152,104 @@ async def check_stream(device_id):
         print('fit_off ok')
 
 
+async def wait_levels(socket, accept, what, timeout=20):
+    """Read 'levels' events until one satisfies `accept(points)`.
+
+    The socket may still hold events built before whatever just changed, so
+    a test that looks at only the next one reads the past.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        event = await wait_event(socket, 'levels')
+        if event['points'] and accept(event['points']):
+            return event
+    raise AssertionError(f'timed out waiting for {what}')
+
+
+async def check_levels(device_id):
+    """The intensity monitor: median / p99 / max over a rolling window."""
+    uri = f'ws://{HOST}:{PORT}/ws/devices/{device_id}'
+    async with websockets.connect(uri) as socket:
+        def command(name, args=None):
+            api(f'/api/devices/{device_id}/command', 'POST',
+                {'name': name, 'args': args or {}})
+
+        command('levels_on')
+        event = await wait_event(socket, 'levels_status')
+        assert event['enabled'] is True
+
+        event = await wait_event(socket, 'levels')
+        assert event['window_s'] == 30.0, event
+        assert event['points'], 'no points in the first levels event'
+        age, median, p99, maximum = event['points'][-1]
+        # the synthetic beam sits on a background of 100 with sigma-30 noise,
+        # and peaks at 100 + 1500 * exposure/3000 (exposure is 5000 by now)
+        assert -1.0 <= age <= 0.0, f'newest point is {age} s old'
+        assert 50 < median < 150, f'median {median} is not the background'
+        assert p99 > median, f'p99 {p99} must be above the median {median}'
+        assert maximum >= p99, f'max {maximum} must be at least p99 {p99}'
+        assert maximum > 1000, f'max {maximum} misses the beam'
+        print(f'levels ok: median={median}, p99={p99}, max={maximum}')
+
+        # the window really accumulates. Events already in flight still carry
+        # the shorter windows they were built with, so read on until one is
+        # more than a second deep rather than trusting the next one.
+        event = await wait_levels(socket, lambda points: points[0][0] <= -1.0,
+                                  'the window to fill past 1 s')
+        assert all(-30.0 <= p[0] <= 0.0 for p in event['points']), \
+            'a point outside the 30 s window'
+        assert len(event['points']) >= 8, \
+            f'only {len(event["points"])} points in a second, expected ~10'
+        print(f'window ok: {len(event["points"])} points, oldest '
+              f'{event["points"][0][0]:.1f} s')
+
+        # describe() carries the window, so a re-attaching viewer draws at once
+        described = next(d for d in api('/api/devices')
+                         if d['device_id'] == device_id)
+        assert described['levels'] is True, described['levels']
+        assert len(described['levels_points']) > 1, described['levels_points']
+
+        # cropping changes which pixels are measured: the trace starts over
+        command('set_roi', {'x': 0, 'y': 0, 'width': 256, 'height': 256})
+        await wait_event(socket, 'roi')
+        await wait_levels(socket, lambda points: points[0][0] > -1.0,
+                          'the ROI change to clear the history')
+        print('roi clears the history ok')
+        command('clear_roi')
+        await wait_event(socket, 'roi')
+
+        command('levels_off')
+        event = await wait_event(socket, 'levels_status')
+        assert event['enabled'] is False
+        described = next(d for d in api('/api/devices')
+                         if d['device_id'] == device_id)
+        assert 'levels_points' not in described, 'history kept after levels_off'
+        print('levels_off ok (history dropped)')
+
+
+def check_levels_window():
+    """A point older than the window is never reported.
+
+    The ring is trimmed when a frame arrives, so on a paused camera nothing
+    trims it — and its points must still age off the chart, whose x axis
+    means "seconds ago".
+    """
+    from adapters.camera_levels import CameraLevelsMixin
+
+    class BareMonitor(CameraLevelsMixin):
+        def emit(self, event):
+            pass
+
+    monitor = BareMonitor()
+    monitor._init_levels()
+    now = time.monotonic()
+    monitor._levels = [(now - 45.0, 1.0, 2.0, 3), (now - 10.0, 4.0, 5.0, 6)]
+    points = monitor.levels_event()['points']
+    assert len(points) == 1, f'expected the 45 s-old point dropped, got {points}'
+    assert points[0][1] == 4.0, points
+    print('levels window ok (nothing older than 30 s is ever reported)')
+
+
 def check_streamer_roi():
     """The hardware-ROI path (StreamerROIMixin), on a fake camera.
 
@@ -440,6 +538,10 @@ def main():
             {'name': 'clear_roi', 'args': {}})
 
         asyncio.run(check_stream(device_id))
+        # before check_roi: that one deliberately leaves an ROI behind for
+        # the persistence check, and the beam orbits outside it
+        asyncio.run(check_levels(device_id))
+        check_levels_window()
         asyncio.run(check_roi(device_id))
         check_streamer_roi()
 

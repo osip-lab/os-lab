@@ -316,6 +316,11 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
   overflow: hidden;
 }
 .cam-brightness { min-width: 3.5em; }
+.cam-levels-chart {
+  background: var(--well);
+  border-radius: 6px;
+  overflow: hidden;
+}
 
 /* ------------------------------------------------------------- Rigol box */
 .rigol-channels {
