@@ -135,8 +135,9 @@ Conventions the existing frontend already understands:
   camera inherits it and needs no work. Commands `levels_on` / `levels_off`,
   events `levels_status` and the periodic `levels`, which carries the whole
   visible window (median / 99th percentile / maximum pixel value — the box
-  draws only the p99 today, the other two are one commented-out line each in
-  `LEVELS_SERIES` in camera.js) rather than the newest point: `levels` is in `COALESCE_EVENT_TYPES`, so a dropped event
+  draws only the p99 today, on a fixed 0..`levels_max` axis and with a dashed
+  line at its 10 s mean; the other two are one commented-out line each in
+  `LEVELS_SERIES` in camera.js, and each drawn series gets its own mean line) rather than the newest point: `levels` is in `COALESCE_EVENT_TYPES`, so a dropped event
   must cost a stalled viewer a late redraw and never a hole in the trace.
   Times are sent as **seconds before now**, so nothing depends on the
   browser's clock matching the server's. Three rules worth keeping:

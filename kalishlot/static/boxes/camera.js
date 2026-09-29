@@ -15,10 +15,12 @@
 //
 // The 'intensity' checkbox puts a strip chart beside the image: the 99th
 // percentile pixel value over the last 30 s, against a fixed 0..full-scale
-// axis, for watching the light while a knob on the bench is turned. The
-// server also sends the median and the maximum of every frame — see
-// LEVELS_SERIES to put either back on the chart. It measures and remembers
-// that window; nothing is kept beyond it and nothing is saved.
+// axis, for watching the light while a knob on the bench is turned, with a
+// dashed line at its mean over the last 10 s — the steadier number to read
+// off while turning. The server also sends the median and the maximum of
+// every frame — see LEVELS_SERIES to put either back on the chart (each
+// drawn series gets its own mean line). It measures and remembers that
+// window; nothing is kept beyond it and nothing is saved.
 //
 // Returns a cleanup function that closes the socket.
 
@@ -40,6 +42,7 @@ const ROI_HANDLE_PX = 9;   // hit radius for the rectangle's handles, css px
 const ROI_MIN_PX = 16;     // matches CameraAdapterBase.MIN_ROI_PX
 
 const LEVELS_MIN_W = 240;  // width the image gives up for the strip chart
+const LEVELS_AVERAGE_S = 10;  // span of the dashed mean line on that chart
 // Which of the server's numbers to draw — median = the background, p99 = the
 // beam, max = saturation. It sends all three every time —
 // point = [seconds ago, median, p99, max] — so a line commented out here is
@@ -82,7 +85,7 @@ export function createCameraBox(device, container, sendCommand) {
       </span>
       <span class="subgroup">
         <label class="field"
-               title="strip chart beside the image: the 99th percentile pixel value over the last 30 s, on a fixed 0 to full-scale axis — watch it while you change something on the bench">
+               title="strip chart beside the image: the 99th percentile pixel value over the last 30 s, on a fixed 0 to full-scale axis, with a dashed line at its 10 s mean — watch it while you change something on the bench">
           <input type="checkbox" class="cam-levels"> intensity</label>
       </span>
       <span class="subgroup">
@@ -497,9 +500,59 @@ export function createCameraBox(device, container, sendCommand) {
       ],
       axes: [axisStyle, { ...axisStyle, label: 'counts' }],
       cursor: { drag: { x: false, y: false } },
+      hooks: { draw: [drawLevelsAverages] },
       // one empty column per series, so this follows LEVELS_SERIES too
     }, [[0], ...LEVELS_SERIES.map(() => [null])], levelsDiv);
     return levelsChart;
+  }
+
+  // Mean of the last LEVELS_AVERAGE_S of one series, or null when the window
+  // holds nothing that recent. Averaged over what is actually there, so the
+  // line is honest in the first seconds after the monitor is switched on.
+  function levelsAverage(index) {
+    let sum = 0;
+    let count = 0;
+    for (const point of levelsPoints ?? []) {
+      if (point[0] >= -LEVELS_AVERAGE_S) {
+        sum += point[index];
+        count += 1;
+      }
+    }
+    return count ? sum / count : null;
+  }
+
+  // One dashed line per drawn series, in that series' color, at its recent
+  // mean — the number to read off while a knob is being turned, steadier
+  // than the trace itself. Drawn in a uPlot hook so it survives every
+  // redraw, in canvas pixels like everything else in there.
+  function drawLevelsAverages(chart) {
+    // a hook draws in canvas pixels, where uPlot's own 1px lines and 11px
+    // fonts have already been multiplied by the device ratio — match it, or
+    // this comes out hairline on a HiDPI screen
+    const ratio = uPlot.pxRatio || window.devicePixelRatio || 1;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.lineWidth = ratio;
+    ctx.font = `${11 * ratio}px Consolas, monospace`;
+    ctx.textBaseline = 'bottom';
+    const left = chart.bbox.left;
+    const right = left + chart.bbox.width;
+    LEVELS_SERIES.forEach((series, i) => {
+      if (!chart.series[i + 1].show) return;
+      const mean = levelsAverage(series.index);
+      if (mean === null) return;
+      const y = Math.round(chart.valToPos(mean, 'y', true)) + 0.5;
+      ctx.strokeStyle = series.stroke;
+      ctx.fillStyle = series.stroke;
+      ctx.setLineDash([6 * ratio, 4 * ratio]);
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillText(mean.toFixed(1), left + 4 * ratio, y - 2 * ratio);
+    });
+    ctx.restore();
   }
 
   function sizeLevelsChart(width, height) {
