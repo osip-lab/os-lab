@@ -13,10 +13,12 @@
 // Whether the crop happens in the camera or in the server is the adapter's
 // business; nothing here depends on which.
 //
-// The 'intensity' checkbox puts a strip chart beside the image: the median,
-// 99th percentile and maximum pixel value over the last 30 s, for watching
-// the light while a knob on the bench is turned. The server measures and
-// remembers that window; nothing is kept beyond it and nothing is saved.
+// The 'intensity' checkbox puts a strip chart beside the image: the 99th
+// percentile pixel value over the last 30 s, against a fixed 0..full-scale
+// axis, for watching the light while a knob on the bench is turned. The
+// server also sends the median and the maximum of every frame — see
+// LEVELS_SERIES to put either back on the chart. It measures and remembers
+// that window; nothing is kept beyond it and nothing is saved.
 //
 // Returns a cleanup function that closes the socket.
 
@@ -37,15 +39,18 @@ const GRID_SPACING_MM = 1;
 const ROI_HANDLE_PX = 9;   // hit radius for the rectangle's handles, css px
 const ROI_MIN_PX = 16;     // matches CameraAdapterBase.MIN_ROI_PX
 
-// intensity strip chart: median = the background, p99 = the beam,
-// max = saturation (hence the warning color)
-const LEVELS_MIN_W = 240;  // the image gives up this much width for it
-// order matters: it is the order of the values the server sends after the
-// timestamp, i.e. point = [seconds ago, median, p99, max]
+const LEVELS_MIN_W = 240;  // width the image gives up for the strip chart
+// Which of the server's numbers to draw — median = the background, p99 = the
+// beam, max = saturation. It sends all three every time —
+// point = [seconds ago, median, p99, max] — so a line commented out here is
+// the only thing standing between it and the chart: uncomment it to get the
+// series back, no server change and no reconnect needed. `index` is its slot
+// in that point, named rather than positional so commenting one out does not
+// silently shift the others onto the wrong data.
 const LEVELS_SERIES = [
-  { label: 'median', stroke: 'rgb(110, 170, 240)' },
-  { label: 'p99', stroke: 'rgb(255, 190, 60)' },
-  { label: 'max', stroke: 'rgb(232, 96, 96)' },
+  // { label: 'median', stroke: 'rgb(110, 170, 240)', index: 1 },
+  { label: 'p99', stroke: 'rgb(255, 190, 60)', index: 2 },
+  // { label: 'max', stroke: 'rgb(232, 96, 96)', index: 3 },
 ];
 
 export function createCameraBox(device, container, sendCommand) {
@@ -77,7 +82,7 @@ export function createCameraBox(device, container, sendCommand) {
       </span>
       <span class="subgroup">
         <label class="field"
-               title="strip chart beside the image: median, 99th percentile and maximum pixel value over the last 30 s — watch it while you change something on the bench">
+               title="strip chart beside the image: the 99th percentile pixel value over the last 30 s, on a fixed 0 to full-scale axis — watch it while you change something on the bench">
           <input type="checkbox" class="cam-levels"> intensity</label>
       </span>
       <span class="subgroup">
@@ -471,10 +476,15 @@ export function createCameraBox(device, container, sendCommand) {
     levelsChart = new uPlot({
       width: LEVELS_MIN_W,
       height: 160,
-      // x pinned to the whole window: a trace must not stretch sideways
-      // while the first 30 s are still filling up. y is left to auto-range —
-      // the point of the chart is small changes, not absolute levels.
-      scales: { x: { time: false, range: [-levelsWindowS, 0] } },
+      // Both axes are pinned. x, so a trace does not stretch sideways while
+      // the first 30 s are still filling up; y to the sensor's full range,
+      // so a height on this chart means the same thing from one session to
+      // the next and saturation is always the top of the box rather than
+      // wherever the last few seconds happened to reach.
+      scales: {
+        x: { time: false, range: [-levelsWindowS, 0] },
+        y: { range: [0, levelsMax] },
+      },
       series: [
         { label: 't (s)' },
         ...LEVELS_SERIES.map((series) => ({
@@ -485,9 +495,10 @@ export function createCameraBox(device, container, sendCommand) {
           value: (u, v) => (v == null ? '-' : v.toFixed(1)),
         })),
       ],
-      axes: [axisStyle, { ...axisStyle, label: `counts / ${levelsMax}` }],
+      axes: [axisStyle, { ...axisStyle, label: 'counts' }],
       cursor: { drag: { x: false, y: false } },
-    }, [[0], [null], [null], [null]], levelsDiv);
+      // one empty column per series, so this follows LEVELS_SERIES too
+    }, [[0], ...LEVELS_SERIES.map(() => [null])], levelsDiv);
     return levelsChart;
   }
 
@@ -504,8 +515,8 @@ export function createCameraBox(device, container, sendCommand) {
     if (!levelsCheck.checked || !levelsPoints) return;
     const chart = ensureLevelsChart();
     chart.setData([levelsPoints.map((point) => point[0]),
-                   ...LEVELS_SERIES.map((_series, i) =>
-                     levelsPoints.map((point) => point[i + 1]))]);
+                   ...LEVELS_SERIES.map((series) =>
+                     levelsPoints.map((point) => point[series.index]))]);
   }
 
   function showLevelsEnabled(enabled) {

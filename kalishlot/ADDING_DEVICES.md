@@ -134,8 +134,9 @@ Conventions the existing frontend already understands:
   `adapters/camera_levels.py`, already mixed into `CameraAdapterBase` — a new
   camera inherits it and needs no work. Commands `levels_on` / `levels_off`,
   events `levels_status` and the periodic `levels`, which carries the whole
-  visible window (median / 99th percentile / maximum pixel value) rather than
-  the newest point: `levels` is in `COALESCE_EVENT_TYPES`, so a dropped event
+  visible window (median / 99th percentile / maximum pixel value — the box
+  draws only the p99 today, the other two are one commented-out line each in
+  `LEVELS_SERIES` in camera.js) rather than the newest point: `levels` is in `COALESCE_EVENT_TYPES`, so a dropped event
   must cost a stalled viewer a late redraw and never a hole in the trace.
   Times are sent as **seconds before now**, so nothing depends on the
   browser's clock matching the server's. Three rules worth keeping:
