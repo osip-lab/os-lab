@@ -104,22 +104,33 @@ from utilities.utils import (ask_long_arm_length,  # noqa: E402
 # fly (and you are asked which waveform buffer to use); .csv files are read as
 # they are. The keys need not be evenly spaced - the map keeps their spacing.
 MEASUREMENTS = {
-    51: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\51cm\without EOM.psdata",
-    52: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\52cm\without EOM 3.psdata",
-    53: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\53cm\without EOM.psdata",
-    54: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\54cm\without EOM 2.psdata",
-    55: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\55cm\without EOM.psdata",
-    56: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\56cm\without EOM.psdata",
-    57: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\57cm\without EOM.psdata",
-    58: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\58cm\without EOM.psdata",
-    59: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\59cm\without EOM 2.psdata",
-    60: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\60cm\without EOM.psdata",
-    61: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\61cm\without EOM 3.psdata",
-    62: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\62cm\without EOM 3.psdata",
-    63: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\63cm\without EOM 4.psdata",
-    64: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\64cm\without EOM 6.psdata",
-    65: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\65cm\without EOM 0.psdata",
-    66: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\66cm\without EOM 2.psdata",
+    39: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\39CM\without EOM.psdata",
+    40: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\40CM\without EOM.psdata",
+    41: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\41CM\WITHOUT EOM.psdata",
+    42: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\42CM\WITHOUT EOM 2.psdata",
+    43: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\43CM\WITHOUT EOM 2.psdata",
+    44: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\44CM\WITHOUT EOM.psdata",
+    45: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\45CM\WITHOUT EOM 3.psdata",
+    46: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\46CM\WITHOUT EOM.psdata",
+    48: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\48CM\WITHOUT EOM.psdata",
+   # 49: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2022-09-22\49cm\without EOM.psdata",
+    50: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\50CM\WITHOUT EOM.psdata",
+    #51: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\51cm\without EOM.psdata",
+    52.5: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\52.5CM\WITHOUT EOM-0002.psdata",
+    #53: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\53cm\without EOM.psdata",
+    #54: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\54cm\without EOM 2.psdata",
+    55: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\55cm\without EOM.psdata",
+    #56: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\56cm\without EOM.psdata",
+    #57: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\57cm\without EOM.psdata",
+    # 58: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\58cm\without EOM.psdata",
+    # 59: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\59cm\without EOM 2.psdata",
+    # 60: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\60cm\without EOM.psdata",
+    # 61: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\61cm\without EOM 3.psdata",
+    # 62: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\62cm\without EOM 3.psdata",
+    # 63: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\63cm\without EOM 4.psdata",
+    # 64: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\64cm\without EOM 6.psdata",
+    # 65: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\65cm\without EOM 0.psdata",
+    # 66: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\66cm\without EOM 2.psdata",
 }
 Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
 
@@ -146,7 +157,7 @@ N_points = 300                    # lens positions simulated across SHORT_ARM_LE
 # The lens scan is the slow part of a run (one per measurement, seconds each).
 # Turn it off for a quick map of widths and spacings alone; the third trends
 # panel then simply does not appear.
-SHOW_NA_AND_SHORT_ARM = True
+SHOW_NA_AND_SHORT_ARM = False
 
 # --- analysis / plotting knobs ---------------------------------------------
 TIME_COLUMN = 'Time'              # x-axis column in the PicoScope CSV
