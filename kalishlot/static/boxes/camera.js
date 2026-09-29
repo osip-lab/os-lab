@@ -1,10 +1,18 @@
 // Camera box: live video over WebSocket, play / pause / single-frame,
 // exposure & gain inputs (commit on Enter or focus loss), Gaussian fit with
-// ellipse overlay + cross-section plots, and two draggable circles:
+// ellipse overlay + cross-section plots, an ROI, and two draggable circles:
 //   marker ◯ — a persistent annotation (cyan), local to this viewer;
 //   guess ◯  — the fit's initial guess (dashed green): center -> (x_0, y_0),
 //              radius -> sigma; lives on the server so the fit can use it.
 // Shared by every camera-like device type (dummy, Basler).
+//
+// The ROI dropdown has the three states it can be in: no ROI, editing the
+// rectangle (drag it out, then move it or pull its handles), and applied —
+// at which point the cropped frame IS the image and every coordinate in the
+// box (fit, guess, marker, the rectangle itself) counts from its corner.
+// Whether the crop happens in the camera or in the server is the adapter's
+// business; nothing here depends on which.
+//
 // Returns a cleanup function that closes the socket.
 
 import { connectDeviceStream } from './stream.js';
@@ -19,12 +27,19 @@ const COLOR_ELLIPSE = 'rgba(255, 90, 90, 0.67)';
 const COLOR_MARKER = 'rgba(0, 220, 220, 0.86)';
 const COLOR_GUESS = 'rgba(110, 255, 110, 0.86)';
 const COLOR_GRID = 'rgba(255, 255, 255, 0.28)';
+const COLOR_ROI = 'rgba(255, 205, 70, 0.95)';
 const GRID_SPACING_MM = 1;
+const ROI_HANDLE_PX = 9;   // hit radius for the rectangle's handles, css px
+const ROI_MIN_PX = 16;     // matches CameraAdapterBase.MIN_ROI_PX
 
 export function createCameraBox(device, container, sendCommand) {
-  // fit coordinates are full-resolution sensor pixels; the video stream may
-  // be downsampled, so all drawing is scaled from sensor_shape
-  const [sensorH, sensorW] = device.sensor_shape ?? device.frame_shape;
+  // fit coordinates are pixels of the frame the camera currently delivers —
+  // the whole sensor, or the ROI once one is applied. The video stream may be
+  // downsampled, so all drawing is scaled from sensor_shape, which the server
+  // re-sends (with a 'roi' event) whenever the crop changes.
+  let [sensorH, sensorW] = device.sensor_shape ?? device.frame_shape;
+  let [fullH, fullW] = device.sensor_full ?? [sensorH, sensorW];
+  let roi = device.roi ?? null;   // {x, y, width, height} in sensor px, or null
   const pixelMm = device.pixel_size_mm ?? 0;
   const levelsMax = device.levels_max ?? 4095; // raw-data full scale
 
@@ -50,6 +65,15 @@ export function createCameraBox(device, container, sendCommand) {
           trigger <input type="number" class="cam-trigger" min="0" placeholder="off"></label>
         <span class="cam-brightness readout"
               title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set"></span>
+      </span>
+      <span class="subgroup">
+        <label class="field"
+               title="crop the camera to a region: pick Edit ROI, drag the rectangle on the image (its handles resize it, its middle moves it), then Apply ROI">
+          ROI <select class="cam-roi">
+            <option value="none">No ROI</option>
+            <option value="edit">Edit ROI</option>
+            <option value="apply">Apply ROI</option>
+          </select></label>
       </span>
       <span class="subgroup">
         <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
@@ -185,6 +209,7 @@ export function createCameraBox(device, container, sendCommand) {
   let fitCross = null;    // {step, row, col} pixel cuts through the center
   let fitReason = '';
   let marker = null;      // {x, y, r} sensor px
+  let editRect = null;    // ROI being edited: {x, y, w, h} in current-frame px
   let guess = device.guess
     ? { x: device.guess.x_0, y: device.guess.y_0, r: device.guess.sigma } : null;
 
@@ -208,15 +233,18 @@ export function createCameraBox(device, container, sendCommand) {
   }
 
   function drawGrid(ctx) {
-    // spacing in sensor px for GRID_SPACING_MM, centered on the image so an
-    // intersection falls at (sensorW/2, sensorH/2) — a one-pixel offset from
-    // dropping the fractional half-cell at either edge doesn't matter here.
+    // spacing in sensor px for GRID_SPACING_MM, centered on the SENSOR so an
+    // intersection falls at its middle — a one-pixel offset from dropping the
+    // fractional half-cell at either edge doesn't matter here. Anchoring it
+    // to the sensor rather than to the image keeps the grid still under the
+    // beam when the view is cropped to an ROI.
     if (!pixelMm) return;
     const stepPx = GRID_SPACING_MM / pixelMm;
     ctx.strokeStyle = COLOR_GRID;
     ctx.setLineDash([]);
     ctx.lineWidth = 1;
-    const cx = sensorW / 2, cy = sensorH / 2;
+    const cx = fullW / 2 - (roi ? roi.x : 0);
+    const cy = fullH / 2 - (roi ? roi.y : 0);
     ctx.beginPath();
     for (let x = cx; x >= 0; x -= stepPx) { ctx.moveTo(toCss(x), 0); ctx.lineTo(toCss(x), overlay.height); }
     for (let x = cx + stepPx; x <= sensorW; x += stepPx) { ctx.moveTo(toCss(x), 0); ctx.lineTo(toCss(x), overlay.height); }
@@ -244,6 +272,35 @@ export function createCameraBox(device, container, sendCommand) {
     }
     if (marker) drawCircle(ctx, marker, COLOR_MARKER, false);
     if (guess) drawCircle(ctx, guess, COLOR_GUESS, true);
+    if (editRect) drawEditRect(ctx);
+  }
+
+  // The rectangle being edited: everything outside it is dimmed, so what the
+  // camera would deliver after Apply ROI is what stays bright.
+  function drawEditRect(ctx) {
+    const x = toCss(editRect.x), y = toCss(editRect.y);
+    const w = toCss(editRect.w), h = toCss(editRect.h);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, overlay.width, y);
+    ctx.fillRect(0, y + h, overlay.width, overlay.height - y - h);
+    ctx.fillRect(0, y, x, h);
+    ctx.fillRect(x + w, y, overlay.width - x - w, h);
+    ctx.strokeStyle = COLOR_ROI;
+    ctx.setLineDash([5, 3]);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+    ctx.fillStyle = COLOR_ROI;
+    for (const [hx, hy] of roiHandlePoints(x, y, w, h)) {
+      ctx.fillRect(hx - 3, hy - 3, 6, 6);
+    }
+  }
+
+  // the eight grab points, in the order of ROI_HANDLES
+  function roiHandlePoints(x, y, w, h) {
+    return [[x, y], [x + w / 2, y], [x + w, y],
+            [x, y + h / 2], [x + w, y + h / 2],
+            [x, y + h], [x + w / 2, y + h], [x + w, y + h]];
   }
 
   // ------------------------------------------------- cross-section strips
@@ -326,6 +383,14 @@ export function createCameraBox(device, container, sendCommand) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
         + `σ = ${guess.r.toFixed(1)} px`);
     }
+    if (roi) {
+      parts.push(`ROI: ${roi.width}×${roi.height} px at (${roi.x}, ${roi.y}) `
+        + `of ${fullW}×${fullH}`);
+    }
+    if (editRect) {
+      parts.push(`ROI edit: ${Math.round(editRect.w)}×${Math.round(editRect.h)}`
+        + ` px at (${Math.round(editRect.x)}, ${Math.round(editRect.y)})`);
+    }
     // the leading separator also keeps the copied-figure title readable, since
     // that is built from info.textContent (both spans concatenated)
     const aux = parts.join('   |   ');
@@ -344,6 +409,33 @@ export function createCameraBox(device, container, sendCommand) {
   // sent to the server, not shared across viewers.
   const gridCheck = container.querySelector('.cam-grid');
   gridCheck.onchange = () => redrawOverlay();
+
+  // The crop changed: the image is a different frame now, so everything drawn
+  // in the old frame's pixels is stale. The guess is the exception — the
+  // server moves it with the crop and broadcasts it — and the video canvas is
+  // cleared so a frame from before the change is not left stretched over the
+  // new aspect ratio.
+  function applyRoiState(newRoi, shape, full) {
+    newRoi = newRoi ?? null;
+    // a reattach re-sends the state unchanged: don't throw away the marker
+    // and the last fit just because the socket reconnected
+    const changed = JSON.stringify(newRoi) !== JSON.stringify(roi);
+    roi = newRoi;
+    if (shape) [sensorH, sensorW] = shape;
+    if (full) [fullH, fullW] = full;
+    if (changed || editRect) {
+      editRect = null;
+      roiDrag = null;
+      marker = null;
+      fitParams = null;
+      fitCross = null;
+      videoCanvas.getContext('2d').clearRect(0, 0, videoCanvas.width,
+                                             videoCanvas.height);
+    }
+    showRoiState();
+    layout();          // the frame's aspect ratio moved: re-place the canvases
+    updateInfo();
+  }
 
   function clearFitDisplay() {
     fitParams = null;
@@ -394,6 +486,98 @@ export function createCameraBox(device, container, sendCommand) {
   triggerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitTrigger(); });
   triggerInput.addEventListener('blur', commitTrigger);
 
+  // ------------------------------------------------------------------ ROI
+  // Three states in one dropdown: no crop, editing the rectangle, cropped.
+  // 'Apply ROI' sends the rectangle in current-frame pixels; the server
+  // translates it onto the sensor (so applying twice zooms further in) and
+  // answers with a 'roi' event carrying the size the hardware snapped to.
+  const roiSelect = container.querySelector('.cam-roi');
+  const ROI_HANDLES = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'];
+  const ROI_CURSORS = {nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize',
+                       w: 'ew-resize', e: 'ew-resize', sw: 'nesw-resize',
+                       s: 'ns-resize', se: 'nwse-resize', move: 'move'};
+  let roiDrag = null;     // {handle, start:{x,y}, rect0} while dragging
+
+  function showRoiState() {
+    roiSelect.value = editRect ? 'edit' : (roi ? 'apply' : 'none');
+    overlay.style.cursor = editRect ? 'crosshair' : (armed ? 'crosshair' : '');
+  }
+
+  roiSelect.onchange = () => {
+    const mode = roiSelect.value;
+    if (mode === 'edit') {
+      setArmed(null);   // the rectangle owns the pointer while editing
+      // start from the middle half of what is on screen; a drag on empty
+      // image replaces it outright
+      if (!editRect) {
+        editRect = {x: sensorW / 4, y: sensorH / 4,
+                    w: sensorW / 2, h: sensorH / 2};
+      }
+      status.textContent = 'drag the rectangle, then choose Apply ROI';
+    } else if (mode === 'apply') {
+      if (!editRect) {
+        status.textContent = 'nothing to apply — pick Edit ROI and drag a rectangle first';
+        showRoiState();
+        return;
+      }
+      sendCommand(device.device_id, 'set_roi',
+        {x: Math.round(editRect.x), y: Math.round(editRect.y),
+         width: Math.round(editRect.w), height: Math.round(editRect.h)})
+        .catch((e) => { status.textContent = e.message; });
+      // the 'roi' event does the rest (new frame shape, rectangle cleared)
+      return;
+    } else {
+      editRect = null;
+      if (roi) {
+        sendCommand(device.device_id, 'clear_roi')
+          .catch((e) => { status.textContent = e.message; });
+        return;   // again, the 'roi' event finishes it
+      }
+    }
+    redrawOverlay();
+    updateInfo();
+  };
+
+  function roiHandleAt(event) {
+    if (!editRect) return null;
+    const rect = overlay.getBoundingClientRect();
+    const px = (event.clientX - rect.left) * overlay.width / rect.width;
+    const py = (event.clientY - rect.top) * overlay.height / rect.height;
+    const points = roiHandlePoints(toCss(editRect.x), toCss(editRect.y),
+                                   toCss(editRect.w), toCss(editRect.h));
+    for (let i = 0; i < points.length; i++) {
+      if (Math.abs(px - points[i][0]) <= ROI_HANDLE_PX
+          && Math.abs(py - points[i][1]) <= ROI_HANDLE_PX) return ROI_HANDLES[i];
+    }
+    const inside = px > toCss(editRect.x) && px < toCss(editRect.x + editRect.w)
+      && py > toCss(editRect.y) && py < toCss(editRect.y + editRect.h);
+    return inside ? 'move' : null;
+  }
+
+  function resizeEditRect(handle, rect0, dx, dy) {
+    // work in edges, so dragging a handle past the opposite one just flips
+    // the rectangle instead of collapsing it
+    let left = rect0.x, top = rect0.y;
+    let right = rect0.x + rect0.w, bottom = rect0.y + rect0.h;
+    if (handle === 'move') {
+      left += dx; right += dx; top += dy; bottom += dy;
+      const shiftX = Math.min(0, left) + Math.max(0, right - sensorW);
+      const shiftY = Math.min(0, top) + Math.max(0, bottom - sensorH);
+      left -= shiftX; right -= shiftX; top -= shiftY; bottom -= shiftY;
+    } else {
+      if (handle.includes('w')) left += dx;
+      if (handle.includes('e')) right += dx;
+      if (handle.includes('n')) top += dy;
+      if (handle.includes('s')) bottom += dy;
+    }
+    const x0 = Math.max(0, Math.min(left, right));
+    const x1 = Math.min(sensorW, Math.max(left, right));
+    const y0 = Math.max(0, Math.min(top, bottom));
+    const y1 = Math.min(sensorH, Math.max(top, bottom));
+    return {x: x0, y: y0, w: Math.max(x1 - x0, ROI_MIN_PX),
+            h: Math.max(y1 - y0, ROI_MIN_PX)};
+  }
+
   // -------------------------------------------------------------- circles
   const markButton = container.querySelector('.cam-mark');
   const guessButton = container.querySelector('.cam-guess');
@@ -404,6 +588,15 @@ export function createCameraBox(device, container, sendCommand) {
   markButton.style.setProperty('--mark', COLOR_MARKER);
   guessButton.style.setProperty('--mark', COLOR_GUESS);
   function setArmed(which) {
+    if (which && editRect) {
+      // the circles and the ROI rectangle cannot share the pointer: arming
+      // one abandons the unapplied rectangle
+      editRect = null;
+      roiDrag = null;
+      showRoiState();
+      redrawOverlay();
+      updateInfo();
+    }
     armed = which;
     markButton.classList.toggle('armed', armed === 'marker');
     guessButton.classList.toggle('armed', armed === 'guess');
@@ -430,12 +623,41 @@ export function createCameraBox(device, container, sendCommand) {
              y: (event.clientY - rect.top) / rect.height * sensorH };
   }
   overlay.onpointerdown = (event) => {
+    if (editRect) {
+      // while the ROI rectangle is being edited it owns the pointer: a grab
+      // on a handle resizes, inside moves, anywhere else draws a new one
+      overlay.setPointerCapture(event.pointerId);
+      const handle = roiHandleAt(event);
+      const point = toSensor(event);
+      if (handle) {
+        roiDrag = {handle, start: point, rect0: {...editRect}};
+      } else {
+        editRect = {x: point.x, y: point.y, w: ROI_MIN_PX, h: ROI_MIN_PX};
+        roiDrag = {handle: 'se', start: point, rect0: {...editRect}};
+      }
+      event.preventDefault();
+      return;
+    }
     if (!armed) return;
     overlay.setPointerCapture(event.pointerId);
     dragCenter = toSensor(event);
     event.preventDefault();
   };
   overlay.onpointermove = (event) => {
+    if (editRect && !roiDrag) {
+      const handle = roiHandleAt(event);
+      overlay.style.cursor = handle ? ROI_CURSORS[handle] : 'crosshair';
+      return;
+    }
+    if (roiDrag) {
+      const point = toSensor(event);
+      editRect = resizeEditRect(roiDrag.handle, roiDrag.rect0,
+                                point.x - roiDrag.start.x,
+                                point.y - roiDrag.start.y);
+      redrawOverlay();
+      updateInfo();
+      return;
+    }
     if (!dragCenter) return;
     const point = toSensor(event);
     const circle = { x: dragCenter.x, y: dragCenter.y,
@@ -446,6 +668,10 @@ export function createCameraBox(device, container, sendCommand) {
     updateInfo();
   };
   overlay.onpointerup = () => {
+    if (roiDrag) {
+      roiDrag = null;
+      return;
+    }
     if (!dragCenter) return;
     const which = armed;
     dragCenter = null;
@@ -569,6 +795,10 @@ export function createCameraBox(device, container, sendCommand) {
           ? { x: event.guess.x_0, y: event.guess.y_0, r: event.guess.sigma } : null;
         redrawOverlay();
         updateInfo();
+      } else if (event.type === 'roi') {
+        applyRoiState(event.roi, event.sensor_shape, event.sensor_full);
+        status.textContent = event.roi
+          ? `ROI ${event.roi.width}×${event.roi.height} applied` : 'ROI cleared';
       } else if (event.type === 'brightness') {
         lastBrightness = event.value;
         paintBrightness();
@@ -589,6 +819,8 @@ export function createCameraBox(device, container, sendCommand) {
     },
     onReattach(describe) {
       setPlaying(describe.playing ?? true);
+      // the crop may have changed while this viewer was offline
+      applyRoiState(describe.roi, describe.sensor_shape, describe.sensor_full);
       fitCheck.checked = describe.fitting ?? false;
       if (!fitCheck.checked) clearFitDisplay();
       guess = describe.guess
@@ -602,6 +834,7 @@ export function createCameraBox(device, container, sendCommand) {
     },
   });
 
+  showRoiState();
   updateInfo();
 
   return function cleanup() {

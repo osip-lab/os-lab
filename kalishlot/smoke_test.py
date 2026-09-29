@@ -152,6 +152,204 @@ async def check_stream(device_id):
         print('fit_off ok')
 
 
+def check_streamer_roi():
+    """The hardware-ROI path (StreamerROIMixin), on a fake camera.
+
+    Needs no server and no hardware, but covers what only runs with a real
+    Basler/XIMEA attached: the ROI must be applied with acquisition STOPPED
+    (both SDKs lock the geometry nodes while grabbing), the frames that
+    follow must have the new size, and _after_roi_applied must get a chance
+    to re-read the limits that moved with it.
+    """
+    import numpy as np
+
+    from adapters.camera_base import CameraAdapterBase, StreamerROIMixin
+    from camera_core import CameraStreamer
+
+    class FakeCamera:
+        """The camera contract CameraStreamer and StreamerROIMixin expect."""
+        serial_number = 'fake-0'
+        GRAB_TIMEOUT_MS = 1000
+        SENSOR = (512, 640)   # height, width — deliberately not square
+
+        def __init__(self):
+            self.is_open = True
+            self.streaming = False
+            self.shape = self.SENSOR
+            self.roi_while_streaming = None   # must stay None
+
+        def start_streaming(self):
+            self.streaming = True
+
+        def stop_streaming(self):
+            self.streaming = False
+
+        def get_frame(self):
+            time.sleep(0.01)
+            return np.zeros(self.shape, dtype=np.uint16)
+
+        def set_roi(self, width, height, offset_x=None, offset_y=None):
+            if self.streaming:
+                self.roi_while_streaming = (width, height)
+            # snap like real hardware does: width to 4, height to 2
+            width, height = width - width % 4, height - height % 2
+            self.shape = (height, width)
+            return {'width': width, 'height': height,
+                    'offset_x': offset_x, 'offset_y': offset_y}
+
+        def set_roi_full(self):
+            height, width = self.SENSOR
+            return self.set_roi(width, height, 0, 0)
+
+    class FakeAdapter(StreamerROIMixin, CameraAdapterBase):
+        type_name, display_name = 'fake_camera', 'fake camera'
+        DISPLAY_DOWNSAMPLE = 2
+
+        def __init__(self):
+            super().__init__('fake-0')
+            self.camera = FakeCamera()
+            self.frames = []
+            self.after_roi_calls = 0
+            self.streamer = CameraStreamer(self.camera, on_frame=self._on_frame)
+
+        def _on_frame(self, frame):
+            self.frames.append(frame.shape)
+            self._store_camera_frame(frame, frame[::2, ::2].astype(np.uint8))
+
+        def _open(self):
+            self.streamer.start()
+
+        def _close(self):
+            self.streamer.stop()
+
+        def _sensor_shape(self):
+            return list(FakeCamera.SENSOR)
+
+        def _settings_schema(self):
+            return []
+
+        def _after_roi_applied(self, camera):
+            self.after_roi_calls += 1
+
+    def wait_for(predicate, what, timeout=5):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        raise AssertionError(f'timed out waiting for {what}')
+
+    adapter = FakeAdapter()
+    adapter.open()
+    try:
+        wait_for(lambda: adapter.frames, 'the first frame')
+        assert adapter.frames[-1] == (512, 640), adapter.frames[-1]
+
+        adapter.command('set_roi', {'x': 100, 'y': 50, 'width': 202, 'height': 99})
+        wait_for(lambda: adapter._roi is not None, 'the ROI to be applied')
+        # snapped by the camera, not by us, and reported as snapped
+        assert adapter._roi == {'x': 100, 'y': 50, 'width': 200, 'height': 98}, \
+            adapter._roi
+        assert adapter.camera.roi_while_streaming is None, \
+            'the ROI was set while the camera was grabbing'
+        assert adapter.after_roi_calls == 1
+        assert adapter.camera.streaming, 'acquisition was not restarted'
+        adapter.frames.clear()
+        wait_for(lambda: adapter.frames, 'a frame after the ROI')
+        assert adapter.frames[-1] == (98, 200), adapter.frames[-1]
+        assert adapter.describe()['sensor_shape'] == [98, 200]
+
+        adapter.command('clear_roi', {})
+        wait_for(lambda: adapter._roi is None, 'the ROI to be cleared')
+        adapter.frames.clear()
+        wait_for(lambda: adapter.frames, 'a frame after clearing')
+        assert adapter.frames[-1] == (512, 640), adapter.frames[-1]
+        assert adapter.camera.roi_while_streaming is None
+        print('hardware-ROI path ok (applied with acquisition stopped, '
+              'snapped size reported, frames resized)')
+    finally:
+        adapter.close()
+
+
+def jpeg_size(data):
+    """(width, height) from a JPEG's frame header — what the viewer sees."""
+    index = 2
+    while index < len(data):
+        assert data[index] == 0xFF, 'not a JPEG segment'
+        marker = data[index + 1]
+        length = int.from_bytes(data[index + 2:index + 4], 'big')
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            height = int.from_bytes(data[index + 5:index + 7], 'big')
+            width = int.from_bytes(data[index + 7:index + 9], 'big')
+            return width, height
+        index += 2 + length
+    raise AssertionError('no JPEG frame header')
+
+
+async def wait_frame_size(socket, expected, timeout=10):
+    """Wait for a streamed frame of this size (frames already in flight when
+    the ROI changed still carry the old one)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        message = await asyncio.wait_for(socket.recv(), timeout=timeout)
+        if isinstance(message, bytes) and jpeg_size(message) == expected:
+            return
+    raise AssertionError(f'no {expected[0]}x{expected[1]} frame arrived')
+
+
+async def check_roi(device_id):
+    """ROI: crop, crop again relative to the crop, and uncrop.
+
+    The dummy camera has no ROI feature, so this also exercises the base
+    class's software crop — the path every camera without one takes.
+    """
+    uri = f'ws://{HOST}:{PORT}/ws/devices/{device_id}'
+    async with websockets.connect(uri) as socket:
+        def command(name, args=None):
+            api(f'/api/devices/{device_id}/command', 'POST',
+                {'name': name, 'args': args or {}})
+
+        command('set_guess', {'x_0': 600, 'y_0': 600, 'sigma': 40})
+        await wait_event(socket, 'guess')
+
+        command('set_roi', {'x': 256, 'y': 256, 'width': 512, 'height': 512})
+        event = await wait_event(socket, 'guess')
+        assert event['guess']['x_0'] == 344 and event['guess']['y_0'] == 344, \
+            f'guess must move with the crop, got {event["guess"]}'
+        event = await wait_event(socket, 'roi')
+        assert event['roi'] == {'x': 256, 'y': 256, 'width': 512, 'height': 512}
+        assert event['sensor_shape'] == [512, 512], event
+        assert event['sensor_full'] == [1024, 1024], event
+        await wait_frame_size(socket, (512, 512))
+        print('roi crop ok (guess carried along, 512x512 frames streaming)')
+
+        described = next(d for d in api('/api/devices')
+                         if d['device_id'] == device_id)
+        assert described['sensor_shape'] == [512, 512], described
+        assert described['roi']['x'] == 256, described
+        print('describe() reports the ROI for re-attaching viewers ok')
+
+        # a second ROI is relative to the current frame, so it zooms further
+        # in; the guess is now outside the visible area and must be dropped
+        command('set_roi', {'x': 0, 'y': 0, 'width': 128, 'height': 128})
+        event = await wait_event(socket, 'guess')
+        assert event['guess'] is None, event
+        event = await wait_event(socket, 'roi')
+        assert event['roi'] == {'x': 256, 'y': 256, 'width': 128, 'height': 128}
+        await wait_frame_size(socket, (128, 128))
+        print('second roi is relative to the first ok (guess dropped)')
+
+        command('clear_roi')
+        event = await wait_event(socket, 'roi')
+        assert event['roi'] is None and event['sensor_shape'] == [1024, 1024]
+        await wait_frame_size(socket, (1024, 1024))
+        print('clear_roi restores the full sensor ok')
+
+        # leave one behind for the persistence check after the re-open
+        command('set_roi', {'x': 100, 'y': 200, 'width': 300, 'height': 400})
+        await wait_event(socket, 'roi')
+
+
 async def check_close_notification(device_id):
     uri = f'ws://{HOST}:{PORT}/ws/devices/{device_id}'
     async with websockets.connect(uri) as socket:
@@ -234,7 +432,16 @@ def main():
         assert again['existing'] is True
         print('reopen attaches to existing device ok')
 
+        # Start from the whole sensor. The ROI is persisted like any other
+        # setting, so a run that died before its clean-up would otherwise
+        # hand the next run a cropped camera — and the fit checks below
+        # measure a beam that is only in the uncropped frame.
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'clear_roi', 'args': {}})
+
         asyncio.run(check_stream(device_id))
+        asyncio.run(check_roi(device_id))
+        check_streamer_roi()
 
         assert len(api('/api/devices')) == 1
         # a viewer still attached when the device is closed must be told
@@ -250,8 +457,13 @@ def main():
         exposure = next(s['value'] for s in device['settings']
                         if s['name'] == 'exposure')
         assert exposure == 5000, f'expected persisted exposure 5000, got {exposure}'
+        assert device['roi'] == {'x': 100, 'y': 200, 'width': 300,
+                                 'height': 400}, device['roi']
+        assert device['sensor_shape'] == [400, 300], device['sensor_shape']
+        api(f'/api/devices/{device_id}/command', 'POST',
+            {'name': 'clear_roi', 'args': {}})   # leave the device uncropped
         api(f'/api/devices/{device_id}', 'DELETE')
-        print('re-open restores persisted settings ok (exposure 5000)')
+        print('re-open restores persisted settings ok (exposure 5000, ROI 300x400)')
 
         asyncio.run(check_idle_watchdog(available[0]['address']))
 

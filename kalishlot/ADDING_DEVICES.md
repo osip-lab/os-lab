@@ -98,11 +98,37 @@ Conventions the existing frontend already understands:
   (`_open/_close/_play/_pause/_snap/_apply_setting/_settings_schema/
   _sensor_shape`, plus `_store_camera_frame(frame, display)` from the frame
   thread; override `LEVELS_MAX`, `PIXEL_SIZE_MM`, `DISPLAY_DOWNSAMPLE`).
+  That already includes the ROI and the Gaussian fit — see below.
   The frontend camera box is manufacturer-agnostic: register the new
   type_name in server.py DEVICE_TYPES and point it at the existing
   `createCameraBox` in app.js BOX_RENDERERS — no new JS needed.
   `adapters/dummy_camera.py` is the minimal reference implementation;
   `adapters/basler.py` shows the pattern for a thread-unsafe SDK.
+- **ROI** (cameras): `CameraAdapterBase` owns it — commands `set_roi` /
+  `clear_roi`, the `roi` event, `describe()`'s `roi` / `sensor_full` /
+  `roi_hardware`, and persistence alongside the settings. Nothing to do for a
+  new camera that has no ROI feature: the base crops every frame itself in
+  `_store_camera_frame` (the synthetic camera is the reference). Where the
+  camera **can** crop, mix in `StreamerROIMixin` (before `CameraAdapterBase`)
+  and the mixin drives the device layer's `set_roi()/set_roi_full()` — Basler
+  and XIMEA both do exactly that and add nothing else, except that XIMEA
+  overrides `_after_roi_applied` to re-read the frame-rate ceiling the ROI
+  moved. Two rules make it work:
+  - the geometry nodes are **locked while the camera is grabbing**, so the
+    change goes through `CameraStreamer.submit_offline()` (stop acquisition,
+    apply, restart) rather than `submit()`, and the camera's own snapped
+    width/height/offsets are what gets reported back;
+  - `_sensor_shape()` means the **uncropped** sensor; the current frame shape
+    is derived from it and the ROI. `_open()` therefore starts from
+    `set_roi_full()` — another program (xiCamTool, the pylon Viewer, the
+    capture scripts) may have left a crop behind, and "No ROI" in the box has
+    to mean the whole sensor.
+
+  Coordinates: `set_roi` takes the rectangle in pixels of the frame the camera
+  delivers **now**, so applying it twice zooms further in, and the adapter
+  translates onto the sensor. Everything else in the box (fit results, the
+  guess circle, the cross-sections) is in those same current-frame pixels; the
+  guess is carried across a crop and dropped when it falls outside.
 - **Gaussian fit** (cameras): mix in `CameraFitMixin` from
   `adapters/camera_fit.py` — call `_init_fit()` in `__init__`,
   `_store_fit_frame(frame)` from the frame thread with the full-resolution
@@ -111,7 +137,8 @@ Conventions the existing frontend already understands:
   commands `fit_on` / `fit_off` / `set_guess` / `clear_guess` /
   `set_fit_threshold` and events `fit_status`, `fit` (params + row/column
   cuts), `guess`, `fit_threshold`, `brightness`. All fit coordinates are
-  full-resolution sensor pixels; the frontend scales them using
+  full-resolution pixels of the frame the camera currently delivers (the whole
+  sensor, or the ROI — see above); the frontend scales them using
   `describe()['sensor_shape']` (add it next to the possibly-downsampled
   `frame_shape`).
   The **fit trigger** handles blinking beams (e.g. resonator transmission

@@ -420,9 +420,19 @@ class XimeaCamera:
 
     @property
     def max_frame_size(self):
-        """(width, height) at the current binning, in binned pixels."""
-        return (self._cam.get_width_maximum() // self._binning,
-                self._cam.get_height_maximum() // self._binning)
+        """(width, height) of the WHOLE sensor at the current binning, in
+        binned pixels — what the largest frame could be, not what fits now.
+
+        WIDTH:MAX and HEIGHT:MAX report what still fits *after* the current
+        offset, so on a cropped camera they are short by exactly that offset;
+        adding it back names the sensor without having to move the camera to
+        find out. set_roi_full() depends on this: reading the bare maxima off
+        a cropped camera would "uncrop" it to a corner of the sensor.
+        """
+        return ((self._cam.get_offsetX() + self._cam.get_width_maximum())
+                // self._binning,
+                (self._cam.get_offsetY() + self._cam.get_height_maximum())
+                // self._binning)
 
     def set_roi(self, width, height, offset_x=None, offset_y=None):
         """Crop the sensor. Sizes are in BINNED pixels, offsets default to centred.
@@ -669,6 +679,14 @@ def self_test(serial_number=None, n_frames=200, frame_rate_hz=100.0,
         cam.set_pixel_format(pixel_format)
         cam.set_binning(binning)
         width, height = cam.max_frame_size
+        roi = cam.set_roi(width // 2, height // 4)
+        # max_frame_size must name the SENSOR, not what fits after the
+        # offset just set - otherwise set_roi_full() uncrops to a corner
+        assert cam.max_frame_size == (width, height), (
+            f'max_frame_size changed under an ROI: {cam.max_frame_size} '
+            f'instead of {(width, height)}')
+        assert cam.set_roi_full()['frame_shape'] == (height, width), \
+            'set_roi_full() did not restore the whole sensor'
         roi = cam.set_roi(width // 2, height // 4)
         # The exposure has to stay under the frame period or it becomes the
         # cap on the rate itself.

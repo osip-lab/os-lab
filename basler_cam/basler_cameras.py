@@ -395,12 +395,21 @@ class BaslerCamera:
 
     @property
     def max_frame_size(self):
-        """(width, height) of the largest frame at the current binning.
+        """(width, height) of the WHOLE sensor at the current binning - what
+        the largest frame could be, not what fits at the current offset.
 
         Shrinks by the binning factor, because Width and Height count binned
         pixels - which is the whole reason set_binning() has to come first.
+
+        Width.Max and Height.Max are what still fits *after* OffsetX/OffsetY
+        (that is why set_roi() zeroes the offsets before growing the frame),
+        so on a cropped camera they are short by exactly the offset; adding it
+        back names the sensor without having to move the camera to find out.
+        set_roi_full() depends on this: reading the bare maxima off a cropped
+        camera would "uncrop" it to a corner of the sensor.
         """
-        return self._cam.Width.Max, self._cam.Height.Max
+        return (self._cam.OffsetX.GetValue() + self._cam.Width.Max,
+                self._cam.OffsetY.GetValue() + self._cam.Height.Max)
 
     def set_roi_full(self):
         """Uncrop: the largest frame the current binning allows."""
@@ -823,6 +832,16 @@ def burst_self_test(serial_number=None, n_frames=50, frame_rate_hz=100.0,
               f'{binning_info["mode_selectable"]}')
         roi = cam.set_roi_full()
         print(f'  frame {roi["width"]}x{roi["height"]} in {cam.pixel_format}')
+
+        # max_frame_size must name the SENSOR, not what fits after the current
+        # offset - otherwise set_roi_full() uncrops to a corner of it
+        sensor = cam.max_frame_size
+        cam.set_roi(sensor[0] // 2, sensor[1] // 4)
+        assert cam.max_frame_size == sensor, (
+            f'max_frame_size changed under an ROI: {cam.max_frame_size} '
+            f'instead of {sensor}')
+        assert cam.set_roi_full()['frame_shape'] == (sensor[1], sensor[0]), \
+            'set_roi_full() did not restore the whole sensor'
 
         period_us = 1e6 / frame_rate_hz
         cam.exposure_us = period_us  # exposure = frame period, no dead time

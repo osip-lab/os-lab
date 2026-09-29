@@ -26,11 +26,17 @@ contract on a machine with neither camera installed.
     list_devices()                                          [static]
     start_streaming(), get_frame(), stop_streaming()        [for CameraStreamer]
 
-Two conventions are worth stating because they are easy to get subtly wrong:
+Three conventions are worth stating because they are easy to get subtly wrong:
 
 **Sizes are in binned pixels.** `set_roi` and `max_frame_size` speak the
 camera's coordinates *after* binning; only `max_frame_rate_for` takes sensor
 pixels, because link bandwidth is charged on what crosses the wire.
+
+**`max_frame_size` is the SENSOR**, not what fits right now. Both SDKs report
+a width/height maximum that shrinks by the current offset (that is why
+`set_roi` zeroes the offsets before growing the frame), so a wrapper has to
+add the offset back - otherwise `set_roi_full()` reads a cropped camera's
+reduced maximum and "uncrops" it to a corner of the sensor.
 
 **Binning means an N x N sum**, whoever does it. The Basler has it in firmware;
 the XIMEA MQ042 offers no downsampling at all, so its wrapper sums on the host
@@ -232,6 +238,25 @@ class CameraStreamer:
         reported through on_error but does not stop the stream.
         """
         self._commands.put(command)
+
+    def submit_offline(self, command):
+        """Run `command(camera)` with acquisition stopped, then restart it.
+
+        Not every setting can be changed on a grabbing camera: both SDKs lock
+        the geometry nodes (width, height, offsets — i.e. the ROI) while
+        frames are being acquired, so an ROI change submitted through
+        submit() would simply be rejected. This wraps the command in the
+        stop/start pair; acquisition is restarted even if the command raises,
+        and the error is reported through on_error like any other.
+        """
+        def offline(camera):
+            camera.stop_streaming()
+            try:
+                command(camera)
+            finally:
+                camera.start_streaming()
+
+        self._commands.put(offline)
 
     def _run_commands(self):
         while True:

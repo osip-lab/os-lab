@@ -5,7 +5,9 @@ lives in CameraAdapterBase — this file wires it to the pure device layer in
 basler_cam/basler_cameras.py. The pylon camera object is not thread-safe, so
 setting changes are submitted to the streaming thread via
 CameraStreamer.submit() and the accepted (clamped) value comes back to the
-browser as a 'setting_applied' event.
+browser as a 'setting_applied' event. The ROI goes the same way, except that
+pylon locks the geometry nodes while grabbing, so StreamerROIMixin applies it
+through submit_offline() — see camera_base.py.
 """
 
 import sys
@@ -18,10 +20,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'basler_cam'))
 from basler_cameras import BaslerCamera, CameraStreamer  # noqa: E402
 
-from .camera_base import CameraAdapterBase  # noqa: E402
+from .camera_base import CameraAdapterBase, StreamerROIMixin  # noqa: E402
 
 
-class BaslerCameraAdapter(CameraAdapterBase):
+class BaslerCameraAdapter(StreamerROIMixin, CameraAdapterBase):
     type_name = 'basler_camera'
     display_name = 'Basler camera'
 
@@ -46,7 +48,7 @@ class BaslerCameraAdapter(CameraAdapterBase):
         self.streamer = None
         self._settings = {}
         self._limits = {}
-        self._shape = [2048, 2048]  # actual value read at _open()
+        self._shape = [2048, 2048]  # uncropped sensor; read at _open()
 
     def _label(self):
         return f'{self.display_name} — s/n {self.address}'
@@ -73,7 +75,16 @@ class BaslerCameraAdapter(CameraAdapterBase):
                           'gain': self.camera.gain_db}
         self._limits = {'exposure': self.camera.exposure_limits_us,
                         'gain': self.camera.gain_limits_db}
-        self._shape = list(self.camera.frame_shape)
+        # Start uncropped whatever the camera was left set to (the pylon
+        # Viewer or an earlier script may have left an ROI behind): 'no ROI'
+        # in the box must mean the whole sensor. A stored ROI of our own is
+        # re-applied a moment later by restore_settings(). Not guarded: a
+        # camera whose geometry cannot be normalised would go on to describe
+        # itself as delivering frames it is not, so failing to open (with the
+        # reason shown to the user) is the honest outcome.
+        self.camera.set_roi_full()
+        width, height = self.camera.max_frame_size
+        self._shape = [height, width]
         self.streamer = CameraStreamer(self.camera,
                                        on_frame=self._on_frame,
                                        on_error=self._on_error)

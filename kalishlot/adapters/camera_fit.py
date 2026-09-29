@@ -6,8 +6,10 @@ The fitting itself runs in the device layer's FitLoop (newest-frame-only, so
 a slow fit skips frames and never lags behind the camera).
 
 Coordinates in commands, events and fit parameters are always full-resolution
-sensor pixels; the frontend scales them onto the (possibly downsampled)
-display stream using describe()['sensor_shape'].
+pixels OF THE FRAME THE CAMERA CURRENTLY DELIVERS — the whole sensor, or the
+ROI once one is set (CameraAdapterBase translates the guess across a crop).
+The frontend scales them onto the (possibly downsampled) display stream using
+describe()['sensor_shape'].
 """
 
 import sys

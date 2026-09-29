@@ -120,6 +120,20 @@ def record_settings(device_id, adapter):
             pass  # persistence must never break device control
 
 
+def record_settings_later(device_id, adapter):
+    """The delayed pass, for settings a device applies on its own thread.
+
+    Skipped once this adapter is no longer the open device: a closed adapter
+    still holds the state it had, and a timer of its own firing after the
+    device was closed and re-opened would write that stale state over what
+    the live one has recorded since.
+    """
+    with devices_lock:
+        if devices.get(device_id) is not adapter:
+            return
+    record_settings(device_id, adapter)
+
+
 def device_or_404(device_id):
     with devices_lock:
         adapter = devices.get(device_id)
@@ -198,7 +212,10 @@ async def idle_watchdog():
                     _warned_at = now
                 broadcast_idle({'type': 'idle_warning', 'grace_s': IDLE_GRACE_S,
                                 'timeout_s': IDLE_TIMEOUT_S})
-        elif last_activity > warned_at or not any_open:
+        # >= , not > : time.monotonic() on Windows steps in 15.6 ms lumps, so
+        # activity in the same lump as the warning reads as exactly equal —
+        # and a dismissal must never be the one thing that gets ignored.
+        elif last_activity >= warned_at or not any_open:
             with idle_lock:  # dismissed (or the devices went away meanwhile)
                 _warned_at = None
             note_activity()
@@ -410,7 +427,8 @@ def device_command(device_id: str, request: CommandRequest):
     # persist the settings this command may have changed; the delayed pass
     # catches values that devices apply asynchronously on their own thread
     record_settings(device_id, adapter)
-    threading.Timer(1.5, record_settings, args=(device_id, adapter)).start()
+    threading.Timer(1.5, record_settings_later,
+                    args=(device_id, adapter)).start()
     return result
 
 

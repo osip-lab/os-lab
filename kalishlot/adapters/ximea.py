@@ -11,6 +11,10 @@ this adapter differs from that one in three measured particulars: the sensor is
 10-bit (full scale 1023, so the display shift is 2 bits, not 4), the frame rate
 is a settable parameter rather than a consequence, and the camera has no
 firmware binning.
+
+Cropping to an ROI is what the frame rate responds to most strongly here (the
+sensor is read row by row), so _after_roi_applied re-reads the rate and its
+ceiling and pushes both to the box.
 """
 
 import sys
@@ -25,10 +29,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'ximea_cam'))
 from ximea_cameras import CameraStreamer, XimeaCamera  # noqa: E402
 
-from .camera_base import CameraAdapterBase  # noqa: E402
+from .camera_base import CameraAdapterBase, StreamerROIMixin  # noqa: E402
 
 
-class XimeaCameraAdapter(CameraAdapterBase):
+class XimeaCameraAdapter(StreamerROIMixin, CameraAdapterBase):
     type_name = 'ximea_camera'
     display_name = 'XIMEA camera'
 
@@ -57,7 +61,7 @@ class XimeaCameraAdapter(CameraAdapterBase):
         self.streamer = None
         self._settings = {}
         self._limits = {}
-        self._shape = [2048, 2048]  # actual value read at _open()
+        self._shape = [2048, 2048]  # uncropped sensor; read at _open()
 
     def _label(self):
         return f'{self.display_name} — s/n {self.address}'
@@ -86,7 +90,16 @@ class XimeaCameraAdapter(CameraAdapterBase):
         self._limits = {'exposure': self.camera.exposure_limits_us,
                         'gain': self.camera.gain_limits_db,
                         'framerate': self.camera.frame_rate_limits_hz}
-        self._shape = list(self.camera.frame_shape)
+        # Start uncropped whatever the camera was left set to (xiCamTool or an
+        # earlier capture script may have left an ROI behind): 'no ROI' in the
+        # box must mean the whole sensor. A stored ROI of our own is
+        # re-applied a moment later by restore_settings(). Not guarded: a
+        # camera whose geometry cannot be normalised would go on to describe
+        # itself as delivering frames it is not, so failing to open (with the
+        # reason shown to the user) is the honest outcome.
+        self.camera.set_roi_full()
+        width, height = self.camera.max_frame_size
+        self._shape = [height, width]
         self.streamer = CameraStreamer(self.camera,
                                        on_frame=self._on_frame,
                                        on_error=self._on_error)
@@ -152,6 +165,15 @@ class XimeaCameraAdapter(CameraAdapterBase):
                        'value': accepted})
 
         self.streamer.submit(apply)
+
+    def _after_roi_applied(self, camera):
+        # Fewer rows to read out means a higher rate the camera can sustain;
+        # the rate itself is re-read because the camera drops it when the old
+        # value no longer fits the new geometry.
+        self._limits['framerate'] = camera.frame_rate_limits_hz
+        self._settings['framerate'] = camera.frame_rate_hz
+        self.emit({'type': 'setting_applied', 'name': 'framerate',
+                   'value': self._settings['framerate']})
 
     # ---------------------------------------------- streaming-thread callbacks
     def _on_frame(self, frame):
