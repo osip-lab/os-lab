@@ -200,8 +200,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
     controls.enable.checked = state.enabled;
     selectClosest(controls.range, state.range_v);
     controls.coupling.value = state.coupling;
-    if (chart) chart.setSeries(CHANNEL_ORDER.indexOf(name) + 1,
-      { show: state.enabled });
+    if (chart) buildChart(); // no-op unless the set of enabled channels changed
   }
 
   // ---------------------------------------------------------------- chart
@@ -212,37 +211,72 @@ export function createPicoScopeBox(device, container, sendCommand) {
     grid: { stroke: '#252a38' },
     ticks: { stroke: '#2e3342' },
   };
-  chart = new uPlot({
-    width: 400,
-    height: 200,
-    scales: { x: { time: false, range: () => [-windowSeconds, 0] } },
-    series: [
-      { label: 't (s)' },
-      ...CHANNEL_ORDER.map((name) => ({
-        label: name,
-        stroke: CHANNEL_COLORS[name],
-        width: 1,
-        points: { show: false },
-        show: (device.channels ?? {})[name]?.enabled ?? (name === 'A'),
-        value: (u, v) => (v == null ? '-' : `${v.toFixed(4)} V`),
-      })),
-    ],
-    axes: [
-      { ...axisStyle, values: tickValues },
-      { ...axisStyle, label: 'V', values: tickValues, size: tickAxisSize },
-    ],
-    cursor: { drag: { x: false, y: false } },
-    hooks: { draw: [(u) => analysisHost.draw(u)] },
-  }, [[0], [null], [null], [null], [null]], chartDiv);
-  analysisHost.attachChart(chart);
+  // Every channel has its own y scale (keyed by its name) and its own axis in
+  // its colour, so a ±50 mV trace and a ±5 V one each fill the height. Axes
+  // alternate left, right, left, right in channel order; only enabled
+  // channels get one, and only the first draws the grid. uPlot cannot add or
+  // move axes on a live chart, so the chart is rebuilt whenever the set of
+  // enabled channels changes (the last data is carried over).
+  let lastData = [[0], [null], [null], [null], [null]];
+  let builtFor = null; // the enabled channels the current chart was built for
+
+  function chartSize() {
+    const legend = chartDiv.querySelector('.u-legend');
+    return {
+      width: Math.max(chartDiv.clientWidth, 120),
+      height: Math.max(
+        chartDiv.clientHeight - (legend ? legend.offsetHeight : 30) - 4, 60),
+    };
+  }
+
+  function buildChart() {
+    const enabled = CHANNEL_ORDER.filter((name) => channelControls[name].enable.checked);
+    if (!enabled.length) enabled.push('A');
+    const key = enabled.join('');
+    if (chart && key === builtFor) return;
+    builtFor = key;
+    const size = chart ? chartSize() : { width: 400, height: 200 };
+    if (chart) chart.destroy();
+
+    const scales = { x: { time: false, range: () => [-windowSeconds, 0] } };
+    for (const name of CHANNEL_ORDER) scales[name] = { auto: true };
+    chart = new uPlot({
+      ...size,
+      scales,
+      series: [
+        { label: 't (s)' },
+        ...CHANNEL_ORDER.map((name) => ({
+          label: name,
+          scale: name,
+          stroke: CHANNEL_COLORS[name],
+          width: 1,
+          points: { show: false },
+          show: enabled.includes(name),
+          value: (u, v) => (v == null ? '-' : `${v.toFixed(4)} V`),
+        })),
+      ],
+      axes: [
+        { ...axisStyle, values: tickValues },
+        ...enabled.map((name, i) => ({
+          ...axisStyle,
+          scale: name,
+          side: i % 2 ? 1 : 3, // 3 = left, 1 = right
+          stroke: CHANNEL_COLORS[name],
+          grid: { ...axisStyle.grid, show: i === 0 },
+          label: `${name} (V)`,
+          values: tickValues,
+          size: tickAxisSize,
+        })),
+      ],
+      cursor: { drag: { x: false, y: false } },
+      hooks: { draw: [(u) => analysisHost.draw(u)] },
+    }, lastData, chartDiv);
+    analysisHost.attachChart(chart);
+  }
+  buildChart();
 
   // size the chart with the box (leave room for the legend row)
-  const resizeObserver = new ResizeObserver(() => {
-    const legend = chartDiv.querySelector('.u-legend');
-    const height = Math.max(
-      chartDiv.clientHeight - (legend ? legend.offsetHeight : 30) - 4, 60);
-    chart.setSize({ width: Math.max(chartDiv.clientWidth, 120), height });
-  });
+  const resizeObserver = new ResizeObserver(() => chart.setSize(chartSize()));
   resizeObserver.observe(chartDiv);
 
   function showData(event) {
@@ -267,6 +301,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
         data.push(new Array(longest - values.length).fill(null).concat(values));
       }
     }
+    lastData = data;
     chart.setData(data);
   }
 

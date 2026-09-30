@@ -222,6 +222,9 @@ export function createAnalysisHost({ row, device, sendCommand, extensions,
     ctx.rect(u.bbox.left, top, u.bbox.width, height);
     ctx.clip();
     const xPx = (t) => u.valToPos(t, 'x', true);
+    // each channel has its own y scale, named after it; fit curves belong
+    // to the channel the analysis runs on
+    const yKey = box.channel?.() ?? 'y';
     const shadeRegion = ([t0, t1]) => {
       ctx.fillStyle = 'rgba(217, 161, 60, 0.13)';
       ctx.fillRect(xPx(t0), top, xPx(t1) - xPx(t0), height);
@@ -237,9 +240,9 @@ export function createAnalysisHost({ row, device, sendCommand, extensions,
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.6 * devicePixelRatio;
       ctx.beginPath();
-      ctx.moveTo(xPx(curve.t[0]), u.valToPos(curve.v[0], 'y', true));
+      ctx.moveTo(xPx(curve.t[0]), u.valToPos(curve.v[0], yKey, true));
       for (let i = 1; i < curve.t.length; i++) {
-        ctx.lineTo(xPx(curve.t[i]), u.valToPos(curve.v[i], 'y', true));
+        ctx.lineTo(xPx(curve.t[i]), u.valToPos(curve.v[i], yKey, true));
       }
       ctx.stroke();
     };
