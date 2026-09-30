@@ -19,6 +19,22 @@ function formatVolts(volts) {
   return volts < 1 ? `±${volts * 1000} mV` : `±${volts} V`;
 }
 
+// uPlot's default tick labels go through Intl.NumberFormat, which stops at
+// 3 decimals: on the ±50 mV range every tick then read "0.002". Instead,
+// show as many decimals as the tick spacing needs.
+function tickValues(u, splits, axisIndex, space, incr) {
+  const decimals = Math.max(0, -Math.floor(Math.log10(incr) + 1e-9));
+  return splits.map((v) => (v == null ? ''
+    : (Math.abs(v) < incr / 2 ? 0 : v).toFixed(decimals)));
+}
+
+// widen the y axis to fit the longest tick label (the default 50 px clips
+// labels like "-0.0012")
+function tickAxisSize(u, values) {
+  const longest = Math.max(0, ...(values ?? []).map((v) => String(v).length));
+  return Math.max(50, Math.ceil(longest * 6.5) + 20);
+}
+
 function formatRate(hertz) {
   if (hertz >= 1e6) return `${hertz / 1e6} MS/s`;
   if (hertz >= 1e3) return `${hertz / 1e3} kS/s`;
@@ -55,6 +71,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
 
   let chart = null; // the uPlot instance, created after the channel controls
   let isPlaying = device.playing ?? true;
+  // the x axis always spans the whole window, so right after a start the
+  // data enters at 0 and slides left instead of the axis growing with it
+  let windowSeconds = (device.settings ?? [])
+    .find((setting) => setting.name === 'window_s')?.value ?? 10;
 
   // ------------------------------------------------------------- analyses
   // the channel all analyses fit on; the host shows it while a mode is
@@ -195,7 +215,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
   chart = new uPlot({
     width: 400,
     height: 200,
-    scales: { x: { time: false } },
+    scales: { x: { time: false, range: () => [-windowSeconds, 0] } },
     series: [
       { label: 't (s)' },
       ...CHANNEL_ORDER.map((name) => ({
@@ -207,7 +227,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
         value: (u, v) => (v == null ? '-' : `${v.toFixed(4)} V`),
       })),
     ],
-    axes: [axisStyle, { ...axisStyle, label: 'V' }],
+    axes: [
+      { ...axisStyle, values: tickValues },
+      { ...axisStyle, label: 'V', values: tickValues, size: tickAxisSize },
+    ],
     cursor: { drag: { x: false, y: false } },
     hooks: { draw: [(u) => analysisHost.draw(u)] },
   }, [[0], [null], [null], [null], [null]], chartDiv);
@@ -224,6 +247,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
 
   function showData(event) {
     const span = event.span_s;
+    if (event.window_s) windowSeconds = event.window_s;
     let longest = 0;
     for (const name of CHANNEL_ORDER) {
       longest = Math.max(longest, event.channels[name]?.length ?? 0);
