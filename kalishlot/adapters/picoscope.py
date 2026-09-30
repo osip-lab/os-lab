@@ -122,16 +122,25 @@ class PicoScopeAdapter(DeviceAdapter):
 
     def restore_settings(self, snapshot):
         # only touch what actually differs: every channel/rate change is a
-        # stop-reconfigure-restart of the streaming (audible relay clicks)
-        for name, saved in (snapshot.get('channels') or {}).items():
+        # stop-reconfigure-restart of the streaming (audible relay clicks).
+        # Channels being enabled go first: the scope opens with only A on and
+        # refuses to have none, so disabling A before enabling (say) D would
+        # fail - and that used to abandon the whole restore, bringing the
+        # scope back on A at every start.
+        saved_channels = sorted((snapshot.get('channels') or {}).items(),
+                                key=lambda item: not item[1].get('enabled'))
+        for name, saved in saved_channels:
             current = self.scope.channels.get(name)
             if current is None or all(saved.get(key) == current.get(key)
                                       for key in current):
                 continue
-            self.scope.configure_channel(name,
-                                         enabled=saved.get('enabled'),
-                                         coupling=saved.get('coupling'),
-                                         range_v=saved.get('range_v'))
+            try:
+                self.scope.configure_channel(name,
+                                             enabled=saved.get('enabled'),
+                                             coupling=saved.get('coupling'),
+                                             range_v=saved.get('range_v'))
+            except Exception:
+                pass  # one stale channel must not cost the rest of the restore
         rate = snapshot.get('sample_rate_hz')
         if rate and rate != self.scope.sample_rate_hz:
             self.scope.set_sample_rate(float(rate))
