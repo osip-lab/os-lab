@@ -143,17 +143,23 @@ def device_or_404(device_id):
 
 
 def close_all_devices():
-    """Close and forget every open device. Returns the ids that were closed."""
+    """Close and forget every open device. Returns the ids that were closed.
+
+    Devices on loan are forgotten too: the shutdown is meant to leave the lab
+    dark, so a script handing one back afterwards must not switch it on again.
+    """
     with devices_lock:
         open_devices = list(devices.items())
         devices.clear()
+        loaned = list(loans)
+        loans.clear()
     for device_id, adapter in open_devices:
         record_settings(device_id, adapter)
         try:
             adapter.close()
         except Exception:
             pass
-    return [device_id for device_id, _ in open_devices]
+    return [device_id for device_id, _ in open_devices] + loaned
 
 
 # ------------------------------------------------------------ idle watchdog
@@ -361,11 +367,29 @@ class OpenRequest(BaseModel):
     address: str
 
 
+def open_adapter(type_name, address):
+    """Connect a new adapter and restore its saved settings; the caller holds
+    devices_lock and registers it. HTTP 409 when the hardware refuses."""
+    adapter = DEVICE_TYPES[type_name](address)
+    try:
+        adapter.open()
+    except Exception as error:
+        adapter.close()
+        raise HTTPException(
+            status_code=409, detail=f'could not connect to {address}: {error}')
+    snapshot = saved_settings.get(f'{type_name}:{address}')
+    if snapshot is not None:
+        try:
+            adapter.restore_settings(snapshot)
+        except Exception:
+            pass  # a stale snapshot must never block opening the device
+    return adapter
+
+
 @app.post('/api/devices')
 def open_device(request: OpenRequest):
     note_activity()
-    cls = DEVICE_TYPES.get(request.type)
-    if cls is None:
+    if request.type not in DEVICE_TYPES:
         raise HTTPException(status_code=404, detail=f'unknown device type {request.type!r}')
     device_id = f'{request.type}:{request.address}'
     with devices_lock:
@@ -373,20 +397,11 @@ def open_device(request: OpenRequest):
         if existing is not None:
             # already open (e.g. another viewer's box): attach, don't reopen
             return {'device_id': device_id, 'existing': True, **existing.describe()}
-        adapter = cls(request.address)
-        try:
-            adapter.open()
-        except Exception as error:
-            adapter.close()
+        if device_id in loans:
             raise HTTPException(
-                status_code=409,
-                detail=f'could not connect to {request.address}: {error}')
-        snapshot = saved_settings.get(device_id)
-        if snapshot is not None:
-            try:
-                adapter.restore_settings(snapshot)
-            except Exception:
-                pass  # a stale snapshot must never block opening the device
+                status_code=409, detail=f'{device_id} is on loan to '
+                f'{loans[device_id]["borrower"]}; return it first')
+        adapter = open_adapter(request.type, request.address)
         devices[device_id] = adapter
     return {'device_id': device_id, 'existing': False, **adapter.describe()}
 
@@ -402,11 +417,80 @@ def list_open_devices():
 def close_device(device_id: str):
     with devices_lock:
         adapter = devices.pop(device_id, None)
+        # closed while on loan: the borrower's return then finds nothing
+        # to re-open, and the device stays closed as asked
+        cancelled = loans.pop(device_id, None) is not None
     if adapter is None:
+        if cancelled:
+            return {'ok': True}
         raise HTTPException(status_code=404, detail=f'no open device {device_id!r}')
     record_settings(device_id, adapter)
     adapter.close()
     return {'ok': True}
+
+
+# ------------------------------------------------------------------- loans
+# A standalone script (e.g. pico_scope/mode_video_capture.py) that needs a
+# device kalishlot holds borrows it: lending closes the device here and frees
+# the hardware but remembers it, and the viewers' boxes wait instead of giving
+# up (close code 4005). Returning re-opens it with its saved settings and the
+# boxes re-attach by themselves. The client side is loan_client.py.
+# A script that dies without returning leaves the device on loan - closed,
+# which is the safe state - until a box's "reconnect" button returns it.
+# device_id -> {'type', 'address', 'borrower', 'since', 'describe'}, under
+# devices_lock. 'describe' is the device's last describe(), so a page loaded
+# mid-loan can still build its box (app.js), which then waits like the rest.
+loans = {}
+
+
+class LendRequest(BaseModel):
+    borrower: str = 'a script'
+
+
+@app.get('/api/loans')
+def list_loans():
+    with devices_lock:
+        return [{'device_id': device_id, **loan}
+                for device_id, loan in loans.items()]
+
+
+@app.post('/api/devices/{device_id:path}/lend')
+def lend_device(device_id: str, request: LendRequest):
+    note_activity()
+    with devices_lock:
+        if device_id in loans:  # lending twice is harmless (a retried call)
+            return {'ok': True, 'device_id': device_id,
+                    'borrower': loans[device_id]['borrower']}
+        adapter = devices.pop(device_id, None)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail=f'no open device {device_id!r}')
+        type_name, address = device_id.split(':', 1)
+        try:
+            describe = adapter.describe()
+        except Exception:
+            describe = {'type': type_name, 'label': device_id}
+        loan = loans[device_id] = {
+            'type': type_name, 'address': address, 'borrower': request.borrower,
+            'since': datetime.now().isoformat(timespec='seconds'),
+            'describe': describe}
+    record_settings(device_id, adapter)
+    adapter.close()  # returns once the hardware is released
+    return {'ok': True, 'device_id': device_id, 'borrower': loan['borrower']}
+
+
+@app.post('/api/devices/{device_id:path}/return')
+def return_device(device_id: str):
+    note_activity()
+    with devices_lock:
+        loan = loans.get(device_id)
+        if loan is None:
+            raise HTTPException(status_code=404, detail=f'{device_id!r} is not on loan')
+        # stays on loan while the hardware is still busy (the borrower has
+        # not let go yet): the 409 says so, and the return can be retried
+        adapter = open_adapter(loan['type'], loan['address'])
+        del loans[device_id]
+        devices[device_id] = adapter
+    return {'ok': True, 'device_id': device_id, **adapter.describe()}
 
 
 class CommandRequest(BaseModel):
@@ -449,11 +533,15 @@ async def device_stream(websocket: WebSocket, device_id: str):
     serial numbers like 10036/0060)."""
     with devices_lock:
         adapter = devices.get(device_id)
+        on_loan = device_id in loans
     if adapter is None:
         # accept first, then close: a pre-accept close surfaces as a bare
         # 403 handshake rejection and the client never sees the 4004 code
         await websocket.accept()
-        await websocket.close(code=4004, reason='no such device')
+        if on_loan:  # lent to a script: the viewer waits for its return
+            await websocket.close(code=4005, reason='device on loan')
+        else:
+            await websocket.close(code=4004, reason='no such device')
         return
     await websocket.accept()
     listener = adapter.add_listener()
@@ -480,9 +568,13 @@ async def device_stream(websocket: WebSocket, device_id: str):
             # if the device was closed (by any viewer), tell this one and
             # end the stream instead of lingering on a dead adapter
             with devices_lock:
-                if devices.get(device_id) is not adapter:
-                    await websocket.close(code=4004, reason='device closed')
-                    break
+                gone = devices.get(device_id) is not adapter
+                on_loan = device_id in loans
+            if gone:
+                await websocket.close(code=4005 if on_loan else 4004,
+                                      reason='device on loan' if on_loan
+                                      else 'device closed')
+                break
             # send the newest frame if it changed
             frame_id, frame = adapter.latest_display_frame()
             if frame is not None and frame_id != last_frame_id:

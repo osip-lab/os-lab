@@ -89,7 +89,9 @@ class capture:
     # 'xicamtool' takes whatever ROI was last set in xiCamTool, read from the
     # per-serial file it writes when it closes - the same four numbers its ROI
     # dialog shows, without transcribing them. XIMEA only: pylon Viewer keeps
-    # no equivalent, and says so rather than locating instead.
+    # no equivalent, and says so rather than locating instead. When kalishlot
+    # is running and holds the XIMEA, the ROI of its camera box is taken
+    # instead of the file's.
     MANUAL_ROI = None
     # MANUAL_ROI = 'xicamtool'
     # MANUAL_ROI = {'offset_x': 560, 'offset_y': 272, 'width': 492, 'height': 544}

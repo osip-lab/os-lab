@@ -159,6 +159,10 @@ async function reattachOpenDevices() {
   try {
     const open = await api('/api/devices');
     for (const device of open) addBox(device);
+    // devices lent to a script get their box too, built from the state they
+    // had when lent; it waits and re-attaches once they are returned
+    const loans = await api('/api/loans');
+    for (const loan of loans) addBox({ ...loan.describe, device_id: loan.device_id });
     status.textContent = open.length
       ? `re-attached to ${open.length} running device(s)` : '';
   } catch (error) {

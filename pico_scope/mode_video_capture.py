@@ -20,6 +20,15 @@ The only real requirement is **overlap**: the burst must sit inside the scope
 record, so record the scope for comfortably longer than the burst lasts and
 start it first. The script prints the burst duration before asking.
 
+## Alongside kalishlot
+
+If the kalishlot web GUI is running and holds the camera (or the scope, when
+this script drives it), the script borrows them for the run: kalishlot closes
+them, their boxes show "on loan", and they are handed back - re-opened with
+their settings - when the script ends, also on an error or Ctrl+C. A script
+killed outright cannot hand them back; press "reconnect" in the box. See
+kalishlot/loan_client.py.
+
 ## What comes out
 
 A session folder holding
@@ -51,6 +60,7 @@ from pico_scope import run_config  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
 from utilities.utils import wait_for_path_from_clipboard  # noqa: E402
+from kalishlot.loan_client import borrow_from_kalishlot  # noqa: E402
 
 # The camera makes this script can drive. Imported one at a time and only when
 # needed: a machine with just one SDK installed must still run, and importing
@@ -59,6 +69,8 @@ CAMERA_BACKENDS = {
     'basler': ('basler_cam', 'basler_cameras', 'BaslerCamera'),
     'ximea': ('ximea_cam', 'ximea_cameras', 'XimeaCamera'),
 }
+# The same makes as kalishlot device types, for borrowing them from it.
+KALISHLOT_CAMERA_TYPES = {'basler': 'basler_camera', 'ximea': 'ximea_camera'}
 
 # --- the run parameters, and where they really come from -------------------
 # Everything from here to the end of the calibration block is a *default*.
@@ -127,10 +139,12 @@ THROUGHPUT_BPS = None
 # mode has left - so set this back to None when the comparison it was pinned
 # for is done. This is the setting the config file exists for: it belongs to a
 # day's alignment, not to the repository.
-MANUAL_ROI = None
+MANUAL_ROI = 'xicamtool'
 # MANUAL_ROI = 'xicamtool' takes whatever ROI was last set in xiCamTool - see
 # xicamtool_roi(). The four numbers typed here are the ones that dialog shows,
 # so reading them from the file it already writes saves transcribing them.
+# When kalishlot is running and holds the XIMEA, the ROI of its camera box is
+# taken instead - that is the one being looked at - see kalishlot_roi().
 
 # ROI in BINNED pixels, for the runs that size it themselves; MANUAL_ROI wins
 # over both when it is set. None: the full sensor width. On the Basler width is
@@ -793,8 +807,34 @@ def xicamtool_roi(serial, directory=None):
     return roi
 
 
-def resolve_manual_roi(serial=None, make=None):
+def kalishlot_roi(describe):
+    """The ROI of a kalishlot camera box, in SENSOR pixels, shaped like a
+    hand-typed MANUAL_ROI. `describe` is the box's device as kalishlot lists
+    it; no ROI there means the box shows the whole sensor, and so is this.
+
+    kalishlot's XIMEA runs unbinned, so its ROI is already in sensor pixels.
+    """
+    roi = describe.get('roi')
+    if roi is None:
+        height, width = describe['sensor_full']
+        roi = {'x': 0, 'y': 0, 'width': width, 'height': height}
+    spec = {'offset_x': int(roi['x']), 'offset_y': int(roi['y']),
+            'width': int(roi['width']), 'height': int(roi['height'])}
+    print(f"  ROI from kalishlot's {describe['device_id']} box: sensor "
+          f"{spec['width']}x{spec['height']} at ({spec['offset_x']}, "
+          f"{spec['offset_y']})"
+          + ('' if describe.get('roi') else ' (not cropped there)'))
+    return spec
+
+
+def resolve_manual_roi(serial=None, make=None, kalishlot=None):
     """Turn MANUAL_ROI = 'xicamtool' into the four numbers it stands for.
+
+    From kalishlot rather than from xiCamTool's file when kalishlot was
+    holding this camera: `kalishlot` is what borrow_from_kalishlot() lent,
+    {device_id: its describe()} as it was just before the loan. The box being
+    watched is where the ROI was last drawn; the file is only as fresh as the
+    last time xiCamTool was closed.
 
     Done once, as soon as the camera is known, and written back into the
     module: every later manual_roi() call then sees an ordinary typed ROI, and
@@ -813,7 +853,8 @@ def resolve_manual_roi(serial=None, make=None):
     if not serial:
         raise RuntimeError(f'MANUAL_ROI = {XICAMTOOL!r} needs the serial of '
                            f'the camera to know which file to read')
-    MANUAL_ROI = xicamtool_roi(serial)
+    held = (kalishlot or {}).get(f"{KALISHLOT_CAMERA_TYPES['ximea']}:{serial}")
+    MANUAL_ROI = kalishlot_roi(held) if held else xicamtool_roi(serial)
     return MANUAL_ROI
 
 
@@ -1707,6 +1748,24 @@ def _self_test():
     print("  MANUAL_ROI = 'xicamtool' says so plainly on a Basler rather "
           "than quietly locating instead")
 
+    # kalishlot holding the XIMEA: its box's ROI wins over xiCamTool's file
+    # (which does not exist for this serial, so reading it would raise)
+    held = {'ximea_camera:TEST009': {
+        'device_id': 'ximea_camera:TEST009', 'sensor_full': [2048, 2048],
+        'roi': {'x': 100, 'y': 640, 'width': 1800, 'height': 360}}}
+    try:
+        globals()['MANUAL_ROI'] = XICAMTOOL
+        assert resolve_manual_roi('TEST009', 'ximea', held) == {
+            'offset_x': 100, 'offset_y': 640, 'width': 1800, 'height': 360}
+        globals()['MANUAL_ROI'] = XICAMTOOL
+        held['ximea_camera:TEST009']['roi'] = None      # uncropped box
+        assert resolve_manual_roi('TEST009', 'ximea', held) == {
+            'offset_x': 0, 'offset_y': 0, 'width': 2048, 'height': 2048}
+    finally:
+        globals()['MANUAL_ROI'] = saved_roi
+    print("  with kalishlot holding the XIMEA, MANUAL_ROI = 'xicamtool' takes "
+          "the ROI of its box instead of xiCamTool's file")
+
     # with none typed, the ROI is measured at every run and not remembered
     # from whenever this file was written; the only fallback is a past capture
     with tempfile.TemporaryDirectory() as empty:
@@ -1829,12 +1888,46 @@ def main():
     if action == 'self-test':
         _self_test()
         return
+    if action not in ('capture', 'levels', 'locate'):
+        raise SystemExit(f'ACTION must be capture, levels, locate or '
+                         f'self-test, not {ACTION!r}')
 
+    drive_scope = action == 'capture' and (DRIVE_SCOPE or args.scope)
+    with borrow_from_kalishlot(
+            kalishlot_wants(args.camera, args.serial, drive_scope),
+            borrower='mode_video_capture.py') as lent:
+        run_action(action, args, locate, strict_levels, drive_scope, lent)
+
+
+def kalishlot_wants(make=None, serial=None, drive_scope=False):
+    """Which of the devices a running kalishlot holds this run needs.
+
+    The camera it will open - the one named, or any of a make it can drive
+    when it is to take the only one connected (which kalishlot then holds) -
+    and, when it drives the scope itself, the scope. Borrowed before the
+    camera is resolved: a camera held elsewhere may not enumerate.
+    """
+    make = CAMERA if make is None else make
+    serial = SERIAL_NUMBER if serial is None else serial
+    camera_types = {KALISHLOT_CAMERA_TYPES[name]
+                    for name in ([make] if make else KALISHLOT_CAMERA_TYPES)}
+
+    def wants(device):
+        type_name = device.get('type')
+        if type_name == 'picoscope':
+            return drive_scope
+        address = device['device_id'].split(':', 1)[1]
+        return type_name in camera_types and (
+            not serial or address == str(serial))
+    return wants
+
+
+def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
     camera_cls, serial, make = resolve_camera(args.camera, args.serial)
     # As soon as the camera is known, so the 'levels' and 'locate' paths below
     # see the same ROI a capture would. Idempotent: once it has resolved,
     # MANUAL_ROI is an ordinary dict and the capture paths leave it alone.
-    resolve_manual_roi(serial, make)
+    resolve_manual_roi(serial, make, lent)
 
     if action == 'locate':
         cam = camera_cls(serial)
@@ -1862,11 +1955,7 @@ def main():
             cam.close()
         return
 
-    if action != 'capture':
-        raise SystemExit(f'ACTION must be capture, levels, locate or '
-                         f'self-test, not {ACTION!r}')
-
-    if DRIVE_SCOPE or args.scope:
+    if drive_scope:
         capture_synchronized(serial, locate=locate, make=make,
                              require_level=strict_levels)
     else:

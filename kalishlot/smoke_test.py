@@ -11,6 +11,7 @@ import asyncio
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import websockets
@@ -469,6 +470,164 @@ async def check_close_notification(device_id):
             assert code == 4004, f'expected close code 4004, got {code}'
 
 
+def check_exposure_rate():
+    """Exposure and frame rate following each other (XIMEA box), against a
+    simulated camera: the rate it can keep is capped by readout, and by the
+    exposure plus a fixed overhead - which the helpers must find by asking,
+    not know."""
+    from adapters.exposure_rate import exposure_for_rate, rate_for_exposure
+
+    class Camera:
+        OVERHEAD_US, READOUT_CAP_HZ = 50.0, 500.0
+
+        def __init__(self):
+            self._exposure, self._rate = 50000.0, 10.0
+
+        @property
+        def exposure_us(self):
+            return self._exposure
+
+        @exposure_us.setter
+        def exposure_us(self, value):
+            self._exposure = min(max(value, 10.0), 1e6)
+
+        @property
+        def frame_rate_limits_hz(self):
+            return 1.0, min(self.READOUT_CAP_HZ,
+                            1e6 / (self._exposure + self.OVERHEAD_US))
+
+        @property
+        def frame_rate_hz(self):
+            return min(self._rate, self.frame_rate_limits_hz[1])
+
+        @frame_rate_hz.setter
+        def frame_rate_hz(self, value):
+            self._rate = min(max(value, 1.0), self.frame_rate_limits_hz[1])
+
+    camera = Camera()
+    exposure_for_rate(camera, 100)          # from a 50 ms exposure
+    assert abs(camera.frame_rate_hz - 100) < 1e-6, camera.frame_rate_hz
+    assert 9940 <= camera.exposure_us <= 9950, camera.exposure_us
+    rate_for_exposure(camera, 20000)
+    assert camera.exposure_us == 20000
+    assert abs(camera.frame_rate_hz - 1e6 / 20050) < 1e-6, camera.frame_rate_hz
+    exposure_for_rate(camera, 2000)         # beyond the readout cap
+    assert abs(camera.frame_rate_hz - 500) < 1e-6, camera.frame_rate_hz
+    assert 1940 <= camera.exposure_us <= 1950, camera.exposure_us
+    print('exposure and frame rate follow each other ok '
+          '(100 Hz -> 9.95 ms, 20 ms -> 49.9 Hz, 2 kHz -> capped at 500)')
+
+
+def check_picoscope_restore():
+    """The saved channels come back even when channel A - the only one on
+    when the scope opens - is saved disabled. Disabling A first would leave
+    no channel on, which the scope refuses, and the whole restore used to be
+    abandoned over it. No hardware: the scope is configured without opening."""
+    from adapters.picoscope import PicoScopeAdapter
+
+    adapter = PicoScopeAdapter('TEST')
+    off = {'enabled': False, 'coupling': 'DC', 'range_v': 5.0}
+    adapter.restore_settings({'sample_rate_hz': 1000.0, 'window_s': 10.0,
+                              'channels': {
+        'A': off, 'B': off, 'C': off,
+        'D': {'enabled': True, 'coupling': 'AC', 'range_v': 0.05}}})
+    channels = adapter.scope.channels
+    assert [n for n, c in channels.items() if c['enabled']] == ['D'], channels
+    assert channels['D'] == {'enabled': True, 'coupling': 'AC',
+                             'range_v': 0.05}, channels['D']
+    print('picoscope restores its saved channels (D only, off A) ok')
+
+
+async def close_code(socket, timeout=5):
+    """Read until the server closes the socket; return its close code."""
+    try:
+        while True:
+            await asyncio.wait_for(socket.recv(), timeout=timeout)
+    except websockets.exceptions.ConnectionClosed as closed:
+        return closed.rcvd.code if closed.rcvd else None
+
+
+async def check_loans(address):
+    """Lending a device to a script: it closes (viewers told 4005, not the
+    final 4004), stays listed as a loan, cannot be re-opened meanwhile, and
+    comes back with its settings when returned. Then the same through
+    loan_client, the way mode_video_capture.py uses it."""
+    import loan_client
+
+    device = api('/api/devices', 'POST',
+                 {'type': 'dummy_camera', 'address': address})
+    device_id = device['device_id']
+    api(f'/api/devices/{device_id}/command', 'POST',
+        {'name': 'set_setting', 'args': {'name': 'exposure', 'value': 7000}})
+    uri = f'ws://{HOST}:{PORT}/ws/devices/{device_id}'
+
+    async with websockets.connect(uri) as socket:
+        api(f'/api/devices/{device_id}/lend', 'POST', {'borrower': 'smoke'})
+        code = await close_code(socket)
+        assert code == 4005, f'attached viewer: expected 4005, got {code}'
+    async with websockets.connect(uri) as socket:
+        code = await close_code(socket)
+        assert code == 4005, f'new viewer: expected 4005, got {code}'
+    assert api('/api/devices') == []
+    loans = api('/api/loans')
+    assert [loan['device_id'] for loan in loans] == [device_id], loans
+    assert loans[0]['borrower'] == 'smoke', loans
+    assert loans[0]['describe']['type'] == 'dummy_camera', loans
+    try:
+        api('/api/devices', 'POST', {'type': 'dummy_camera', 'address': address})
+        raise AssertionError('a device on loan must not re-open')
+    except urllib.error.HTTPError as error:
+        assert error.code == 409, error.code
+    again = api(f'/api/devices/{device_id}/lend', 'POST', {'borrower': 'x'})
+    assert again['borrower'] == 'smoke', 'a second lend must be a no-op'
+    print('lend ok (viewers get 4005, listed in /api/loans, re-open refused)')
+
+    returned = api(f'/api/devices/{device_id}/return', 'POST')
+    exposure = next(s['value'] for s in returned['settings']
+                    if s['name'] == 'exposure')
+    assert exposure == 7000, f'expected exposure 7000 after return, got {exposure}'
+    assert api('/api/loans') == []
+    async with websockets.connect(uri) as socket:
+        message = await asyncio.wait_for(socket.recv(), timeout=5)
+        assert isinstance(message, bytes), 'expected a frame after the return'
+    print('return ok (re-opened with its settings, viewers stream again)')
+
+    # closing the box while on loan cancels the loan: the return then
+    # finds nothing to re-open and the device stays closed
+    api(f'/api/devices/{device_id}/lend', 'POST', {'borrower': 'smoke'})
+    api(f'/api/devices/{device_id}', 'DELETE')
+    assert api('/api/loans') == [] and api('/api/devices') == []
+    assert loan_client.give_back(device_id, BASE) is False
+    print('closing a box on loan cancels the loan ok')
+
+    # the client, as the capture script uses it
+    api('/api/devices', 'POST', {'type': 'dummy_camera', 'address': address})
+    notes = []
+    with loan_client.borrow_from_kalishlot(
+            lambda d: d['type'] == 'dummy_camera', 'smoke client',
+            url=BASE, log=notes.append) as lent:
+        assert list(lent) == [device_id], lent
+        assert lent[device_id]['type'] == 'dummy_camera', lent
+        assert api('/api/devices') == []
+    assert [d['device_id'] for d in api('/api/devices')] == [device_id]
+    try:
+        with loan_client.borrow_from_kalishlot(
+                lambda d: True, 'smoke client', url=BASE, log=notes.append):
+            raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        pass
+    assert [d['device_id'] for d in api('/api/devices')] == [device_id], \
+        'an interrupted borrower must still give the device back'
+    with loan_client.borrow_from_kalishlot(
+            lambda d: False, 'smoke client', url=BASE, log=notes.append) as lent:
+        assert not lent
+    with loan_client.borrow_from_kalishlot(
+            lambda d: True, 'x', url='http://127.0.0.1:1', log=notes.append) as lent:
+        assert not lent, 'no kalishlot running must mean nothing to borrow'
+    api(f'/api/devices/{device_id}', 'DELETE')
+    print('loan_client ok (returns on exit and on Ctrl+C; no server is a no-op)')
+
+
 async def check_idle_watchdog(address):
     """Idle timeout: warning -> dismissal restarts the countdown -> a second
     warning left alone closes every device. Runs with the timeouts shrunk to
@@ -567,6 +726,9 @@ def main():
         api(f'/api/devices/{device_id}', 'DELETE')
         print('re-open restores persisted settings ok (exposure 5000, ROI 300x400)')
 
+        check_picoscope_restore()
+        check_exposure_rate()
+        asyncio.run(check_loans(available[0]['address']))
         asyncio.run(check_idle_watchdog(available[0]['address']))
 
         page = urllib.request.urlopen(f'{BASE}/').read().decode()
