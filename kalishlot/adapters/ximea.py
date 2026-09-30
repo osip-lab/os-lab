@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'ximea_cam'))
 from ximea_cameras import CameraStreamer, XimeaCamera  # noqa: E402
 
 from .camera_base import CameraAdapterBase, StreamerROIMixin  # noqa: E402
+from .exposure_rate import exposure_for_rate, rate_for_exposure  # noqa: E402
 
 
 class XimeaCameraAdapter(StreamerROIMixin, CameraAdapterBase):
@@ -142,27 +143,50 @@ class XimeaCameraAdapter(StreamerROIMixin, CameraAdapterBase):
                  'min': rate_min, 'max': rate_max, 'decimals': 1,
                  'value': self._settings.get('framerate', 0.0)}]
 
+    def restore_settings(self, snapshot):
+        # the saved exposure and rate go back exactly as they were, not one
+        # of them re-derived from the other (see _apply_setting)
+        self._restoring = True
+        try:
+            super().restore_settings(snapshot)
+        finally:
+            self._restoring = False
+
     def _apply_setting(self, name, value):
         if name not in ('exposure', 'gain', 'framerate'):
             raise ValueError(f'unknown setting {name!r}')
+        # From the box, exposure and frame rate follow each other: a rate
+        # gets the longest exposure that keeps it, an exposure the fastest
+        # rate it allows (exposure_rate.py). Read now, not on the streaming
+        # thread, which runs the change later.
+        coupled = not getattr(self, '_restoring', False)
 
         def apply(camera):
-            if name == 'exposure':
-                camera.exposure_us = value
-                accepted = camera.exposure_us
-                # A long exposure lowers the rate the camera can keep, so the
-                # ceiling on the rate slider moves with it.
-                self._limits['framerate'] = camera.frame_rate_limits_hz
-                self._settings['framerate'] = camera.frame_rate_hz
-            elif name == 'gain':
+            if name == 'gain':
                 camera.gain_db = value
-                accepted = camera.gain_db
+                self._settings['gain'] = camera.gain_db
+                self.emit({'type': 'setting_applied', 'name': 'gain',
+                           'value': self._settings['gain']})
+                return
+            if name == 'exposure':
+                if coupled:
+                    rate_for_exposure(camera, value)
+                else:
+                    camera.exposure_us = value
+            elif coupled:
+                exposure_for_rate(camera, value)
             else:
                 camera.frame_rate_hz = value
-                accepted = camera.frame_rate_hz
-            self._settings[name] = accepted
-            self.emit({'type': 'setting_applied', 'name': name,
-                       'value': accepted})
+            # either one moves the other (and the ceiling on the rate), so
+            # both go back to the box
+            self._limits['framerate'] = camera.frame_rate_limits_hz
+            self._settings['exposure'] = camera.exposure_us
+            self._settings['framerate'] = camera.frame_rate_hz
+            self.emit({'type': 'setting_applied', 'name': 'exposure',
+                       'value': self._settings['exposure']})
+            self.emit({'type': 'setting_applied', 'name': 'framerate',
+                       'value': self._settings['framerate'],
+                       'max': self._limits['framerate'][1]})
 
         self.streamer.submit(apply)
 

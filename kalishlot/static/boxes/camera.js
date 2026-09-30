@@ -182,9 +182,12 @@ export function createCameraBox(device, container, sendCommand) {
     input.addEventListener('blur', commit);
   }
 
-  function showAppliedSetting(name, value) {
+  function showAppliedSetting(name, value, max) {
     const entry = settingInputs[name];
     if (!entry) return;
+    // a ceiling that moves with other settings (the XIMEA's frame rate
+    // with its exposure) comes along with the value
+    if (max != null) entry.input.max = max;
     entry.input.value = value.toFixed(entry.decimals);
     entry.input.dataset.committed = entry.input.value;
   }
@@ -950,7 +953,9 @@ export function createCameraBox(device, container, sendCommand) {
     status,
     onEvent(event) {
       if (event.type === 'status') setPlaying(event.playing);
-      else if (event.type === 'setting_applied') showAppliedSetting(event.name, event.value);
+      else if (event.type === 'setting_applied') {
+        showAppliedSetting(event.name, event.value, event.max);
+      }
       else if (event.type === 'fit_status') {
         fitCheck.checked = event.enabled;
         if (!event.enabled) clearFitDisplay();
