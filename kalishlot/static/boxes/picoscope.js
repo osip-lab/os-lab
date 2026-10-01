@@ -13,7 +13,8 @@ import { createAnalysisHost } from './extensions/host.js';
 import { ANALYSIS_EXTENSIONS } from './extensions/registry.js';
 
 const CHANNEL_ORDER = ['A', 'B', 'C', 'D'];
-const CHANNEL_COLORS = { A: '#4a9eda', B: '#e05555', C: '#52c46a', D: '#d9a13c' };
+// Dimmed for the dark lab: same hues, about 40% of the old brightness.
+const CHANNEL_COLORS = { A: '#2b5f85', B: '#8a3030', C: '#2f7a40', D: '#87631f' };
 
 function formatVolts(volts) {
   return volts < 1 ? `±${volts * 1000} mV` : `±${volts} V`;
