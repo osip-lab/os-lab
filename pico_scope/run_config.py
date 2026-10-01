@@ -101,7 +101,7 @@ SECTIONS = {
     )),
     'show': ('mode_video_sync_show', (
         'ACTION', 'SESSION', 'SCOPE_FILE',
-        'SHADE_ALPHA', 'FIT_REBINNING',
+        'SHADE_ALPHA', 'FIT_REBINNING', 'RENORMALIZE_PERCENTILE',
     )),
     'mark': ('mode_video_sync_mark', (
         'ACTION', 'SESSION', 'SCOPE_FILE',

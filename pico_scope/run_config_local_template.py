@@ -239,6 +239,10 @@ class show:
     # viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
     # frame and agrees with 2x to better than 1% on the widths.
     FIT_REBINNING = 4
+    # With renormalize on (the checkbox, or n), this percentile of the frame on
+    # screen is drawn at full brightness, so a dim mode shows as well as a
+    # bright one. Not the maximum: one hot pixel would then set the scale.
+    RENORMALIZE_PERCENTILE = 99.0
 
 
 class mark:

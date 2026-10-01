@@ -19,6 +19,10 @@ guesswork: every instant of the trace maps to a definite frame.
 - **Left / right arrows** step one frame; **shift** steps ten.
 - **fit Gaussian** (the checkbox, or **f**) fits a 2D Gaussian to the frame on
   screen and draws its 1/e^2 contour, reporting the beam radii in millimetres.
+- **renormalize** (the checkbox, or **n**) scales each frame to itself, with
+  its RENORMALIZE_PERCENTILE-th percentile as full brightness, so a dim mode is
+  as visible as a bright one. Off, every frame shares one scale and the
+  brightness differences between them are real.
 
 ## Which capture it opens
 
@@ -91,6 +95,10 @@ SHADE_ALPHA = 0.06   # faint: at 120 frames these are stripes until you zoom
 # viewer fit the same frame the same way. 4x costs ~140 ms on a 448x1024
 # frame and agrees with 2x to better than 1% on the widths.
 FIT_REBINNING = 4
+# With renormalize on, this percentile of the frame on screen is drawn at full
+# brightness. Not the maximum: one hot pixel would then set the scale and leave
+# the mode as dim as before. Brighter pixels than it saturate the colormap.
+RENORMALIZE_PERCENTILE = 99.0
 
 # Applied before matplotlib, because the backend below is chosen from ACTION
 # and a config that asks for 'self-test' has to reach that line first.
@@ -125,7 +133,8 @@ from utilities.utils import (fit_gaussian_beam,  # noqa: E402
                              wait_for_path_from_clipboard)
 
 HELP_TEXT = ('move: follow the cursor   click: pin/unpin   '
-             'left/right: step (shift = 10)   f: fit a Gaussian')
+             'left/right: step (shift = 10)   f: fit a Gaussian   '
+             'n: renormalize')
 FIT_POLL_MS = 80        # how often the GUI thread looks for a finished fit
 
 
@@ -161,6 +170,7 @@ class ModeSpectrumViewer:
         self._fit_result = None     # written by the fit thread, read by the timer
         self._fit_seen = None
         self._fit_timer = None
+        self.renormalize = False
 
         self._build_figure(title)
         self._connect()
@@ -219,7 +229,8 @@ class ModeSpectrumViewer:
 
         # One shared scale, so brightness differences between frames are real
         # rather than an artefact of autoscaling each image to itself.
-        self.image.set_clim(0, max(int(np.asarray(self.frames).max()), 1))
+        self.shared_clim = (0, max(int(np.asarray(self.frames).max()), 1))
+        self.image.set_clim(*self.shared_clim)
 
         self._build_fit_controls()
 
@@ -275,6 +286,11 @@ class ModeSpectrumViewer:
         self.fit_text = self.fig.text(0.755, 0.10, '', fontsize=8.5,
                                       va='bottom', ha='left', family='monospace')
 
+        self.ax_norm = self.fig.add_axes([0.755, 0.36, 0.115, 0.07])
+        self.ax_norm.set_frame_on(False)
+        self.check_norm = CheckButtons(self.ax_norm, ['renormalize'], [False])
+        self.check_norm.on_clicked(lambda _label: self.toggle_renormalize())
+
     def _connect(self):
         self.cids = [
             self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion),
@@ -282,6 +298,28 @@ class ModeSpectrumViewer:
             self.fig.canvas.mpl_connect('key_press_event', self.on_key),
             self.fig.canvas.mpl_connect('draw_event', self.on_draw),
         ]
+
+    # -------------------------------------------------------- renormalize
+    def toggle_renormalize(self, enabled=None):
+        """Scale each frame to itself, or all frames to one; returns the state."""
+        self.renormalize = ((not self.renormalize) if enabled is None
+                            else bool(enabled))
+        if self.check_norm.get_status()[0] != self.renormalize:
+            # keeps the box in step when toggled by the 'n' key
+            self.check_norm.eventson = False
+            self.check_norm.set_active(0)
+            self.check_norm.eventson = True
+        self.show_frame(self.index)
+        return self.renormalize
+
+    def frame_clim(self, frame):
+        """The colour limits for a frame: its own percentile, or the shared."""
+        if not self.renormalize:
+            return self.shared_clim
+        top = float(np.percentile(frame, RENORMALIZE_PERCENTILE))
+        if top <= 0:            # a frame dark below the percentile
+            top = max(float(frame.max()), 1.0)
+        return 0, top
 
     # ---------------------------------------------------------------- fit
     def toggle_fit(self, enabled=None):
@@ -408,7 +446,9 @@ class ModeSpectrumViewer:
     def show_frame(self, index, redraw=True):
         index = int(np.clip(index, 0, len(self.frames) - 1))
         self.index = index
-        self.image.set_data(np.asarray(self.frames[index]))
+        frame = np.asarray(self.frames[index])
+        self.image.set_data(frame)
+        self.image.set_clim(*self.frame_clim(frame))
         centre = self.windows[index].mean() * 1e3
         low, high = self.windows[index] * 1e3
         # axvspan gives a Rectangle here, so move it with the rectangle API
@@ -417,6 +457,8 @@ class ModeSpectrumViewer:
         self.cursor_trace.set_xdata([centre, centre])
         self.cursor_bright.set_xdata([centre, centre])
         state = 'pinned' if self.pinned is not None else 'following'
+        if self.renormalize:
+            state += f', p{RENORMALIZE_PERCENTILE:g} = max'
         self.image_title.set_text(
             f'frame {index} of {len(self.frames) - 1}   '
             f'{self.windows[index, 0] * 1e3:.2f}-{self.windows[index, 1] * 1e3:.2f} ms   '
@@ -478,6 +520,9 @@ class ModeSpectrumViewer:
             self.pinned = self.index + step
         elif key == 'f':
             self.toggle_fit()
+            return
+        elif key == 'n':
+            self.toggle_renormalize()
             return
         else:
             return
@@ -771,6 +816,26 @@ def _self_test():
     fit_viewer.close_fit()
     plt.close(fit_viewer.fig)
     print('  the checkbox turns the fit on and off and stops its thread')
+
+    # renormalize: each frame to its own percentile, and back to the shared scale
+    dim = int(np.argmin(brightness))
+    viewer.show_frame(dim, redraw=False)
+    assert viewer.image.get_clim() == viewer.shared_clim
+    assert viewer.toggle_renormalize() is True
+    assert viewer.check_norm.get_status()[0] is True
+    frame = np.asarray(frames[dim])
+    assert np.isclose(viewer.image.get_clim()[1],
+                      np.percentile(frame, RENORMALIZE_PERCENTILE)
+                      if np.percentile(frame, RENORMALIZE_PERCENTILE) > 0
+                      else max(frame.max(), 1))
+    viewer.show_frame(int(np.argmax(brightness)), redraw=False)
+    assert viewer.image.get_clim()[1] <= viewer.shared_clim[1]
+    viewer.on_key(_Key('n'))
+    assert viewer.renormalize is False
+    assert viewer.check_norm.get_status()[0] is False
+    assert viewer.image.get_clim() == viewer.shared_clim
+    print('  renormalize scales each frame to its own percentile, and off '
+          'restores the one shared scale')
 
     plt.close(viewer.fig)
     # the run-button configuration has to name something this file can do
