@@ -149,9 +149,14 @@ export function createCameraBox(device, container, sendCommand) {
   // ------------------------------------------------------------- settings
   // Number inputs from the adapter's settings schema. Commit on Enter or
   // focus loss; the input then shows the value the hardware accepted
-  // (delivered as a 'setting_applied' event).
+  // (delivered as a 'setting_applied' event). Exposure and frame rate also
+  // get a dot to drag along a line (log scale: they span decades) and
+  // :2 / ×2 buttons. On the XIMEA each one moves the other; that arrives as
+  // a 'setting_applied' for the other one, which moves its dot too.
+  const DRAGGABLE = new Set(['exposure', 'framerate']);
+  const DRAG_SEND_MS = 100; // at most one command per this while dragging
   const settingsSpan = container.querySelector('.cam-settings');
-  const settingInputs = {}; // name -> { input, decimals }
+  const settingInputs = {}; // name -> { input, decimals, slider }
   for (const setting of device.settings ?? []) {
     const label = document.createElement('label');
     label.className = 'field';
@@ -168,18 +173,131 @@ export function createCameraBox(device, container, sendCommand) {
     unit.className = 'unit';
     label.appendChild(input);
     label.appendChild(unit);
-    settingsSpan.appendChild(label);
-    settingInputs[setting.name] = { input, decimals: setting.decimals };
+    const entry = { input, decimals: setting.decimals, slider: null };
+    settingInputs[setting.name] = entry;
 
+    const send = (value) => {
+      sendCommand(device.device_id, 'set_setting', { name: setting.name, value })
+        .catch((e) => { status.textContent = e.message; });
+    };
     const commit = () => {
       const value = parseFloat(input.value);
       if (!isFinite(value) || input.value === input.dataset.committed) return;
       input.dataset.committed = input.value;
-      sendCommand(device.device_id, 'set_setting', { name: setting.name, value })
-        .catch((e) => { status.textContent = e.message; });
+      send(value);
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); });
     input.addEventListener('blur', commit);
+
+    if (!DRAGGABLE.has(setting.name)) {
+      settingsSpan.appendChild(label);
+      continue;
+    }
+    const group = document.createElement('span');
+    group.className = 'cam-setting';
+    group.appendChild(label);
+    entry.slider = makeSettingSlider(group, entry, setting, send);
+    settingsSpan.appendChild(group);
+  }
+
+  // A dot on a line for one setting, with :2 and ×2 buttons around it. The
+  // line runs from the setting's min to its current max (which can move).
+  function makeSettingSlider(group, entry, setting, send) {
+    const { input, decimals } = entry;
+    const range = () => [parseFloat(input.min), parseFloat(input.max)];
+    const clamp = (v) => { const [lo, hi] = range(); return Math.min(hi, Math.max(lo, v)); };
+    const toFrac = (v, [lo, hi]) => {
+      if (!(hi > lo)) return 0;
+      const f = lo > 0 ? Math.log(v / lo) / Math.log(hi / lo) : (v - lo) / (hi - lo);
+      return Math.min(1, Math.max(0, f));
+    };
+    const fromFrac = (f, [lo, hi]) => (lo > 0 ? lo * Math.pow(hi / lo, f) : lo + f * (hi - lo));
+
+    const half = document.createElement('button');
+    half.className = 'cam-step';
+    half.textContent = ':2';
+    half.title = `halve the ${setting.label}`;
+    const track = document.createElement('span');
+    track.className = 'cam-track';
+    track.title = `drag to change the ${setting.label} (log scale)`;
+    const dot = document.createElement('span');
+    dot.className = 'cam-dot';
+    track.appendChild(dot);
+    const twice = document.createElement('button');
+    twice.className = 'cam-step';
+    twice.textContent = '×2';
+    twice.title = `double the ${setting.label}`;
+    group.append(half, track, twice);
+
+    let dragging = null; // { range, lastSent, pending, timer } while dragging
+    const placeDot = (value, r = range()) => {
+      dot.style.left = `${100 * toFrac(value, r)}%`;
+    };
+    placeDot(parseFloat(input.value));
+
+    const setValue = (value) => {
+      input.value = clamp(value).toFixed(decimals);
+      input.dataset.committed = input.value;
+      return parseFloat(input.value);
+    };
+    const step = (factor) => {
+      const current = parseFloat(input.dataset.committed);
+      if (!isFinite(current)) return;
+      const value = setValue(current * factor);
+      placeDot(value);
+      send(value);
+    };
+    half.onclick = () => step(0.5);
+    twice.onclick = () => step(2);
+
+    // While dragging, commands go out throttled, and the camera's replies
+    // for this setting are ignored until release so the dot doesn't jump
+    // back under the pointer. The range is frozen at the press so the scale
+    // holds still when the other setting moves this one's max.
+    const flush = () => {
+      if (!dragging) return;
+      dragging.timer = null;
+      if (dragging.pending == null) return;
+      send(dragging.pending);
+      dragging.lastSent = performance.now();
+      dragging.pending = null;
+    };
+    const dragTo = (event) => {
+      const rect = track.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const value = setValue(fromFrac(frac, dragging.range));
+      placeDot(value, dragging.range);
+      dragging.pending = value;
+      const wait = DRAG_SEND_MS - (performance.now() - dragging.lastSent);
+      if (wait <= 0) flush();
+      else if (!dragging.timer) dragging.timer = setTimeout(flush, wait);
+    };
+    track.onpointerdown = (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      track.setPointerCapture(event.pointerId);
+      track.classList.add('dragging');
+      dragging = { range: range(), lastSent: -Infinity, pending: null, timer: null };
+      dragTo(event);
+    };
+    track.onpointermove = (event) => { if (dragging) dragTo(event); };
+    const release = () => {
+      if (!dragging) return;
+      clearTimeout(dragging.timer);
+      // the final position always goes out again: its replies are the ones
+      // the box listens to once the drag is over
+      const value = parseFloat(input.value);
+      dragging = null;
+      track.classList.remove('dragging');
+      send(value);
+    };
+    track.onpointerup = release;
+    track.onpointercancel = release;
+
+    return {
+      get dragging() { return dragging !== null; },
+      show(value) { placeDot(value); },
+    };
   }
 
   function showAppliedSetting(name, value, max) {
@@ -188,8 +306,10 @@ export function createCameraBox(device, container, sendCommand) {
     // a ceiling that moves with other settings (the XIMEA's frame rate
     // with its exposure) comes along with the value
     if (max != null) entry.input.max = max;
+    if (entry.slider?.dragging) return;
     entry.input.value = value.toFixed(entry.decimals);
     entry.input.dataset.committed = entry.input.value;
+    entry.slider?.show(value);
   }
 
   // ------------------------------------------- view: canvases and layout
