@@ -172,7 +172,7 @@ ROI_OFFSET_X = 0
 # second of slack would add another ~4 free-spectral-range aliases for the
 # optional fine alignment to sort out.
 SCOPE_CHANNEL = 'D'             # cavity transmission, as everywhere else
-SCOPE_RANGE_V = 0.05            # None: auto-range from a short probe instead
+SCOPE_RANGE_V = None            # None: auto-range from a short probe instead
                                 # (see auto_range_scope) - useful when the
                                 # transmission level is not known ahead of time
 SCOPE_COUPLING = 'DC'
