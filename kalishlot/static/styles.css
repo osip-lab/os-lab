@@ -214,6 +214,7 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
   color: var(--muted);
   white-space: nowrap;
 }
+.field.is-disabled { opacity: 0.4; }
 .unit { color: var(--muted); font-size: 11px; }
 .status-line { font: 11px var(--font-data); color: var(--muted); }
 .readout {

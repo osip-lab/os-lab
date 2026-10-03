@@ -6,6 +6,12 @@
 // Analyses on the paused snapshot (sidebands NA, pairs df/FSR, ...) are NOT
 // implemented here: they are extension modules driven by the analysis host
 // (extensions/host.js + registry.js — see kalishlot/ADDING_ANALYSES.md).
+// The time axis zooms with the mouse wheel over the chart (x only - the y
+// axes belong to the fixed y-lim / positive only controls); double-click
+// zooms back out. While paused, the zoomed span is fetched from the
+// server's full-resolution snapshot (command view_region), so zooming shows
+// real detail rather than a magnified envelope. The zoom is this viewer's
+// alone.
 // Returns a cleanup function that closes the socket.
 
 import { connectDeviceStream } from './stream.js';
@@ -13,7 +19,7 @@ import { createAnalysisHost } from './extensions/host.js';
 import { ANALYSIS_EXTENSIONS } from './extensions/registry.js';
 
 const CHANNEL_ORDER = ['A', 'B', 'C', 'D'];
-// Dimmed for the dark lab: same hues, about 40% of the old brightness.
+// Dimmed for the dark lab: same hues, about 60% of the old brightness.
 const CHANNEL_COLORS = { A: '#2b5f85', B: '#8a3030', C: '#2f7a40', D: '#87631f' };
 
 function formatVolts(volts) {
@@ -51,6 +57,8 @@ export function createPicoScopeBox(device, container, sendCommand) {
       </span>
       <label class="field">window <select class="scope-window"></select></label>
       <label class="field">rate <select class="scope-rate"></select></label>
+      <label class="field"><input type="checkbox" class="scope-fixed-y"> fixed y-lim</label>
+      <label class="field scope-positive-field"><input type="checkbox" class="scope-positive"> positive only</label>
       <span class="scope-status status-line"></span>
     </div>
     <div class="toolbar scope-channels"></div>
@@ -76,6 +84,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
   // data enters at 0 and slides left instead of the axis growing with it
   let windowSeconds = (device.settings ?? [])
     .find((setting) => setting.name === 'window_s')?.value ?? 10;
+  // the x zoom (see "x zoom" below); up here because setPlaying reads it
+  let xView = null;        // [t_min, t_max] while zoomed, else null
+  let detailTimer = null;
+  let detailRequest = 0;   // only the newest view_region reply is drawn
 
   // ------------------------------------------------------------- analyses
   // the channel all analyses fit on; the host shows it while a mode is
@@ -108,6 +120,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
     status.textContent = playing ? '' : 'data frozen (still acquiring)';
     isPlaying = playing;
     analysisHost.setPlaying(playing);
+    if (!playing && xView) requestDetail(); // the snapshot just froze
   }
   setPlaying(device.playing ?? true);
   buttons.play.onclick = () => send('play').then(() => setPlaying(true));
@@ -146,6 +159,42 @@ export function createPicoScopeBox(device, container, sendCommand) {
     { name: 'window_s', value: parseFloat(windowSelect.value) });
   rateSelect.onchange = () => send('set_setting',
     { name: 'sample_rate_hz', value: parseFloat(rateSelect.value) });
+
+  // ------------------------------------------------------------ y limits
+  // Fixed: each channel's axis spans its configured range, ±range_v, or
+  // [-range_v/100, range_v] with "positive only" (a sliver below zero so the
+  // baseline stays visible). Off: autoscale to the data, and "positive only"
+  // is greyed out and ignored. Remembered per browser, not on the server -
+  // it changes the view only, never the acquisition.
+  const fixedYBox = container.querySelector('.scope-fixed-y');
+  const positiveBox = container.querySelector('.scope-positive');
+  const positiveField = container.querySelector('.scope-positive-field');
+  const yPrefKey = `kalishlot.scope.ylim.${device.device_id}`;
+  try {
+    const saved = JSON.parse(localStorage.getItem(yPrefKey) ?? '{}');
+    fixedYBox.checked = !!saved.fixed;
+    positiveBox.checked = !!saved.positive;
+  } catch { /* no storage: start unfixed */ }
+  function applyYLimitControls() {
+    positiveBox.disabled = !fixedYBox.checked;
+    positiveField.classList.toggle('is-disabled', !fixedYBox.checked);
+    try {
+      localStorage.setItem(yPrefKey, JSON.stringify(
+        { fixed: fixedYBox.checked, positive: positiveBox.checked }));
+    } catch { /* not remembered, still applied */ }
+    if (chart) chart.setData(lastData); // re-ranges even while paused
+  }
+  fixedYBox.onchange = applyYLimitControls;
+  positiveBox.onchange = applyYLimitControls;
+
+  function yRange(name, dataMin, dataMax) {
+    if (fixedYBox.checked) {
+      const volts = parseFloat(channelControls[name].range.value);
+      return positiveBox.checked ? [-volts / 100, volts] : [-volts, volts];
+    }
+    if (dataMin == null || dataMax == null) return [-1, 1];
+    return uPlot.rangeNum(dataMin, dataMax, 0.1, true); // uPlot's own default
+  }
 
   // ------------------------------------------------------ channel controls
   const channelsDiv = container.querySelector('.scope-channels');
@@ -201,7 +250,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
     controls.enable.checked = state.enabled;
     selectClosest(controls.range, state.range_v);
     controls.coupling.value = state.coupling;
-    if (chart) buildChart(); // no-op unless the set of enabled channels changed
+    if (chart) {
+      buildChart(); // no-op unless the set of enabled channels changed
+      if (fixedYBox.checked) chart.setData(lastData); // the range may have moved
+    }
   }
 
   // ---------------------------------------------------------------- chart
@@ -239,8 +291,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
     const size = chart ? chartSize() : { width: 400, height: 200 };
     if (chart) chart.destroy();
 
-    const scales = { x: { time: false, range: () => [-windowSeconds, 0] } };
-    for (const name of CHANNEL_ORDER) scales[name] = { auto: true };
+    const scales = { x: { time: false, range: () => xView ?? [-windowSeconds, 0] } };
+    for (const name of CHANNEL_ORDER) {
+      scales[name] = { auto: true, range: (u, min, max) => yRange(name, min, max) };
+    }
     chart = new uPlot({
       ...size,
       scales,
@@ -272,29 +326,32 @@ export function createPicoScopeBox(device, container, sendCommand) {
       cursor: { drag: { x: false, y: false } },
       hooks: { draw: [(u) => analysisHost.draw(u)] },
     }, lastData, chartDiv);
+    chart.over.addEventListener('wheel', onWheel, { passive: false });
+    chart.over.addEventListener('dblclick', resetZoom);
+    chart.over.title = 'mouse wheel: zoom the time axis · double-click: zoom out';
     analysisHost.attachChart(chart);
   }
   buildChart();
+  applyYLimitControls();
 
   // size the chart with the box (leave room for the legend row)
   const resizeObserver = new ResizeObserver(() => chart.setSize(chartSize()));
   resizeObserver.observe(chartDiv);
 
-  function showData(event) {
-    const span = event.span_s;
-    if (event.window_s) windowSeconds = event.window_s;
+  // uPlot data from evenly spread points between tFirst and tLast
+  function chartData(tFirst, tLast, channels) {
     let longest = 0;
     for (const name of CHANNEL_ORDER) {
-      longest = Math.max(longest, event.channels[name]?.length ?? 0);
+      longest = Math.max(longest, channels[name]?.length ?? 0);
     }
-    if (!longest) return;
+    if (!longest) return null;
     const x = new Array(longest);
     for (let i = 0; i < longest; i++) {
-      x[i] = longest > 1 ? -span + (span * i) / (longest - 1) : 0;
+      x[i] = longest > 1 ? tFirst + ((tLast - tFirst) * i) / (longest - 1) : tLast;
     }
     const data = [x];
     for (const name of CHANNEL_ORDER) {
-      const values = event.channels[name];
+      const values = channels[name];
       if (!values) data.push(new Array(longest).fill(null));
       else if (values.length === longest) data.push(values);
       else {
@@ -302,8 +359,83 @@ export function createPicoScopeBox(device, container, sendCommand) {
         data.push(new Array(longest - values.length).fill(null).concat(values));
       }
     }
+    return data;
+  }
+
+  let windowData = lastData; // the whole window as last streamed, unzoomed
+
+  function showData(event) {
+    if (event.window_s && event.window_s !== windowSeconds) {
+      windowSeconds = event.window_s;
+      xView = null; // a zoom into the old window means nothing in the new one
+    }
+    const data = chartData(-event.span_s, 0, event.channels);
+    if (!data) return;
+    windowData = data;
+    if (!isPlaying && xView) {
+      requestDetail(); // the frozen window, at the zoom's resolution
+      return;
+    }
     lastData = data;
     chart.setData(data);
+  }
+
+  // ------------------------------------------------------------- x zoom
+  // span factor per pixel of wheel travel: a mouse notch (~100 px) zooms
+  // ~1.35x, and a trackpad's many small deltas zoom smoothly
+  const ZOOM_PER_PIXEL = 0.003;
+  const MIN_SPAN_SAMPLES = 20;  // the deepest zoom, in samples
+
+  function onWheel(event) {
+    event.preventDefault(); // the wheel zooms here, it does not scroll the page
+    const [min, max] = xView ?? [-windowSeconds, 0];
+    const t = chart.posToVal(event.offsetX, 'x'); // stays under the cursor
+    const pixels = event.deltaY * (event.deltaMode === 1 ? 33 : 1); // lines
+    const factor = Math.exp(pixels * ZOOM_PER_PIXEL);
+    const minSpan = MIN_SPAN_SAMPLES / parseFloat(rateSelect.value);
+    const span = Math.min(Math.max((max - min) * factor, minSpan), windowSeconds);
+    if (span >= windowSeconds) {
+      resetZoom();
+      return;
+    }
+    let lo = t - (t - min) * (span / (max - min));
+    lo = Math.min(Math.max(lo, -windowSeconds), -span);
+    setView([lo, lo + span]);
+  }
+
+  function resetZoom() {
+    if (!xView) return;
+    xView = null;
+    clearTimeout(detailTimer);
+    detailRequest++; // a reply still on its way is no longer wanted
+    lastData = windowData;
+    chart.setData(windowData);
+  }
+
+  function setView(view) {
+    xView = view;
+    chart.setScale('x', { min: view[0], max: view[1] });
+    if (!isPlaying) {
+      // once the wheel stops, not at every notch
+      clearTimeout(detailTimer);
+      detailTimer = setTimeout(requestDetail, 150);
+    }
+  }
+
+  function requestDetail() {
+    if (!xView) return;
+    const request = ++detailRequest;
+    const [tMin, tMax] = xView;
+    sendCommand(device.device_id, 'view_region', { t_min: tMin, t_max: tMax })
+      .then((reply) => {
+        if (request !== detailRequest || isPlaying || !xView) return;
+        const data = reply.t_first == null ? null
+          : chartData(reply.t_first, reply.t_last, reply.channels);
+        if (!data) return;
+        lastData = data;
+        chart.setData(data);
+      })
+      .catch(fail);
   }
 
   // ----------------------------------------------------------- the stream
@@ -338,6 +470,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
   return function cleanup() {
     stream.close();
     resizeObserver.disconnect();
+    clearTimeout(detailTimer);
     chart.destroy();
     chart = null;
   };

@@ -95,7 +95,8 @@ class PicoScopeAdapter(DeviceAdapter):
             'type': self.type_name,
             'label': f'PicoScope {self.scope.variant or ""} — '
                      f's/n {self.address}',
-            'commands': ['play', 'pause', 'set_setting', 'set_channel']
+            'commands': ['play', 'pause', 'set_setting', 'set_channel',
+                         'view_region']
                         + [name for analysis in self.analyses
                            for name in analysis.COMMANDS],
             'playing': self._playing.is_set(),
@@ -198,7 +199,45 @@ class PicoScopeAdapter(DeviceAdapter):
             self.emit({'type': 'channel', 'channel': channel,
                        'state': accepted})
             return {'ok': True, 'state': accepted}
+        if name == 'view_region':
+            return self.view_region(float(args['t_min']), float(args['t_max']))
         raise ValueError(f'unknown command {name!r}')
+
+    def view_region(self, t_min, t_max):
+        """Part of the paused snapshot at the resolution the box can show:
+        the samples between t_min and t_max (chart time, newest sample at 0)
+        envelope-decimated to <= MAX_POINTS per channel, in volts.
+
+        For the box's x zoom. The chunk broadcast at pause spreads the whole
+        window over MAX_POINTS, so zooming into it alone would only magnify
+        the decimation; this goes back to the full-resolution samples. It is
+        the asking viewer's view only - returned, never broadcast.
+        """
+        if self._playing.is_set() or self._snapshot is None:
+            raise ValueError('pause the stream first — zoom detail comes from '
+                             'the frozen snapshot')
+        dt = self._snapshot['dt']
+        channels = {}
+        t_first = t_last = None
+        for name, adc in self._snapshot['channels'].items():
+            n = len(adc)
+            if not n:
+                continue
+            first = max(0, int(np.floor((n - 1) + t_min / dt)))
+            last = min(n - 1, int(np.ceil((n - 1) + t_max / dt)))
+            if last <= first:
+                continue
+            if last + 1 - first > MAX_POINTS:
+                # whole buckets only, as envelope() would trim them anyway -
+                # trimmed here so t_first names the first sample kept
+                buckets = MAX_POINTS // 2
+                first = last + 1 - (last + 1 - first) // buckets * buckets
+            decimated, _ = envelope(adc[first:last + 1], MAX_POINTS)
+            channels[name] = [round(float(v), 5)
+                              for v in self.scope.to_volts(name, decimated)]
+            t_first = (first - (n - 1)) * dt
+            t_last = (last - (n - 1)) * dt
+        return {'t_first': t_first, 't_last': t_last, 'channels': channels}
 
     # -------------------------------------------------------- emitter thread
     def _emit_loop(self):
