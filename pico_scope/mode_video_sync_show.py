@@ -19,10 +19,10 @@ guesswork: every instant of the trace maps to a definite frame.
 - **Left / right arrows** step one frame; **shift** steps ten.
 - **fit Gaussian** (the checkbox, or **f**) fits a 2D Gaussian to the frame on
   screen and draws its 1/e^2 contour, reporting the beam radii in millimetres.
-- **renormalize** (the checkbox, or **n**) scales each frame to itself, with
-  its RENORMALIZE_PERCENTILE-th percentile as full brightness, so a dim mode is
-  as visible as a bright one. Off, every frame shares one scale and the
-  brightness differences between them are real.
+- **renormalize** (the checkbox, or **n**; on when the viewer opens) scales
+  each frame to itself, with its RENORMALIZE_PERCENTILE-th percentile as full
+  brightness, so a dim mode is as visible as a bright one. Off, every frame
+  shares one scale and the brightness differences between them are real.
 
 ## Which capture it opens
 
@@ -170,7 +170,7 @@ class ModeSpectrumViewer:
         self._fit_result = None     # written by the fit thread, read by the timer
         self._fit_seen = None
         self._fit_timer = None
-        self.renormalize = False
+        self.renormalize = True     # on from the start; the box follows
 
         self._build_figure(title)
         self._connect()
@@ -288,7 +288,8 @@ class ModeSpectrumViewer:
 
         self.ax_norm = self.fig.add_axes([0.755, 0.36, 0.115, 0.07])
         self.ax_norm.set_frame_on(False)
-        self.check_norm = CheckButtons(self.ax_norm, ['renormalize'], [False])
+        self.check_norm = CheckButtons(self.ax_norm, ['renormalize'],
+                                       [self.renormalize])
         self.check_norm.on_clicked(lambda _label: self.toggle_renormalize())
 
     def _connect(self):
@@ -818,6 +819,11 @@ def _self_test():
     print('  the checkbox turns the fit on and off and stops its thread')
 
     # renormalize: each frame to its own percentile, and back to the shared scale
+    # it opens with renormalize on
+    assert viewer.renormalize is True
+    assert viewer.check_norm.get_status()[0] is True
+    assert viewer.toggle_renormalize() is False
+    assert viewer.check_norm.get_status()[0] is False
     dim = int(np.argmin(brightness))
     viewer.show_frame(dim, redraw=False)
     assert viewer.image.get_clim() == viewer.shared_clim
