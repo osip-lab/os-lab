@@ -297,6 +297,8 @@ must allow inbound Python — it prompts once).
 | `GET /api/idle` | idle-watchdog config + any warning already counting down |
 | `POST /api/idle/dismiss` | dismiss the warning / restart the countdown |
 | `WS /ws/idle` | watchdog broadcasts: `idle_warning`, `idle_clear`, `idle_disconnected` |
+| `GET /api/pipelines/{name}` | state of a launchable script (`PIPELINES` in server.py): running, returncode |
+| `POST /api/pipelines/{name}` | launch it in its own console window on the server PC; 409 if already running |
 
 `device_id` is always `f'{type_name}:{address}'`.
 

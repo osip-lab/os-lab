@@ -2,6 +2,7 @@
 
     python pico_scope/run_mode_video_pipeline.py
     python pico_scope/run_mode_video_pipeline.py --config my_experiment.py
+    python pico_scope/run_mode_video_pipeline.py --from-kalishlot
 
 Runs, in order:
 
@@ -21,6 +22,12 @@ The session folder the capture actually wrote is scraped from its output (the
 next two steps, since a capture saved to a folder the user just pasted (rather
 than the fixed local bank) is no longer the "newest capture" those steps would
 find on their own. Stops after the first step that exits non-zero.
+
+--from-kalishlot is what kalishlot's "mode video" button runs: the capture then
+takes the ROI, exposure, gain, frame rate and scope settings from the kalishlot
+boxes, and only what kalishlot cannot set from the config. It reaches the
+capture the same way the config does, through the environment
+(mode_video_capture.FROM_KALISHLOT_ENV).
 """
 
 import argparse
@@ -35,9 +42,10 @@ from pico_scope import run_config  # noqa: E402
 
 STEPS = ['mode_video_capture.py', 'mode_video_sync.py', 'mode_video_sync_show.py']
 SESSION_MARKER = 'SESSION_PATH='
+FROM_KALISHLOT_ENV = 'MODE_VIDEO_FROM_KALISHLOT'   # = mode_video_capture's
 
 
-def step_environment(config_path):
+def step_environment(config_path, from_kalishlot=False):
     """The environment the steps run in, carrying the config they share.
 
     One resolved path for the whole run, so that a --config given here and a
@@ -46,6 +54,8 @@ def step_environment(config_path):
     """
     environment = dict(os.environ)
     environment[run_config.ENV_VAR] = str(config_path)
+    if from_kalishlot:
+        environment[FROM_KALISHLOT_ENV] = '1'
     return environment
 
 
@@ -77,6 +87,10 @@ def main():
     parser.add_argument('--config', default=None,
                         help='config file to run from, instead of '
                              'pico_scope/run_config_local.py')
+    parser.add_argument('--from-kalishlot', action='store_true',
+                        help='take every setting the kalishlot boxes have '
+                             '(ROI, exposure, gain, frame rate, scope range '
+                             'and rate) from them, the rest from the config')
     args = parser.parse_args()
 
     # Resolved here, and created from the template here if it does not exist
@@ -88,7 +102,7 @@ def main():
     if not config_path.is_file():
         sys.exit(f'no config file at {config_path}')
     print(f'config: {config_path}')
-    environment = step_environment(config_path)
+    environment = step_environment(config_path, args.from_kalishlot)
 
     session_path = None
     for step in STEPS:

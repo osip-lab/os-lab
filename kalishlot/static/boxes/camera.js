@@ -115,6 +115,9 @@ export function createCameraBox(device, container, sendCommand) {
         <button class="cam-copy-fit" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
         <button class="cam-record-fit" title="append the current fit values to the log">record fit values</button>
       </span>
+      <span class="subgroup">
+        <button class="cam-pipeline" title="run pico_scope/run_mode_video_pipeline.py (capture, sync, viewer) in a console window on the kalishlot PC. It borrows this camera and the scope and hands them back when it ends. Every setting kalishlot has is taken from the boxes — this box's ROI, exposure, gain and frame rate; the PicoScope box's channel ranges, couplings and sample rate when one is open — and only the rest (number of frames, binning, …) from run_config_local.py">mode video ▶</button>
+      </span>
       <span class="cam-status status-line"></span>
     </div>
     <div class="cam-info"></div>
@@ -145,6 +148,46 @@ export function createCameraBox(device, container, sendCommand) {
   buttons.snap.onclick = () => sendCommand(device.device_id, 'pause')
     .then(() => { setPlaying(false); return sendCommand(device.device_id, 'snap'); })
     .catch((e) => alert(e.message));
+
+  // ------------------------------------------------------- mode video pipeline
+  // Launched by the server (/api/pipelines) in a console window of its own;
+  // polled only while it runs, to say how it ended.
+  const pipelineButton = container.querySelector('.cam-pipeline');
+  let pipelinePoll = null;
+
+  function showPipeline(state) {
+    pipelineButton.disabled = state.running;
+    pipelineButton.textContent = state.running ? 'mode video running…' : 'mode video ▶';
+    if (state.running && !pipelinePoll) {
+      pipelinePoll = setInterval(refreshPipeline, 2000);
+    } else if (!state.running && pipelinePoll) {
+      clearInterval(pipelinePoll);
+      pipelinePoll = null;
+      status.textContent = state.returncode === 0 ? 'mode video pipeline finished'
+        : `mode video pipeline failed (exit ${state.returncode}) — see its console`;
+    }
+  }
+
+  async function refreshPipeline() {
+    try {
+      const response = await fetch('/api/pipelines/mode_video');
+      if (response.ok) showPipeline(await response.json());
+    } catch { /* server restarting: the next poll tries again */ }
+  }
+
+  pipelineButton.onclick = async () => {
+    pipelineButton.disabled = true;
+    const response = await fetch('/api/pipelines/mode_video', { method: 'POST' });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      pipelineButton.disabled = false;
+      alert(body.detail ?? `could not start the pipeline (${response.status})`);
+      return;
+    }
+    status.textContent = 'mode video pipeline started — see its console window';
+    showPipeline(body);
+  };
+  refreshPipeline();   // one may already be running from another viewer
 
   // ------------------------------------------------------------- settings
   // Number inputs from the adapter's settings schema. Commit on Enter or
@@ -1150,6 +1193,7 @@ export function createCameraBox(device, container, sendCommand) {
 
   return function cleanup() {
     stream.close();
+    if (pipelinePoll) clearInterval(pipelinePoll);
     resizeObserver.disconnect();
     if (levelsChart) levelsChart.destroy();
   };

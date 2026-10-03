@@ -29,6 +29,13 @@ their settings - when the script ends, also on an error or Ctrl+C. A script
 killed outright cannot hand them back; press "reconnect" in the box. See
 kalishlot/loan_client.py.
 
+With --from-kalishlot - which is how the camera box's "mode video" button runs
+the pipeline - the boxes also lend their settings: the ROI, exposure, gain and
+frame rate from the camera box, the channel ranges, couplings and sample rate
+from the PicoScope box when one is open. Only what kalishlot cannot set (the
+number of frames, binning, ...) comes from the config - see
+adopt_kalishlot_settings().
+
 ## What comes out
 
 A session folder holding
@@ -856,6 +863,101 @@ def resolve_manual_roi(serial=None, make=None, kalishlot=None):
     held = (kalishlot or {}).get(f"{KALISHLOT_CAMERA_TYPES['ximea']}:{serial}")
     MANUAL_ROI = kalishlot_roi(held) if held else xicamtool_roi(serial)
     return MANUAL_ROI
+
+
+# Set by kalishlot's "mode video" button (through run_mode_video_pipeline.py
+# --from-kalishlot), or by --from-kalishlot here: the run then takes every
+# setting kalishlot's boxes can set from the boxes - see
+# adopt_kalishlot_settings() - and only the rest from the config.
+FROM_KALISHLOT_ENV = 'MODE_VIDEO_FROM_KALISHLOT'
+
+
+def from_kalishlot():
+    return os.environ.get(FROM_KALISHLOT_ENV) == '1'
+
+
+def _box_setting(describe, name, zero_is_unset=True):
+    """A setting's value as a kalishlot box shows it, or None when the box
+    has none (the Basler has no frame rate) or has not read it yet - which it
+    shows as 0, except where 0 is a real value (a gain)."""
+    for setting in describe.get('settings') or []:
+        value = setting.get('value')
+        if setting.get('name') == name and value is not None                 and (value or not zero_is_unset):
+            return float(value)
+    return None
+
+
+def adopt_kalishlot_settings(kalishlot, serial, make):
+    """Take the run's settings from kalishlot's boxes, as they were just
+    before the loan; whatever a box cannot set stays the config's.
+
+    `kalishlot` is what borrow_from_kalishlot() lent, as in
+    resolve_manual_roi(). From the camera box: the ROI, the exposure, the
+    gain and - on the XIMEA, the only one with a rate in its box - the frame
+    rate. From the PicoScope box, when one is open: the range and coupling of
+    the transmission and aux channels, and the sample rate. Binning, pixel
+    format, the number of frames, which channel is which and the pads are not
+    in kalishlot, so they stay the config's.
+
+    The ROI replaces MANUAL_ROI and the reconnaissance alike: the box is where
+    the mode was just being looked at. The scope range replaces auto-ranging
+    for the same reason - it is the one known not to clip.
+
+    Written back into the module, like MANUAL_ROI, so run_config_resolved.json
+    records the values actually used.
+    """
+    global MANUAL_ROI, EXPOSURE_US, GAIN_DB, FRAME_RATE_HZ
+    global SCOPE_RANGE_V, SCOPE_COUPLING, SCOPE_AUX_RANGE_V, SCOPE_AUX_COUPLING
+    global SCOPE_SAMPLE_INTERVAL_S
+    kalishlot = kalishlot or {}
+    print('--- settings from kalishlot ---')
+
+    camera = kalishlot.get(f'{KALISHLOT_CAMERA_TYPES[make]}:{serial}')
+    if camera is None:
+        print(f'  ! kalishlot holds no {make} {serial}; the camera settings '
+              f"are the config's")
+    else:
+        MANUAL_ROI = kalishlot_roi(camera)
+        exposure = _box_setting(camera, 'exposure')
+        gain = _box_setting(camera, 'gain', zero_is_unset=False)
+        rate = _box_setting(camera, 'framerate')
+        if rate is not None:
+            FRAME_RATE_HZ = rate
+        # None (not read yet) derives it from the rate in force, rather than
+        # keeping one derived for the config's rate, which may not fit
+        EXPOSURE_US = exposure
+        derive_exposure()
+        if gain is not None:
+            GAIN_DB = gain
+        print(f'  exposure {EXPOSURE_US:.0f} us, gain {GAIN_DB:.1f} dB, frame '
+              f'rate {FRAME_RATE_HZ:g} Hz'
+              + ('' if rate is not None else " (the config's - the box has "
+                                             'no frame rate)'))
+
+    scope = next((device for device in kalishlot.values()
+                  if device.get('type') == 'picoscope'), None)
+    if scope is None:
+        print("  no PicoScope box open; the scope settings are the config's")
+        return
+    rate = _box_setting(scope, 'sample_rate_hz')
+    if rate is not None:
+        SCOPE_SAMPLE_INTERVAL_S = 1.0 / rate
+        print(f'  scope {rate:g} S/s')
+    channels = scope.get('channels') or {}
+    for role, channel in (('signal', SCOPE_CHANNEL), ('aux', SCOPE_AUX_CHANNEL)):
+        config = channels.get(channel) if channel else None
+        if not config or not config.get('enabled'):
+            if channel:
+                print(f"  scope channel {channel}: off in kalishlot's box, "
+                      f"keeping the config's range and coupling")
+            continue
+        if role == 'signal':
+            SCOPE_RANGE_V, SCOPE_COUPLING = config['range_v'], config['coupling']
+        else:
+            SCOPE_AUX_RANGE_V, SCOPE_AUX_COUPLING = (config['range_v'],
+                                                     config['coupling'])
+        print(f"  scope channel {channel}: +-{config['range_v']:g} V "
+              f"{config['coupling']}")
 
 
 _TAKE_FROM_FILE = object()   # so that manual_roi(None) can mean 'none typed'
@@ -1866,7 +1968,13 @@ def main():
                         help='drive the scope from here too, instead of '
                              'recording it by hand in PicoScope 7 (which must '
                              'then be closed - only one program can own it)')
+    parser.add_argument('--from-kalishlot', action='store_true',
+                        help='take the ROI, exposure, gain, frame rate and the '
+                             'scope settings from the kalishlot boxes, as its '
+                             '"mode video" button does')
     args = parser.parse_args()
+    if args.from_kalishlot:
+        os.environ[FROM_KALISHLOT_ENV] = '1'
     print(run_config.describe('capture', CONFIG_CHANGES))
 
     # No arguments: do what the config says, which is the block at the top of
@@ -1924,6 +2032,8 @@ def kalishlot_wants(make=None, serial=None, drive_scope=False):
 
 def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
     camera_cls, serial, make = resolve_camera(args.camera, args.serial)
+    if from_kalishlot():
+        adopt_kalishlot_settings(lent, serial, make)
     # As soon as the camera is known, so the 'levels' and 'locate' paths below
     # see the same ROI a capture would. Idempotent: once it has resolved,
     # MANUAL_ROI is an ordinary dict and the capture paths leave it alone.
@@ -1948,7 +2058,7 @@ def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
             offset_y, roi_height, _, _ = resolve_roi(cam, locate)
             configure(cam, offset_y, roi_height)
             print('\n--- light level ---')
-            level = check_light_level(cam)
+            level = check_light_level(cam, adjust_gain=not from_kalishlot())
             print(f"  {'OK' if level['ok'] else 'TOO BRIGHT'}: "
                   f"{level['advice'] or 'peak is in range'}")
         finally:
@@ -1956,8 +2066,11 @@ def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
         return
 
     if drive_scope:
+        # the gain set in kalishlot is kept; too much light is then reported
+        # rather than trimmed away
         capture_synchronized(serial, locate=locate, make=make,
-                             require_level=strict_levels)
+                             require_level=strict_levels,
+                             adjust_gain=not from_kalishlot())
     else:
         capture(serial, locate=locate, make=make, prompt=not args.no_prompt)
 

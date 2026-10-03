@@ -22,6 +22,8 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -30,7 +32,9 @@ from pathlib import Path
 
 # analysis code (e.g. the cavity-design NA simulation) may import matplotlib
 # and even call plt.show(); the server must never open GUI windows, and doing
-# so from a worker thread crashes on some backends
+# so from a worker thread crashes on some backends. The launched pipelines get
+# the backend the user had instead - their viewer is a window (PIPELINES).
+_USER_MPLBACKEND = os.environ.get('MPLBACKEND')
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
 import cv2
@@ -514,6 +518,76 @@ def device_command(device_id: str, request: CommandRequest):
     threading.Timer(1.5, record_settings_later,
                     args=(device_id, adapter)).start()
     return result
+
+
+# ----------------------------------------------------------------- pipelines
+# Standalone scripts a box can launch, e.g. the camera box's "mode video"
+# button. Each runs in a console window of its own on THIS PC — the scripts
+# print as they go and may ask for input (the capture takes its output folder
+# from the clipboard), so they need one — and borrows from kalishlot whatever
+# devices it needs, exactly as when started by hand (loan_client.py). The
+# console closes by itself on success and waits for a key on failure, so the
+# error stays readable.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# name -> (script, its arguments)
+PIPELINES = {
+    # every setting the boxes have comes from them, the rest from the config
+    'mode_video': (REPO_ROOT / 'pico_scope' / 'run_mode_video_pipeline.py',
+                   ['--from-kalishlot']),
+}
+pipeline_lock = threading.Lock()
+pipeline_runs = {}  # name -> {'process', 'started'}, the latest run of each
+
+
+def pipeline_state(name):
+    run = pipeline_runs.get(name)
+    if run is None:
+        return {'name': name, 'running': False, 'returncode': None, 'started': None}
+    returncode = run['process'].poll()
+    return {'name': name, 'running': returncode is None,
+            'returncode': returncode, 'started': run['started']}
+
+
+def pipeline_or_404(name):
+    if name not in PIPELINES:
+        raise HTTPException(status_code=404, detail=f'no pipeline {name!r}')
+    return PIPELINES[name]
+
+
+@app.get('/api/pipelines/{name}')
+def get_pipeline(name: str):
+    pipeline_or_404(name)
+    with pipeline_lock:
+        return pipeline_state(name)
+
+
+@app.post('/api/pipelines/{name}')
+def start_pipeline(name: str):
+    script, arguments = pipeline_or_404(name)
+    note_activity()
+    with pipeline_lock:
+        if pipeline_state(name)['running']:
+            raise HTTPException(status_code=409,
+                                detail=f'{script.name} is already running')
+        environment = dict(os.environ)
+        if _USER_MPLBACKEND is None:
+            environment.pop('MPLBACKEND', None)
+        python_command = [sys.executable, str(script), *arguments]
+        python = subprocess.list2cmdline(python_command)
+        if os.name == 'nt':
+            # /s strips exactly the outer quotes, so paths with spaces survive
+            command = (f'cmd /s /c "title {script.name} & {python} '
+                       f'|| (pause & exit /b 1)"')
+            process = subprocess.Popen(
+                command, cwd=REPO_ROOT, env=environment,
+                creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            process = subprocess.Popen(python_command, cwd=REPO_ROOT,
+                                       env=environment)
+        pipeline_runs[name] = {
+            'process': process,
+            'started': datetime.now().isoformat(timespec='seconds')}
+        return pipeline_state(name)
 
 
 # ----------------------------------------------------------------- streaming
