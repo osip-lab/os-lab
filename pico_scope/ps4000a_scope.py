@@ -95,6 +95,26 @@ class RingBuffer:
                 return self._data[end - n:end].copy()
             return np.concatenate((self._data[-(n - end):], self._data[:end]))
 
+    @property
+    def written(self):
+        """Total samples ever appended: the absolute index of the next one."""
+        with self._lock:
+            return self._written
+
+    def span(self, start, stop):
+        """Samples with absolute indices start..stop-1, oldest first, or None
+        when part of that range is not (or no longer) in the ring."""
+        start, stop = int(start), int(stop)
+        with self._lock:
+            if start < max(0, self._written - self.capacity)                     or stop > self._written or stop < start:
+                return None
+            first, last = start % self.capacity, stop % self.capacity
+            if stop - start == 0:
+                return np.empty(0, dtype=np.int16)
+            if first < last or last == 0:
+                return self._data[first:last or self.capacity].copy()
+            return np.concatenate((self._data[first:], self._data[:last]))
+
 
 class PicoScope4000A:
     """One 4000A-series scope in continuous streaming mode."""
@@ -116,6 +136,9 @@ class PicoScope4000A:
         self._stopping = threading.Event()
         self.on_error = None  # optional callable(exception), from the thread
         self._block = None  # in-flight block capture, see start_block()
+        # bumped whenever streaming (re)starts: the rings are new then, and
+        # absolute sample indices from before mean nothing
+        self.stream_generation = 0
 
     # ---------------------------------------------------------------- device
     @staticmethod
@@ -261,6 +284,7 @@ class PicoScope4000A:
 
         capacity = min(int(self.sample_rate_hz * RING_CAPACITY_SECONDS),
                        RING_CAPACITY_MAX)
+        self.stream_generation += 1
         self._rings = {}
         self._driver_buffers = {}
         for index, name in enabled:
@@ -518,6 +542,21 @@ class PicoScope4000A:
         dt = 1.0 / self.sample_rate_hz
         n = int(seconds / dt)
         return dt, {name: ring.last(n) for name, ring in self._rings.items()}
+
+    def samples_written(self, name):
+        """Absolute index of the next sample of a streamed channel, or None
+        when the channel is not streaming."""
+        ring = self._rings.get(name)
+        return None if ring is None else ring.written
+
+    def read_span(self, name, start, stop):
+        """Streamed samples start..stop-1 (absolute indices) of a channel, or
+        None when they are not all in its ring."""
+        ring = self._rings.get(name)
+        return None if ring is None else ring.span(start, stop)
+
+    def to_adc(self, name, volts):
+        return volts * self._max_adc / self.channels[name]['range_v']
 
     def to_volts(self, name, adc):
         return adc.astype(np.float64) * (self.channels[name]['range_v']

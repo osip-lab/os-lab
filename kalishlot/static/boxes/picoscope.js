@@ -59,6 +59,13 @@ export function createPicoScopeBox(device, container, sendCommand) {
       <label class="field">rate <select class="scope-rate"></select></label>
       <label class="field"><input type="checkbox" class="scope-fixed-y"> fixed y-lim</label>
       <label class="field scope-positive-field"><input type="checkbox" class="scope-positive"> positive only</label>
+      <label class="field"
+             title="freeze the view on each rising crossing of the trigger dot (drag it up or down), with the crossing at the middle; rolls live again after a whole window without one">trigger
+        <select class="scope-trigger">
+          <option value="">off</option>
+          <option>A</option><option>B</option><option>C</option><option>D</option>
+        </select></label>
+      <span class="scope-trigger-state readout"></span>
       <span class="scope-status status-line"></span>
     </div>
     <div class="toolbar scope-channels"></div>
@@ -196,6 +203,121 @@ export function createPicoScopeBox(device, container, sendCommand) {
     return uPlot.rangeNum(dataMin, dataMax, 0.1, true); // uPlot's own default
   }
 
+  // -------------------------------------------------------------- trigger
+  // The server does the triggering (adapters/picoscope.py, Trigger) - it sees
+  // every sample, the box only the envelope. Here: the channel select, the
+  // dot at the middle of the time axis at the trigger level, dragged up or
+  // down to set it, and what the trigger is doing ('triggered' while a frame
+  // is frozen, 'auto' while rolling and waiting for a crossing).
+  const triggerSelect = container.querySelector('.scope-trigger');
+  const triggerState = container.querySelector('.scope-trigger-state');
+  let trigger = { channel: device.trigger?.channel ?? null,
+                  level_v: device.trigger?.level_v ?? 0 };
+  let triggerDrag = false;
+  const TRIGGER_DOT_PX = 5;     // radius, CSS px
+  const TRIGGER_GRAB_PX = 9;    // how near the pointer must be to grab it
+
+  function showTrigger(settings) {
+    trigger = { channel: settings.channel ?? null, level_v: settings.level_v ?? 0 };
+    triggerSelect.value = trigger.channel ?? '';
+    if (!trigger.channel) triggerState.textContent = '';
+    if (chart) chart.redraw(false);
+  }
+
+  triggerSelect.value = trigger.channel ?? '';
+
+  function sendTrigger() {
+    send('set_trigger', { channel: trigger.channel, level_v: trigger.level_v });
+  }
+
+  triggerSelect.onchange = () => {
+    const channel = triggerSelect.value || null;
+    const scale = channel && chart ? chart.scales[channel] : null;
+    // a level off the new channel's axis would leave the dot out of sight:
+    // start it in the middle of that axis instead
+    if (scale && scale.min != null
+        && !(trigger.level_v > scale.min && trigger.level_v < scale.max)) {
+      trigger.level_v = Number(((scale.min + scale.max) / 2).toPrecision(4));
+    }
+    trigger.channel = channel;
+    sendTrigger();
+  };
+
+  // where the dot is, in CSS px of the plot area, or null when not drawn
+  function triggerDotPos(u) {
+    const name = trigger.channel;
+    if (!name || !u.series[CHANNEL_ORDER.indexOf(name) + 1]?.show) return null;
+    const scale = u.scales[name];
+    if (scale.min == null) return null;
+    const t = -windowSeconds / 2;
+    if (t < u.scales.x.min || t > u.scales.x.max) return null; // zoomed away
+    return { x: u.valToPos(t, 'x'), y: u.valToPos(trigger.level_v, name) };
+  }
+
+  function drawTrigger(u) {
+    const dot = triggerDotPos(u);
+    if (!dot) return;
+    const ratio = devicePixelRatio;
+    const x = u.bbox.left + dot.x * ratio;
+    const y = u.bbox.top + Math.min(Math.max(dot.y, 0), u.bbox.height / ratio) * ratio;
+    const ctx = u.ctx;
+    ctx.save();
+    ctx.strokeStyle = CHANNEL_COLORS[trigger.channel];
+    ctx.globalAlpha = 0.5;      // the level across the plot, faint
+    ctx.setLineDash([4 * ratio, 4 * ratio]);
+    ctx.lineWidth = ratio;
+    ctx.beginPath();
+    ctx.moveTo(u.bbox.left, y);
+    ctx.lineTo(u.bbox.left + u.bbox.width, y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    ctx.fillStyle = CHANNEL_COLORS[trigger.channel];
+    ctx.strokeStyle = '#d8dce8';
+    ctx.lineWidth = 1.5 * ratio;
+    ctx.beginPath();
+    ctx.arc(x, y, TRIGGER_DOT_PX * ratio, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function nearTriggerDot(event) {
+    const dot = triggerDotPos(chart);
+    return dot && Math.hypot(event.offsetX - dot.x, event.offsetY - dot.y)
+      <= TRIGGER_GRAB_PX;
+  }
+
+  // in the capture phase, so grabbing the dot never starts an analysis drag
+  function attachTriggerDrag(u) {
+    u.over.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !nearTriggerDot(event)) return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      triggerDrag = true;
+      u.over.setPointerCapture(event.pointerId);
+    }, true);
+    u.over.addEventListener('pointermove', (event) => {
+      if (!triggerDrag) {
+        if (!u.over.style.cursor || u.over.style.cursor === 'ns-resize') {
+          u.over.style.cursor = nearTriggerDot(event) ? 'ns-resize' : '';
+        }
+        return;
+      }
+      event.stopImmediatePropagation();
+      trigger.level_v = Number(
+        u.posToVal(event.offsetY, trigger.channel).toPrecision(4));
+      u.redraw(false);
+    }, true);
+    u.over.addEventListener('pointerup', (event) => {
+      if (!triggerDrag) return;
+      event.stopImmediatePropagation();
+      triggerDrag = false;
+      u.over.releasePointerCapture(event.pointerId);
+      sendTrigger();
+    }, true);
+  }
+
   // ------------------------------------------------------ channel controls
   const channelsDiv = container.querySelector('.scope-channels');
   const channelControls = {}; // name -> { enable, range, coupling }
@@ -324,8 +446,9 @@ export function createPicoScopeBox(device, container, sendCommand) {
         })),
       ],
       cursor: { drag: { x: false, y: false } },
-      hooks: { draw: [(u) => analysisHost.draw(u)] },
+      hooks: { draw: [(u) => analysisHost.draw(u), drawTrigger] },
     }, lastData, chartDiv);
+    attachTriggerDrag(chart); // before the analysis host's own pointer handlers
     chart.over.addEventListener('wheel', onWheel, { passive: false });
     chart.over.addEventListener('dblclick', resetZoom);
     chart.over.title = 'mouse wheel: zoom the time axis · double-click: zoom out';
@@ -365,6 +488,10 @@ export function createPicoScopeBox(device, container, sendCommand) {
   let windowData = lastData; // the whole window as last streamed, unzoomed
 
   function showData(event) {
+    if (isPlaying && trigger.channel) {
+      triggerState.textContent = event.trigger_state === 'triggered'
+        ? 'triggered' : 'auto';
+    }
     if (event.window_s && event.window_s !== windowSeconds) {
       windowSeconds = event.window_s;
       xView = null; // a zoom into the old window means nothing in the new one
@@ -447,6 +574,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
       else if (event.type === 'status') setPlaying(event.playing);
       else if (analysisHost.onEvent(event)) { /* an analysis extension's */ }
       else if (event.type === 'channel') showChannel(event.channel, event.state);
+      else if (event.type === 'trigger') showTrigger(event);
       else if (event.type === 'setting_applied') {
         if (event.name === 'window_s') selectClosest(windowSelect, event.value);
         if (event.name === 'sample_rate_hz') selectClosest(rateSelect, event.value);
@@ -457,6 +585,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
     onReattach(describe) {
       setPlaying(describe.playing ?? true);
       analysisHost.onReattach(describe);
+      if (describe.trigger) showTrigger(describe.trigger);
       for (const [name, state] of Object.entries(describe.channels ?? {})) {
         showChannel(name, state);
       }

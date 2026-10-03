@@ -8,6 +8,10 @@ recipe (never a per-sample redraw anywhere):
   browser -> one uPlot setData() per event.
 Mutually exclusive with PicoScope 7 (single owner) — open failure surfaces
 as the standard 409 popup.
+
+The trigger (see Trigger) also lives here rather than in the browser: it has
+to see every sample to catch a short crossing, and the browser only ever gets
+the decimated envelope.
 """
 
 import sys
@@ -49,6 +53,99 @@ def envelope(samples, max_points):
     return out, per_bucket / 2  # each output point spans half a bucket
 
 
+class Trigger:
+    """Rising-edge trigger that freezes the view on each crossing.
+
+    A crossing of `level_v` upwards on `channel` (None = off) is shown as a
+    static window with the crossing at its middle - so it can only be shown
+    once half a window more has been acquired. After a trigger the next
+    crossing is ignored for a whole window: half while waiting for the frame
+    to fill, half more after it is shown. Consecutive frames therefore never
+    overlap, and a second crossing soon after the first cannot shift the view
+    by part of a window. When a whole window passes with no crossing at all
+    after a frame appeared, the view rolls live again (like a scope's auto
+    mode), and the next crossing triggers.
+
+    All indices are absolute sample numbers of the streamed rings
+    (PicoScope4000A.samples_written / read_span); a stream restart or a new
+    window length makes them meaningless, and starts the trigger over.
+    """
+
+    def __init__(self):
+        self.channel = None
+        self.level_v = 0.0
+        self.reset()
+
+    def reset(self):
+        self.generation = None      # scope.stream_generation scanned under
+        self.n_window = None
+        self.scanned_to = None      # absolute index scanned up to
+        self.armed_from = 0         # crossings before this are held off
+        self.last_crossing = None   # any crossing, held off or not
+        self.pending = None         # a trigger whose frame is still filling
+        self.frame = None           # the frozen frame: {'dt', 'channels'}
+        self.frame_event = None     # ... and its scope_data event, cached
+        self.shown_at = -1          # written count when that frame appeared
+
+    def settings(self):
+        return {'channel': self.channel, 'level_v': self.level_v}
+
+    def update(self, scope, window_s, make_event):
+        """Scan what was acquired since the last call; returns the frozen
+        frame's event while one is shown, None while the view should roll."""
+        written = scope.samples_written(self.channel)
+        if written is None:     # the trigger channel is switched off
+            self.reset()
+            return None
+        dt = 1.0 / scope.sample_rate_hz
+        n_window = max(int(round(window_s / dt)), 2)
+        n_half = n_window // 2
+        if (self.generation, self.n_window) != (scope.stream_generation,
+                                                n_window):
+            self.reset()
+            self.generation, self.n_window = scope.stream_generation, n_window
+            self.scanned_to = written
+
+        # one sample of overlap with the last scan, so a crossing between
+        # two scans is not missed; never more than a window back
+        start = max(self.scanned_to - 1, written - n_window - 1, 0)
+        samples = scope.read_span(self.channel, start, written)
+        self.scanned_to = written
+        if samples is not None and len(samples) > 1:
+            above = samples >= scope.to_adc(self.channel, self.level_v)
+            crossings = np.flatnonzero(~above[:-1] & above[1:]) + 1 + start
+            if len(crossings):
+                self.last_crossing = int(crossings[-1])
+                eligible = crossings[crossings >= self.armed_from]
+                if self.pending is None and len(eligible):
+                    self.pending = int(eligible[0])
+                    self.armed_from = self.pending + n_window
+
+        if self.pending is not None and written >= self.pending + n_half:
+            first = self.pending - n_half
+            channels = {}
+            for name in scope.channels:
+                if scope.samples_written(name) is None:
+                    continue
+                span = scope.read_span(name, first, first + n_window)
+                if span is None:    # this channel's ring lags a block behind
+                    break
+                channels[name] = span
+            else:
+                self.frame = {'dt': dt, 'channels': channels}
+                self.frame_event = make_event(self.frame)
+                self.shown_at = written
+                self.pending = None
+
+        # quiet for a whole window - counted from the newest frame appearing,
+        # so each frozen frame stays up at least that long - then roll
+        quiet_since = max(self.last_crossing if self.last_crossing is not None
+                          else -n_window - 1, self.shown_at)
+        if self.pending is None and written - quiet_since > n_window:
+            self.frame = self.frame_event = None
+        return self.frame_event
+
+
 class PicoScopeAdapter(DeviceAdapter):
     type_name = 'picoscope'
     display_name = 'PicoScope'
@@ -68,6 +165,8 @@ class PicoScopeAdapter(DeviceAdapter):
         self._stopping = threading.Event()
         self._emitter = None
         self._snapshot = None  # full-res data frozen at pause: {'dt', 'channels'}
+        self.trigger = Trigger()
+        self._trigger_lock = threading.Lock()  # the emitter vs set_trigger
         # analysis extensions: each owns its commands and reattach state and
         # uses this adapter as its host (snapshot_region + emit). See
         # kalishlot/ADDING_ANALYSES.md for the recipe.
@@ -96,10 +195,11 @@ class PicoScopeAdapter(DeviceAdapter):
             'label': f'PicoScope {self.scope.variant or ""} — '
                      f's/n {self.address}',
             'commands': ['play', 'pause', 'set_setting', 'set_channel',
-                         'view_region']
+                         'view_region', 'set_trigger']
                         + [name for analysis in self.analyses
                            for name in analysis.COMMANDS],
             'playing': self._playing.is_set(),
+            'trigger': self.trigger.settings(),
             'channels': {name: dict(config) for name, config
                          in self.scope.channels.items()},
             'ranges_v': sorted(RANGES.values()),
@@ -118,6 +218,7 @@ class PicoScopeAdapter(DeviceAdapter):
     def settings_snapshot(self):
         return {'sample_rate_hz': self.scope.sample_rate_hz,
                 'window_s': self.window_s,
+                'trigger': self.trigger.settings(),
                 'channels': {name: dict(config) for name, config
                              in self.scope.channels.items()}}
 
@@ -148,6 +249,9 @@ class PicoScopeAdapter(DeviceAdapter):
         window = snapshot.get('window_s')
         if window:
             self.window_s = float(np.clip(window, 0.01, 60.0))
+        trigger = snapshot.get('trigger')
+        if trigger:
+            self.set_trigger(trigger.get('channel'), trigger.get('level_v', 0.0))
 
     # ------------------------------------------------------------- commands
     def command(self, name, args):
@@ -156,6 +260,8 @@ class PicoScopeAdapter(DeviceAdapter):
             if result is not None:
                 return result
         if name == 'play':
+            with self._trigger_lock:
+                self.trigger.reset()    # nothing from before the pause
             self._playing.set()
             self._snapshot = None
             for analysis in self.analyses:
@@ -167,8 +273,13 @@ class PicoScopeAdapter(DeviceAdapter):
             # captured at full resolution so analysis (and every viewer's
             # chart) works on exactly what is on screen. Acquisition keeps
             # running underneath so resume is instant.
-            dt, window = self.scope.read_window(self.window_s)
-            self._snapshot = {'dt': dt, 'channels': window}
+            with self._trigger_lock:
+                frozen = self.trigger.frame
+            if frozen is not None:      # freeze the triggered frame on screen
+                self._snapshot = frozen
+            else:
+                dt, window = self.scope.read_window(self.window_s)
+                self._snapshot = {'dt': dt, 'channels': window}
             self._playing.clear()
             try:
                 self._emit_chunk(self._snapshot)
@@ -199,9 +310,25 @@ class PicoScopeAdapter(DeviceAdapter):
             self.emit({'type': 'channel', 'channel': channel,
                        'state': accepted})
             return {'ok': True, 'state': accepted}
+        if name == 'set_trigger':
+            return {'ok': True, 'trigger': self.set_trigger(
+                args.get('channel'), args.get('level_v', self.trigger.level_v))}
         if name == 'view_region':
             return self.view_region(float(args['t_min']), float(args['t_max']))
         raise ValueError(f'unknown command {name!r}')
+
+    def set_trigger(self, channel, level_v):
+        """Turn the trigger on (channel 'A'..'D') or off (None), at level_v
+        volts; broadcast so every viewer moves its trigger dot."""
+        if channel not in (None, '', *CHANNEL_NAMES):
+            raise ValueError(f'no channel {channel!r}')
+        with self._trigger_lock:
+            self.trigger.channel = channel or None
+            self.trigger.level_v = float(level_v)
+            self.trigger.reset()
+            settings = self.trigger.settings()
+        self.emit({'type': 'trigger', **settings})
+        return settings
 
     def view_region(self, t_min, t_max):
         """Part of the paused snapshot at the resolution the box can show:
@@ -245,17 +372,39 @@ class PicoScopeAdapter(DeviceAdapter):
             tic = time.time()
             if self._playing.is_set():
                 try:
-                    self._emit_chunk()
+                    self._emit_tick()
                 except Exception as error:
                     self.emit({'type': 'error', 'message': str(error)})
             elapsed = time.time() - tic
             self._stopping.wait(max(EMIT_INTERVAL_S - elapsed, 0.005))
 
-    def _emit_chunk(self, snapshot=None):
-        if snapshot is not None:
-            dt, window = snapshot['dt'], snapshot['channels']
+    def _emit_tick(self):
+        with self._trigger_lock:
+            if self.trigger.channel is None:
+                frozen, state = None, 'off'
+            else:
+                frozen = self.trigger.update(
+                    self.scope, self.window_s,
+                    lambda frame: self._chunk_event(frame, 'triggered'))
+                state = 'triggered' if frozen else 'auto'
+        if frozen is not None:
+            self.emit(frozen)   # the same frame again: a new viewer gets it too
         else:
+            self._emit_chunk(trigger_state=state)
+
+    def _emit_chunk(self, snapshot=None, trigger_state='off'):
+        if snapshot is None:
             dt, window = self.scope.read_window(self.window_s)
+            snapshot = {'dt': dt, 'channels': window}
+        event = self._chunk_event(snapshot, trigger_state)
+        if event is not None:
+            self.emit(event)
+
+    def _chunk_event(self, snapshot, trigger_state):
+        """The scope_data event for a window of raw samples, or None when
+        there is nothing in it. trigger_state is what the box reports: 'off',
+        'auto' (rolling, waiting for a crossing) or 'triggered' (frozen)."""
+        dt, window = snapshot['dt'], snapshot['channels']
         channels = {}
         n_max = 0
         for name, adc in window.items():
@@ -266,11 +415,12 @@ class PicoScopeAdapter(DeviceAdapter):
             channels[name] = [round(float(v), 5) for v in volts]
             n_max = max(n_max, len(adc))
         if not channels:
-            return
-        self.emit({'type': 'scope_data',
-                   'window_s': self.window_s,
-                   'span_s': n_max * dt,  # actual data span (fills up after start)
-                   'channels': channels})
+            return None
+        return {'type': 'scope_data',
+                'window_s': self.window_s,
+                'span_s': n_max * dt,  # actual data span (fills up after start)
+                'trigger_state': trigger_state,
+                'channels': channels}
 
     # -------------------------------------------- analysis on the snapshot
     def snapshot_region(self, args):

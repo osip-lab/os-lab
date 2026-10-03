@@ -210,7 +210,10 @@ Conventions the existing frontend already understands:
   PicoScope serial does) — the server routes use `{device_id:path}` for
   that reason. Register the bulky periodic event type in
   `COALESCE_EVENT_TYPES` in `server.py`: a stalled viewer then receives
-  only the newest one instead of a backlog burst.
+  only the newest one instead of a backlog burst. Anything that must see
+  every sample (the scope's trigger, `Trigger` in `adapters/picoscope.py`)
+  runs in the adapter on absolute sample indices of the rings
+  (`samples_written` / `read_span`), never in the browser on the envelope.
 - **Analysis on a snapshot** (fits on the streamed data): pause captures the
   visible window at FULL resolution into the adapter (`self._snapshot` in
   `adapters/picoscope.py`) and broadcasts one chunk built from it, so every
