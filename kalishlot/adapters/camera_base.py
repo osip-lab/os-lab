@@ -3,9 +3,9 @@
 The frontend camera box (static/boxes/camera.js) is shared by ALL cameras —
 Basler, Ximea, synthetic, whatever comes next — and only speaks the generic
 vocabulary implemented here: commands play / pause / snap / set_setting plus
-the Gaussian-fit, ROI and intensity-monitor commands, events status /
-setting_applied / fit_status / fit / guess / roi / levels / error, and a
-describe() with a settings schema.
+the Gaussian-fit, ROI, intensity-monitor and marker commands, events status /
+setting_applied / fit_status / fit / guess / roi / levels / markers / error,
+and a describe() with a settings schema.
 
 Adding a camera brand therefore means:
   1. a pure device-layer module for the SDK (no GUI imports),
@@ -36,14 +36,16 @@ import time
 from .base import DeviceAdapter
 from .camera_fit import CameraFitMixin
 from .camera_levels import CameraLevelsMixin
+from .camera_markers import CameraMarkersMixin
 
 CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
                    'fit_on', 'fit_off', 'set_guess', 'clear_guess',
                    'set_fit_threshold', 'set_roi', 'clear_roi',
-                   'levels_on', 'levels_off']
+                   'levels_on', 'levels_off', 'set_markers']
 
 
-class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, DeviceAdapter):
+class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
+                        DeviceAdapter):
     """Shared camera behavior; subclasses provide only the hardware hooks.
 
     Hooks to implement (besides type_name / display_name / list_available):
@@ -87,6 +89,7 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, DeviceAdapter):
         super().__init__(address)
         self._init_fit()
         self._init_levels()
+        self._init_markers()
         self._playing = True
         # None, or {'x', 'y', 'width', 'height'} in UNCROPPED sensor pixels
         self._roi = None
@@ -242,9 +245,11 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, DeviceAdapter):
     def settings_snapshot(self):
         return {'settings': {setting['name']: setting['value']
                              for setting in self._settings_schema()},
-                'roi': self._roi}
+                'roi': self._roi,
+                'markers': self.markers_describe()['markers']}
 
     def restore_settings(self, snapshot):
+        self.restore_markers(snapshot.get('markers'))
         applied = False
         for name, value in (snapshot.get('settings') or {}).items():
             try:
@@ -278,12 +283,15 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, DeviceAdapter):
                 'playing': self._playing,
                 'settings': self._settings_schema(),
                 **self.fit_describe(),
-                **self.levels_describe()}
+                **self.levels_describe(),
+                **self.markers_describe()}
 
     def command(self, name, args):
         result = self.fit_command(name, args)
         if result is None:
             result = self.levels_command(name, args)
+        if result is None:
+            result = self.markers_command(name, args)
         if result is not None:
             return result
         if name == 'play':

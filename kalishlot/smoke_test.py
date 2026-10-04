@@ -538,6 +538,45 @@ def check_picoscope_restore():
     print('picoscope restores its saved channels (D only, off A) ok')
 
 
+def check_camera_markers():
+    """set_markers stores a validated list, broadcasts it, survives the
+    settings snapshot (device_state.json), and refuses a malformed marker
+    without losing the list it had. No hardware: the dummy is not opened."""
+    from adapters.dummy_camera import DummyCameraAdapter
+
+    adapter = DummyCameraAdapter('synthetic-0')
+    events = []
+    adapter.emit = events.append
+    markers = [{'id': 'a', 'label': '45 cm', 'x': 512.3, 'y': 300, 'r': 20,
+                'visible': True, 'color': '#00dcdc'},
+               {'id': 'b', 'label': '46 cm', 'x': 530, 'y': 310, 'r': 20,
+                'visible': False, 'color': '#e8a63e'}]
+    adapter.command('set_markers', {'markers': markers})
+    assert events[-1] == {'type': 'markers',
+                          'markers': adapter.describe()['markers']}, events
+    assert [m['label'] for m in adapter.describe()['markers']] == ['45 cm',
+                                                                   '46 cm']
+    snapshot = adapter.settings_snapshot()
+
+    for bad in ([{'id': 'c', 'x': 'nan', 'y': 0, 'r': 1}],
+                [{'id': 'd', 'x': 0, 'y': 0, 'r': 1}] * 2,     # duplicate id
+                [{'id': 'e', 'label': 'x' * 41, 'x': 0, 'y': 0, 'r': 1}]):
+        try:
+            adapter.command('set_markers', {'markers': bad})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'accepted a malformed marker list: {bad}')
+    assert len(adapter.describe()['markers']) == 2, 'a refusal lost the list'
+
+    fresh = DummyCameraAdapter('synthetic-0')
+    fresh.restore_settings({'markers': snapshot['markers']})
+    assert fresh.describe()['markers'] == snapshot['markers']
+    fresh.restore_settings({'markers': [{'x': 1}]})   # malformed: dropped
+    assert fresh.describe()['markers'] == []
+    print('camera markers validate, broadcast and persist ok')
+
+
 async def close_code(socket, timeout=5):
     """Read until the server closes the socket; return its close code."""
     try:
@@ -727,6 +766,7 @@ def main():
         print('re-open restores persisted settings ok (exposure 5000, ROI 300x400)')
 
         check_picoscope_restore()
+        check_camera_markers()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))
         asyncio.run(check_idle_watchdog(available[0]['address']))

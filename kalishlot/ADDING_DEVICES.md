@@ -153,6 +153,15 @@ Conventions the existing frontend already understands:
     means "seconds ago".
   The window is never saved; it is deliberately not in `settings_snapshot()`,
   and an ROI change clears it, because the pixels being measured changed.
+- **Markers** (cameras): `CameraMarkersMixin` in `adapters/camera_markers.py`,
+  already mixed into `CameraAdapterBase`. One command, `set_markers`, replaces
+  the whole list (the box sends it after every add / rename / show-hide /
+  delete) after validating it, and broadcasts the `markers` event; the list is
+  in `describe()` and in `settings_snapshot()`, so it is shared by every viewer
+  and survives restarts. Unlike everything else in the box, markers are in
+  **whole-sensor** pixels, so they stay on the same spot of the sensor across
+  ROI changes — they exist to compare where the mode sits between
+  configurations.
 - **Gaussian fit** (cameras): mix in `CameraFitMixin` from
   `adapters/camera_fit.py` — call `_init_fit()` in `__init__`,
   `_store_fit_frame(frame)` from the frame thread with the full-resolution

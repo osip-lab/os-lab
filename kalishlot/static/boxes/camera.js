@@ -1,7 +1,10 @@
 // Camera box: live video over WebSocket, play / pause / single-frame,
 // exposure & gain inputs (commit on Enter or focus loss), Gaussian fit with
 // ellipse overlay + cross-section plots, an ROI, and two draggable circles:
-//   marker ◯ — a persistent annotation (cyan), local to this viewer;
+//   marker ◯ — labelled annotations kept by the server (so every viewer
+//              and every reload sees the same set), in sensor pixels so they
+//              stay put when the ROI changes; from two markers on, a list
+//              beside the image renames, hides and deletes them;
 //   guess ◯  — the fit's initial guess (dashed green): center -> (x_0, y_0),
 //              radius -> sigma; lives on the server so the fit can use it.
 // Shared by every camera-like device type (dummy, Basler).
@@ -9,7 +12,8 @@
 // The ROI radio buttons are the three states it can be in: no ROI, editing
 // the rectangle (drag it out, then move it or pull its handles), and applied —
 // at which point the cropped frame IS the image and every coordinate in the
-// box (fit, guess, marker, the rectangle itself) counts from its corner.
+// box (fit, guess, the rectangle itself) counts from its corner — the
+// markers alone are kept in whole-sensor pixels and shifted for display.
 // Whether the crop happens in the camera or in the server is the adapter's
 // business; nothing here depends on which.
 //
@@ -35,6 +39,10 @@ const COLOR_DATA = 'rgb(70, 140, 220)';        // cross-section data
 const COLOR_FIT_CURVE = 'rgb(255, 165, 40)';   // cross-section fit curve
 const COLOR_ELLIPSE = 'rgba(255, 90, 90, 0.67)';
 const COLOR_MARKER = 'rgba(0, 220, 220, 0.86)';
+// each new marker takes the first of these not already in use
+const MARKER_COLORS = ['#00dcdc', '#ffb347', '#d77ae6', '#8fd65a', '#ff7a7a',
+                       '#6fa8ff', '#f0e05a', '#e6e6e6'];
+const MARKERS_W = 210;     // width of the marker list beside the image, px
 const COLOR_GUESS = 'rgba(110, 255, 110, 0.86)';
 const COLOR_GRID = 'rgba(255, 255, 255, 0.28)';
 const COLOR_ROI = 'rgba(255, 205, 70, 0.95)';
@@ -106,8 +114,8 @@ export function createCameraBox(device, container, sendCommand) {
           </span></span>
       </span>
       <span class="subgroup">
-        <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
-        <button class="cam-mark-clear" title="clear the marker circle">✕</button>
+        <button class="cam-mark" title="add a marker: drag from the circle center to its edge. From two markers on, a list beside the image renames, hides and deletes them">marker ◯</button>
+        <button class="cam-mark-clear" title="delete the marker">✕</button>
         <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
         <button class="cam-guess-clear" title="clear the guess circle">✕</button>
       </span>
@@ -381,6 +389,12 @@ export function createCameraBox(device, container, sendCommand) {
   levelsDiv.style.position = 'absolute';
   levelsDiv.hidden = true;
   view.appendChild(levelsDiv);
+  // the marker list, shown from two markers on (see "markers" below)
+  const markerPanel = document.createElement('div');
+  markerPanel.className = 'cam-markers';
+  markerPanel.style.position = 'absolute';
+  markerPanel.hidden = true;
+  view.appendChild(markerPanel);
 
   function place(element, x, y, w, h) {
     element.style.left = `${x}px`;
@@ -393,7 +407,9 @@ export function createCameraBox(device, container, sendCommand) {
     // the strip chart is given a minimum width out of the image's share, and
     // then whatever else is left over — so widening the box grows the chart
     const showChart = levelsCheck.checked;
-    const reserved = showChart ? LEVELS_MIN_W + GAP : 0;
+    const showMarkers = markerListShown();
+    const reserved = (showChart ? LEVELS_MIN_W + GAP : 0)
+      + (showMarkers ? MARKERS_W + GAP : 0);
     const scale = Math.max(Math.min(
       (view.clientWidth - STRIP - GAP - reserved) / sensorW,
       (view.clientHeight - STRIP - GAP) / sensorH), 0.01);
@@ -407,8 +423,13 @@ export function createCameraBox(device, container, sendCommand) {
     vCanvas.width = STRIP; vCanvas.height = h;
     overlay.width = w; overlay.height = h;
     levelsDiv.hidden = !showChart;
+    markerPanel.hidden = !showMarkers;
+    let x = w + GAP + STRIP + GAP;
+    if (showMarkers) {
+      place(markerPanel, x, STRIP + GAP, MARKERS_W, h);
+      x += MARKERS_W + GAP;
+    }
     if (showChart) {
-      const x = w + GAP + STRIP + GAP;
       const chartWidth = Math.max(view.clientWidth - x, LEVELS_MIN_W);
       place(levelsDiv, x, STRIP + GAP, chartWidth, h);
       sizeLevelsChart(chartWidth, h);
@@ -423,7 +444,10 @@ export function createCameraBox(device, container, sendCommand) {
   let fitParams = null;   // last successful fit, sensor px
   let fitCross = null;    // {step, row, col} pixel cuts through the center
   let fitReason = '';
-  let marker = null;      // {x, y, r} sensor px
+  // [{id, label, x, y, r, visible, color}] in WHOLE-SENSOR px; the server's
+  // 'markers' event is the source of truth
+  let markers = device.markers ?? [];
+  let draftMarker = null; // {x, y, r} current-frame px, while being dragged
   let editRect = null;    // ROI being edited: {x, y, w, h} in current-frame px
   let guess = device.guess
     ? { x: device.guess.x_0, y: device.guess.y_0, r: device.guess.sigma } : null;
@@ -485,7 +509,10 @@ export function createCameraBox(device, container, sendCommand) {
       }
       drawCross(ctx, cx, cy, 6);
     }
-    if (marker) drawCircle(ctx, marker, COLOR_MARKER, false);
+    for (const m of markers) {
+      if (m.visible) drawMarker(ctx, toFrame(m), m.color, m.label);
+    }
+    if (draftMarker) drawMarker(ctx, draftMarker, nextMarkerColor(), '');
     if (guess) drawCircle(ctx, guess, COLOR_GUESS, true);
     if (editRect) drawEditRect(ctx);
   }
@@ -590,9 +617,10 @@ export function createCameraBox(device, container, sendCommand) {
         + `θ = ${p.angle >= 0 ? '+' : ''}${p.angle.toFixed(2)} rad `
         + `(fit ${p.time.toFixed(2)} s)`);
     }
-    if (marker) {
-      parts.push(`marker: (${marker.x.toFixed(0)}, ${marker.y.toFixed(0)}) px, `
-        + `r = ${marker.r.toFixed(1)} px = ${(marker.r * pixelMm).toFixed(3)} mm`);
+    if (markers.length === 1) {   // two or more are listed beside the image
+      const m = markers[0];
+      parts.push(`${m.label || 'marker'}: (${m.x.toFixed(0)}, ${m.y.toFixed(0)}) `
+        + `sensor px, r = ${m.r.toFixed(1)} px = ${(m.r * pixelMm).toFixed(3)} mm`);
     }
     if (guess) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
@@ -775,7 +803,6 @@ export function createCameraBox(device, container, sendCommand) {
       editRect = !newRoi && pendingEditRect ? pendingEditRect : null;
       pendingEditRect = null;
       roiDrag = null;
-      marker = null;
       fitParams = null;
       fitCross = null;
       videoCanvas.getContext('2d').clearRect(0, 0, videoCanvas.width,
@@ -969,11 +996,8 @@ export function createCameraBox(device, container, sendCommand) {
   }
   markButton.onclick = () => setArmed(armed === 'marker' ? null : 'marker');
   guessButton.onclick = () => setArmed(armed === 'guess' ? null : 'guess');
-  container.querySelector('.cam-mark-clear').onclick = () => {
-    marker = null;
-    redrawOverlay();
-    updateInfo();
-  };
+  const markClearButton = container.querySelector('.cam-mark-clear');
+  markClearButton.onclick = () => sendMarkers([]);
   container.querySelector('.cam-guess-clear').onclick = () => {
     guess = null; // the 'guess' broadcast event confirms for all viewers
     redrawOverlay();
@@ -1027,7 +1051,7 @@ export function createCameraBox(device, container, sendCommand) {
     const point = toSensor(event);
     const circle = { x: dragCenter.x, y: dragCenter.y,
                      r: Math.hypot(point.x - dragCenter.x, point.y - dragCenter.y) };
-    if (armed === 'marker') marker = circle;
+    if (armed === 'marker') draftMarker = circle;
     else guess = circle;
     redrawOverlay();
     updateInfo();
@@ -1041,12 +1065,186 @@ export function createCameraBox(device, container, sendCommand) {
     const which = armed;
     dragCenter = null;
     setArmed(null);
+    if (which === 'marker' && draftMarker) {
+      addMarker(draftMarker);
+      draftMarker = null;
+    }
     if (which === 'guess' && guess) {
       sendCommand(device.device_id, 'set_guess',
         { x_0: guess.x, y_0: guess.y, sigma: Math.max(guess.r, 1) })
         .catch((e) => { status.textContent = e.message; });
     }
   };
+
+  // -------------------------------------------------------------- markers
+  // Stored in whole-sensor pixels, drawn in current-frame pixels: the ROI
+  // offset is the only difference. Every edit sends the whole list; the
+  // server validates it, saves it with the camera and broadcasts it back,
+  // and showMarkers() redraws from that.
+
+  function toFrame(m) {
+    return {x: m.x - (roi ? roi.x : 0), y: m.y - (roi ? roi.y : 0), r: m.r};
+  }
+
+  function drawMarker(ctx, circle, color, label) {
+    drawCircle(ctx, circle, color, false);
+    if (!label) return;
+    // up and to the right of the circle, where it least covers the beam —
+    // or below it when that would run off the top of the image
+    const offset = toCss(circle.r) * 0.71 + 3;
+    const above = toCss(circle.y) - offset;
+    ctx.fillStyle = color;
+    ctx.font = '11px Consolas, monospace';
+    ctx.fillText(label, toCss(circle.x) + offset,
+                 above >= 11 ? above : toCss(circle.y) + offset + 9);
+  }
+
+  function nextMarkerColor() {
+    const used = new Set(markers.map((m) => m.color));
+    return MARKER_COLORS.find((c) => !used.has(c))
+      ?? MARKER_COLORS[markers.length % MARKER_COLORS.length];
+  }
+
+  function nextMarkerLabel() {
+    const used = new Set(markers.map((m) => m.label));
+    let n = markers.length + 1;
+    while (used.has(`M${n}`)) n++;
+    return `M${n}`;
+  }
+
+  function addMarker(circle) {
+    sendMarkers([...markers, {
+      id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      label: nextMarkerLabel(),
+      x: circle.x + (roi ? roi.x : 0),
+      y: circle.y + (roi ? roi.y : 0),
+      r: circle.r,
+      visible: true,
+      color: nextMarkerColor(),
+    }]);
+  }
+
+  function sendMarkers(list) {
+    showMarkers(list);   // at once; the broadcast confirms (or corrects) it
+    sendCommand(device.device_id, 'set_markers', {markers: list})
+      .catch((e) => { status.textContent = e.message; });
+  }
+
+  function markerListShown() { return markers.length >= 2; }
+
+  function showMarkers(list) {
+    const wasShown = markerListShown();
+    markers = list;
+    markClearButton.hidden = markerListShown();  // the list deletes then
+    markClearButton.disabled = markers.length === 0;
+    renderMarkerList();
+    if (markerListShown() !== wasShown) layout();
+    redrawOverlay();
+    updateInfo();
+  }
+
+  const updateMarker = (id, changes) =>
+    sendMarkers(markers.map((m) => (m.id === id ? {...m, ...changes} : m)));
+
+  // Rebuilt from scratch on every change — except while a label is being
+  // typed, when that would throw the half-typed text away: then it is
+  // rebuilt once the field is left.
+  let markerListStale = false;
+  let clearAllArmedUntil = 0;
+
+  function renderMarkerList() {
+    const focused = document.activeElement;
+    if (markerPanel.contains(focused) && focused.type === 'text') {
+      markerListStale = true;
+      return;
+    }
+    markerListStale = false;
+    markerPanel.replaceChildren();
+    if (!markerListShown()) return;
+
+    const list = document.createElement('div');
+    list.className = 'cam-markers-list';
+    for (const m of markers) {
+      const row = document.createElement('div');
+      row.className = 'cam-marker-row';
+      row.classList.toggle('is-hidden', !m.visible);
+
+      const visible = document.createElement('input');
+      visible.type = 'checkbox';
+      visible.checked = m.visible;
+      visible.title = 'show or hide this marker';
+      visible.onchange = () => updateMarker(m.id, {visible: visible.checked});
+
+      const dot = document.createElement('span');
+      dot.className = 'cam-marker-dot';
+      dot.style.borderColor = m.color;
+
+      const label = document.createElement('input');
+      label.type = 'text';
+      label.className = 'cam-marker-label';
+      label.value = m.label;
+      label.maxLength = 40;
+      label.title = `(${m.x.toFixed(0)}, ${m.y.toFixed(0)}) sensor px, `
+        + `r = ${(m.r * pixelMm).toFixed(3)} mm — click to rename`;
+      label.onkeydown = (event) => {
+        if (event.key === 'Enter') label.blur();
+        if (event.key === 'Escape') { label.value = m.label; label.blur(); }
+      };
+      label.onblur = () => {
+        const text = label.value.trim();
+        if (text !== m.label) updateMarker(m.id, {label: text});
+        else if (markerListStale) renderMarkerList();
+      };
+
+      const where = document.createElement('span');
+      where.className = 'cam-marker-where';
+      where.textContent = `${m.x.toFixed(0)}, ${m.y.toFixed(0)}`;
+      where.title = 'center, sensor px';
+
+      const remove = document.createElement('button');
+      remove.className = 'cam-marker-delete';
+      remove.textContent = '✕';
+      remove.title = 'delete this marker';
+      remove.onclick = () => sendMarkers(markers.filter((x) => x.id !== m.id));
+
+      row.append(visible, dot, label, where, remove);
+      list.appendChild(row);
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'cam-markers-footer';
+    const footerButton = (text, title, onclick) => {
+      const button = document.createElement('button');
+      button.textContent = text;
+      button.title = title;
+      button.onclick = onclick;
+      footer.appendChild(button);
+      return button;
+    };
+    footerButton('all on', 'show every marker',
+                 () => sendMarkers(markers.map((m) => ({...m, visible: true}))));
+    footerButton('all off', 'hide every marker',
+                 () => sendMarkers(markers.map((m) => ({...m, visible: false}))));
+    // two clicks, so one stray click cannot wipe a session's markers
+    const clearAll = footerButton('clear all', 'delete every marker (click twice)',
+      () => {
+        if (Date.now() < clearAllArmedUntil) {
+          clearAllArmedUntil = 0;
+          sendMarkers([]);
+          return;
+        }
+        clearAllArmedUntil = Date.now() + 3000;
+        clearAll.textContent = 'sure?';
+        clearAll.classList.add('armed');
+        setTimeout(() => {
+          clearAll.textContent = 'clear all';
+          clearAll.classList.remove('armed');
+        }, 3000);
+      });
+
+    markerPanel.append(list, footer);
+  }
+  showMarkers(markers);
 
   // ------------------------------------------------------ clipboard export
   function composeFigure() {
@@ -1162,6 +1360,8 @@ export function createCameraBox(device, container, sendCommand) {
           ? { x: event.guess.x_0, y: event.guess.y_0, r: event.guess.sigma } : null;
         redrawOverlay();
         updateInfo();
+      } else if (event.type === 'markers') {
+        showMarkers(event.markers);
       } else if (event.type === 'levels_status') {
         showLevelsEnabled(event.enabled);
       } else if (event.type === 'levels') {
@@ -1199,6 +1399,7 @@ export function createCameraBox(device, container, sendCommand) {
       guess = describe.guess
         ? { x: describe.guess.x_0, y: describe.guess.y_0, r: describe.guess.sigma } : null;
       showThreshold(describe.fit_threshold ?? 0);
+      showMarkers(describe.markers ?? []);
       levelsPoints = describe.levels_points ?? null;
       showLevelsEnabled(describe.levels ?? false);
       for (const setting of describe.settings ?? []) {
