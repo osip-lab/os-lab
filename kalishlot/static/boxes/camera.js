@@ -26,6 +26,7 @@
 
 import { connectDeviceStream } from './stream.js';
 import { logEntry } from './logger.js';
+import { showPlayToggle } from './transport.js';
 
 const STRIP = 70;        // cross-section strip thickness, px
 const GAP = 4;
@@ -69,10 +70,7 @@ export function createCameraBox(device, container, sendCommand) {
 
   container.innerHTML = `
     <div class="toolbar cam-controls">
-      <span class="transport">
-        <button data-command="play">play</button>
-        <button data-command="pause">pause</button>
-      </span>
+      <button class="play-toggle"></button>
       <button data-command="snap">single frame</button>
       <span class="subgroup cam-settings"></span>
       <span class="subgroup">
@@ -129,22 +127,23 @@ export function createCameraBox(device, container, sendCommand) {
 
   // ------------------------------------------------------- play/pause/snap
   const buttons = {
-    play: container.querySelector('[data-command="play"]'),
-    pause: container.querySelector('[data-command="pause"]'),
+    toggle: container.querySelector('.play-toggle'),
     snap: container.querySelector('[data-command="snap"]'),
   };
+  let isPlaying = true;
 
   function setPlaying(playing) {
-    buttons.play.disabled = playing;
-    buttons.pause.disabled = !playing;
+    isPlaying = playing;
+    showPlayToggle(buttons.toggle, playing);
     status.textContent = playing ? 'streaming' : 'paused';
   }
   setPlaying(device.playing ?? true);
 
-  buttons.play.onclick = () => sendCommand(device.device_id, 'play')
-    .then(() => setPlaying(true)).catch((e) => alert(e.message));
-  buttons.pause.onclick = () => sendCommand(device.device_id, 'pause')
-    .then(() => setPlaying(false)).catch((e) => alert(e.message));
+  buttons.toggle.onclick = () => {
+    const next = !isPlaying;
+    sendCommand(device.device_id, next ? 'play' : 'pause')
+      .then(() => setPlaying(next)).catch((e) => alert(e.message));
+  };
   buttons.snap.onclick = () => sendCommand(device.device_id, 'pause')
     .then(() => { setPlaying(false); return sendCommand(device.device_id, 'snap'); })
     .catch((e) => alert(e.message));

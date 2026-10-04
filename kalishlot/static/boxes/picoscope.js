@@ -17,6 +17,7 @@
 import { connectDeviceStream } from './stream.js';
 import { createAnalysisHost } from './extensions/host.js';
 import { ANALYSIS_EXTENSIONS } from './extensions/registry.js';
+import { showPlayToggle } from './transport.js';
 
 const CHANNEL_ORDER = ['A', 'B', 'C', 'D'];
 // Dimmed for the dark lab: same hues, about 60% of the old brightness.
@@ -51,10 +52,7 @@ function formatRate(hertz) {
 export function createPicoScopeBox(device, container, sendCommand) {
   container.innerHTML = `
     <div class="toolbar scope-controls">
-      <span class="transport">
-        <button data-command="play">play</button>
-        <button data-command="pause">pause</button>
-      </span>
+      <button class="play-toggle"></button>
       <label class="field">window <select class="scope-window"></select></label>
       <label class="field">rate <select class="scope-rate"></select></label>
       <label class="field"><input type="checkbox" class="scope-fixed-y"> fixed y-lim</label>
@@ -117,21 +115,19 @@ export function createPicoScopeBox(device, container, sendCommand) {
   });
 
   // ------------------------------------------------------- play and pause
-  const buttons = {
-    play: container.querySelector('[data-command="play"]'),
-    pause: container.querySelector('[data-command="pause"]'),
-  };
+  const playToggle = container.querySelector('.play-toggle');
   function setPlaying(playing) {
-    buttons.play.disabled = playing;
-    buttons.pause.disabled = !playing;
+    showPlayToggle(playToggle, playing);
     status.textContent = playing ? '' : 'data frozen (still acquiring)';
     isPlaying = playing;
     analysisHost.setPlaying(playing);
     if (!playing && xView) requestDetail(); // the snapshot just froze
   }
   setPlaying(device.playing ?? true);
-  buttons.play.onclick = () => send('play').then(() => setPlaying(true));
-  buttons.pause.onclick = () => send('pause').then(() => setPlaying(false));
+  playToggle.onclick = () => {
+    const next = !isPlaying;
+    send(next ? 'play' : 'pause').then(() => setPlaying(next));
+  };
 
   // ------------------------------------------- window and sample-rate selects
   const windowSelect = container.querySelector('.scope-window');
