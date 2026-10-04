@@ -35,6 +35,9 @@ EMIT_INTERVAL_S = 0.05  # ~20 chunks/s to the browsers
 MAX_POINTS = 1000  # per channel per chunk (500 min/max pairs)
 WINDOW_CHOICES_S = (0.1, 1.0, 10.0, 60.0)
 RATE_CHOICES_HZ = (100.0, 1000.0, 10_000.0, 100_000.0)
+# a channel counts as clipped once a sample reaches this fraction of its
+# range: the ADC saturates at full scale, a hair short of it after rounding
+CLIP_FRACTION = 0.999
 
 
 def envelope(samples, max_points):
@@ -406,6 +409,7 @@ class PicoScopeAdapter(DeviceAdapter):
         'auto' (rolling, waiting for a crossing) or 'triggered' (frozen)."""
         dt, window = snapshot['dt'], snapshot['channels']
         channels = {}
+        clipped = []
         n_max = 0
         for name, adc in window.items():
             if not len(adc):
@@ -414,12 +418,18 @@ class PicoScopeAdapter(DeviceAdapter):
             volts = self.scope.to_volts(name, decimated)
             channels[name] = [round(float(v), 5) for v in volts]
             n_max = max(n_max, len(adc))
+            # the envelope keeps every bucket's min and max, so a sample
+            # pinned at the ADC rail anywhere in the window shows up here
+            if np.abs(volts).max() >= CLIP_FRACTION * \
+                    self.scope.channels[name]['range_v']:
+                clipped.append(name)
         if not channels:
             return None
         return {'type': 'scope_data',
                 'window_s': self.window_s,
                 'span_s': n_max * dt,  # actual data span (fills up after start)
                 'trigger_state': trigger_state,
+                'clipped': clipped,  # channels that hit their range
                 'channels': channels}
 
     # -------------------------------------------- analysis on the snapshot

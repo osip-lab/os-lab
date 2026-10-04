@@ -350,10 +350,18 @@ export function createPicoScopeBox(device, container, sendCommand) {
       coupling.appendChild(option);
     }
 
+    // lit while the visible window holds samples pinned at the range's rail
+    const clip = document.createElement('span');
+    clip.className = 'chan-clip';
+    clip.textContent = 'over range';
+    clip.title = 'the signal exceeds this range and is cut off — pick a larger range';
+    clip.hidden = true;
+
     group.appendChild(enable);
     group.appendChild(label);
     group.appendChild(range);
     group.appendChild(coupling);
+    group.appendChild(clip);
     channelsDiv.appendChild(group);
 
     enable.onchange = () =>
@@ -363,7 +371,7 @@ export function createPicoScopeBox(device, container, sendCommand) {
     coupling.onchange = () =>
       send('set_channel', { channel: name, coupling: coupling.value });
 
-    channelControls[name] = { enable, range, coupling };
+    channelControls[name] = { enable, range, coupling, clip };
     showChannel(name, state);
   }
 
@@ -495,6 +503,12 @@ export function createPicoScopeBox(device, container, sendCommand) {
     if (event.window_s && event.window_s !== windowSeconds) {
       windowSeconds = event.window_s;
       xView = null; // a zoom into the old window means nothing in the new one
+    }
+    const clipped = event.clipped ?? [];
+    for (const [name, controls] of Object.entries(channelControls)) {
+      const isClipped = clipped.includes(name);
+      controls.clip.hidden = !isClipped;
+      controls.range.classList.toggle('clipped', isClipped);
     }
     const data = chartData(-event.span_s, 0, event.channels);
     if (!data) return;

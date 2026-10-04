@@ -318,6 +318,17 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
   font-family: var(--font-data);
   font-weight: 700;
 }
+/* a channel whose signal hits its range rail: the trace is cut off */
+.chan-clip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font: 700 10px/1.4 var(--font-data);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--alert);
+}
+select.clipped { border-color: var(--alert); color: var(--alert); }
 .u-legend { font-family: var(--font-data); font-size: 11px; color: var(--muted); }
 .u-legend .u-value { font-variant-numeric: tabular-nums; }
 .an-result { color: var(--text); }
