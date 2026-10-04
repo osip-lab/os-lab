@@ -44,7 +44,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -222,6 +221,8 @@ def load_scope_csv(path, time_column=TIME_COLUMN, signal_column=SIGNAL_COLUMN,
     column this loader cannot do without is the transmission that the
     alignment is fitted against.
     """
+    import pandas as pd   # here: only CSV loading needs it, and it costs
+                          # half a second at the import of every script
     path = Path(path)
     header = pd.read_csv(path, nrows=1)
     units = {column: str(value) for column, value in header.iloc[0].items()}

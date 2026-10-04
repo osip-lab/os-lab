@@ -71,7 +71,6 @@ from camera_core import burst_timing  # noqa: E402
 from pico_scope import run_config  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
-from utilities.utils import wait_for_path_from_clipboard  # noqa: E402
 from kalishlot.loan_client import borrow_from_kalishlot, open_devices  # noqa: E402
 
 # The camera makes this script can drive. Imported one at a time and only when
@@ -330,6 +329,9 @@ def prompt_for_output_root():
     bank, so the capture is identified by its Dropbox path like everything
     else about the measurement.
     """
+    # imported here: utilities.utils pulls in matplotlib and scipy (over a
+    # second at startup) for this one prompt, which most runs never reach
+    from utilities.utils import wait_for_path_from_clipboard
     return Path(wait_for_path_from_clipboard(
         filetype='folder',
         instructions_message='Copy the path of the measurement folder to '
@@ -694,6 +696,57 @@ def check_light_level(cam, adjust_gain=True, n_bursts=LEVEL_BURSTS,
     return result
 
 
+def capture_light_level(frames, saturation, gain_db):
+    """The light-level record, measured on the captured burst itself.
+
+    For a run whose pre-flight check was skipped (see capture_synchronized):
+    the same peak and saturation figures check_light_level() reports, from
+    the frames that were actually kept, with a warning printed if they clip.
+    """
+    peak = int(frames.max())
+    saturated = float((frames >= saturation).mean())
+    ok = saturated <= MAX_SATURATED_FRACTION and peak < saturation
+    advice = None
+    if not ok:
+        advice = (f'the capture peaked at {peak} of {saturation} with '
+                  f'{saturated:.3%} of pixels saturated: the brightest frames '
+                  f'are clipped. The timing fit is unaffected; the images of '
+                  f'the mode are not - attenuate the light, or lower the '
+                  f"gain in kalishlot's box, for the next capture.")
+    elif peak / saturation < LEVEL_TOO_DIM_FRACTION:
+        advice = (f'usable, but dim: the capture peaked at '
+                  f'{peak / saturation:.1%} of full scale.')
+    print(f'  light: peak {peak} of {saturation} ({peak / saturation:.1%}), '
+          f'saturated {saturated:.4%}' + (f'\n  ! {advice}' if advice else ''))
+    return {'measured_on': 'capture', 'gain_db': gain_db,
+            'saturation_level': saturation, 'peak_max': peak,
+            'peak_fraction': peak / saturation, 'saturated_fraction': saturated,
+            'n_bursts': 1, 'n_frames': int(len(frames)),
+            'ok': ok, 'advice': advice}
+
+
+class _start_in_background:
+    """Run `function` on a thread now; wait() joins it and re-raises what
+    it raised, so a failure surfaces where the result is first needed."""
+
+    def __init__(self, function):
+        import threading
+        self._error = None
+
+        def run():
+            try:
+                function()
+            except BaseException as error:      # handed to wait()
+                self._error = error
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def wait(self, raise_error=True):
+        self._thread.join()
+        if raise_error and self._error is not None:
+            raise self._error
+
+
 def camera_class(make):
     """Import one make's device layer and return its camera class.
 
@@ -721,6 +774,13 @@ def resolve_camera(make=None, serial=None):
     if make and make not in CAMERA_BACKENDS:
         raise RuntimeError(f'unknown camera make {make!r}; this script drives '
                            f'{" and ".join(CAMERA_BACKENDS)}')
+    if make and serial:
+        # Fully named - by the config, or by kalishlot, which says which
+        # camera it lent: nothing to choose, so no enumeration (a second or
+        # more per call). A camera that is not there fails at open(), which
+        # lists the ones that are.
+        print(f'  camera {serial} ({make})')
+        return camera_class(make), str(serial), make
 
     found, unavailable = [], {}
     for name in ([make] if make else list(CAMERA_BACKENDS)):
@@ -1417,12 +1477,18 @@ def capture_synchronized(serial_number=None, output_root=None,
     """
     from pico_scope.ps4000a_scope import PicoScope4000A
 
+    setup_start = time.time()
     camera_cls, serial_number, make = resolve_camera(make, serial_number)
     resolve_manual_roi(serial_number, make)
-    cam = camera_cls(serial_number)
-    cam.open()
+    # The scope takes a couple of seconds to open and needs nothing from the
+    # camera, so it opens in the background while the camera is set up. It
+    # is only touched from here on once that has finished (join below).
     scope = PicoScope4000A(scope_serial)
+    scope_opening = _start_in_background(scope.open)
+    cam = None
     try:
+        cam = camera_cls(serial_number)
+        cam.open()
         offset_y, roi_height, mode_location, roi_choice = resolve_roi(
             cam, locate)
         checks = configure(cam, offset_y, roi_height)
@@ -1432,10 +1498,24 @@ def capture_synchronized(serial_number=None, output_root=None,
             n_frames = N_FRAMES       # from CAPTURE_DURATION_S, by configure()
         burst_s = n_frames / checks['resulting_hz']
 
-        print('\n--- light level ---')
-        level = check_light_level(cam, adjust_gain=adjust_gain)
-        checks['light_level'] = level
-        if not level['ok']:
+        # The pre-flight bursts exist to set the gain, or to refuse a capture
+        # that would clip. From kalishlot neither may happen - the gain is the
+        # box's, and STRICT_LEVELS is off - so they would only print advice,
+        # at the cost of LEVEL_BURSTS bursts as long as the capture itself.
+        # The same numbers are measured on the captured frames instead (see
+        # capture_light_level), which is free and describes the real data.
+        # Run any other way, the check runs exactly as before.
+        pre_check = not (from_kalishlot() and not adjust_gain
+                         and not require_level)
+        level = None
+        if pre_check:
+            print('\n--- light level ---')
+            level = check_light_level(cam, adjust_gain=adjust_gain)
+            checks['light_level'] = level
+        else:
+            print('\n--- light level: measured on the capture itself '
+                  '(settings from kalishlot) ---')
+        if level is not None and not level['ok']:
             if require_level:
                 raise RuntimeError('too bright to capture: ' + level['advice'])
             print(f'  ! {level["advice"]}')
@@ -1445,7 +1525,7 @@ def capture_synchronized(serial_number=None, output_root=None,
             print('  ! capturing anyway. The timing fit is unaffected by '
                   'clipping; the images are, so the lobes may be merged.')
 
-        scope.open()
+        scope_opening.wait()           # raises here if the open failed
         print(f'\n--- scope {scope.variant} s/n {scope.serial} ---')
         if SCOPE_RANGE_V is None:
             print(f'  auto-ranging channel {SCOPE_CHANNEL} ...')
@@ -1479,6 +1559,9 @@ def capture_synchronized(serial_number=None, output_root=None,
         print(f'  block {duration:.3f} s = {burst_s:.3f} s burst + '
               f'2 x {SCOPE_PAD_S:.2f} s pad')
 
+        saturation = cam.saturation_level
+        gain_db = cam.gain_db
+        print(f'  setup took {time.time() - setup_start:.1f} s')
         block = scope.start_block(duration, SCOPE_SAMPLE_INTERVAL_S)
         host_scope_start = block['host_start_s']
         print(f'  recording; starting the burst ...')
@@ -1492,8 +1575,15 @@ def capture_synchronized(serial_number=None, output_root=None,
         camera_info = cam.describe()
         scope_info = {'serial': scope.serial, 'variant': scope.variant}
     finally:
+        # the background open may still be running if the camera failed
+        # first; let it finish so the scope is closed rather than left open
+        scope_opening.wait(raise_error=False)
         scope.close()
-        cam.close()
+        if cam is not None:
+            cam.close()
+
+    if not pre_check:
+        checks['light_level'] = capture_light_level(frames, saturation, gain_db)
 
     timing = burst_timing(meta, expected_rate_hz=checks['resulting_hz'])
     # Scope t = 0 is the trigger, i.e. the start of the block, so the host-clock
@@ -2025,6 +2115,32 @@ def _self_test():
     print("  the function generator's channels are recorded when kalishlot "
           'has its box open, and nothing changes when it does not')
 
+    # kalishlot names the camera it lent, so no enumeration is needed; with
+    # none (or, oddly, two) lent, the camera is found the usual way
+    assert lent_camera({'ximea_camera:QX1': {'type': 'ximea_camera'},
+                        'picoscope:JO1': {'type': 'picoscope'}}) == ('ximea', 'QX1')
+    assert lent_camera({'picoscope:JO1': {'type': 'picoscope'}}) is None
+    assert lent_camera(None) is None
+    # the light level measured on the capture, for a run that skipped the
+    # pre-flight bursts: a clipped burst is flagged, a fine one is not
+    clipped = np.zeros((3, 10, 10), dtype=np.uint16)
+    clipped[1, :2, :] = 4095                       # 20 of 300 pixels at the rail
+    record = capture_light_level(clipped, 4095, 0.0)
+    assert not record['ok'] and record['advice'], record
+    fine = np.full((3, 10, 10), 2000, dtype=np.uint16)
+    assert capture_light_level(fine, 4095, 0.0)['ok']
+    # a background start re-raises where it is waited for, not before
+    failing = _start_in_background(lambda: 1 / 0)
+    try:
+        failing.wait()
+    except ZeroDivisionError:
+        pass
+    else:
+        raise AssertionError('a failed background open was swallowed')
+    failing.wait(raise_error=False)                # the cleanup path: quiet
+    print('  a lent camera is used as named, the light level can be read off '
+          'the capture, and a background open reports its failure')
+
     # the duration becomes the nearest whole number of frames at the rate
     # the camera reached, halves rounding up, and never none
     assert frames_for_duration(100.0, 1.2) == 120
@@ -2118,6 +2234,16 @@ def main():
         run_action(action, args, locate, strict_levels, drive_scope, lent)
 
 
+def lent_camera(lent):
+    """(make, serial) of the camera kalishlot lent, or None - when it lent
+    none, or (by an odd configuration) more than one."""
+    makes = {type_name: make for make, type_name in KALISHLOT_CAMERA_TYPES.items()}
+    cameras = [(makes[device.get('type')], device_id.split(':', 1)[1])
+               for device_id, device in (lent or {}).items()
+               if device.get('type') in makes]
+    return cameras[0] if len(cameras) == 1 else None
+
+
 def kalishlot_wants(make=None, serial=None, drive_scope=False):
     """Which of the devices a running kalishlot holds this run needs.
 
@@ -2143,7 +2269,13 @@ def kalishlot_wants(make=None, serial=None, drive_scope=False):
 
 def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
     global KALISHLOT_FUNCTION_GENERATOR
-    camera_cls, serial, make = resolve_camera(args.camera, args.serial)
+    make, serial = args.camera, args.serial
+    if lent and not (make or serial or CAMERA or SERIAL_NUMBER):
+        # kalishlot has just said which camera it lent: use it as named
+        held = lent_camera(lent)
+        if held is not None:
+            make, serial = held
+    camera_cls, serial, make = resolve_camera(make, serial)
     if from_kalishlot():
         adopt_kalishlot_settings(lent, serial, make)
         KALISHLOT_FUNCTION_GENERATOR = read_kalishlot_function_generator()
