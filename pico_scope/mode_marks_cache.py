@@ -37,6 +37,8 @@ from pathlib import Path
 # run as a script from inside pico_scope/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utilities.utils import psdata_buffer_csvs, psdata_to_csv  # noqa: E402
+from pico_scope.scope_trace import (is_capture_session,  # noqa: E402
+                                    session_scope_file)
 
 CACHE_SUFFIX = '.modemarks.json'
 CACHE_VERSION = 1
@@ -48,17 +50,24 @@ def complete_pairs(marks):
 
 
 def trace_csv_path(path):
-    """The readable CSV for `path`; .psdata is converted (and its waveform
-    buffer chosen) by the same helper the other scope scripts use."""
+    """The readable trace for `path`; .psdata is converted (and its waveform
+    buffer chosen) by the same helper the other scope scripts use, and a
+    mode-video capture folder gives its scope npz (see scope_trace)."""
     path = Path(path)
     if path.suffix.lower() == '.psdata':
         return psdata_to_csv(path)
+    if is_capture_session(path):
+        return str(session_scope_file(path))
     return str(path)
 
 
 def cache_file(data_path):
-    """The marks sidecar for a data file: '<stem>.modemarks.json' beside it."""
+    """The marks sidecar for a data file: '<stem>.modemarks.json' beside it -
+    or, for a mode-video capture folder, '<folder>.modemarks.json' inside it,
+    so it stays with the capture it belongs to."""
     data_path = Path(data_path)
+    if data_path.is_dir():
+        return data_path / (data_path.name + CACHE_SUFFIX)
     return data_path.with_name(data_path.stem + CACHE_SUFFIX)
 
 
@@ -265,6 +274,26 @@ def _self_test():
         keyed = make_record(data_path, data_path, marks, 0.33, key=36)
         save_marks(data_path, keyed)
         assert load_cached_marks(data_path)['key'] == 36.0
+
+    # a mode-video capture folder: the sidecar lives inside it, and the trace
+    # the marks are positions on is its scope npz
+    import numpy as np
+    with tempfile.TemporaryDirectory() as root:
+        folder = Path(root) / '2026-10-04_120000'
+        folder.mkdir()
+        np.savez_compressed(folder / 's_scope.npz', t=np.arange(4.0),
+                            signal=np.ones(4))
+        (folder / 's_session.json').write_text(json.dumps(
+            {'scope': {'file': 's_scope.npz', 'channel': 'D'}}),
+            encoding='utf-8')
+        assert cache_file(folder) == folder / '2026-10-04_120000.modemarks.json'
+        npz = trace_csv_path(folder)
+        assert Path(npz).name == 's_scope.npz', npz
+        save_marks(folder, make_record(folder, npz, marks, 0.4,
+                                       signal_column='Channel D'))
+        loaded = load_cached_marks(folder, min_pairs=2,
+                                   signal_column='Channel D')
+        assert loaded is not None and resolve_csv(loaded, folder) == npz
 
     print('mode_marks_cache self-test passed')
 

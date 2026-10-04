@@ -281,6 +281,16 @@ instant in the dead time between exposures; `nearest_frame` always returns one.
 The JSON is the irreplaceable part - the per-frame timestamps and the offset
 exist nowhere else.
 
+**The spectrum scripts take the folder as it is.** Copy the session folder
+where they ask for a `.psdata`, in `extract_df_and_fsr_from_scope_csv.py`,
+`mode_spacing_extraction_sidebands.py`, or as a value in `mode_map_2d.py`'s
+`MEASUREMENTS`. They read `<stem>_scope.npz` (always the transmission, whatever
+their `SIGNAL_COLUMN` is set to) and keep the marks sidecar
+`<stem>.modemarks.json` inside the folder - see `pico_scope/scope_trace.py`.
+The trace only spans the burst plus the two pads, so for the df/FSR script and
+the map the scan has to pass at least two consecutive 0th/1st-order pairs in
+that time.
+
 ---
 
 ## The problem

@@ -78,7 +78,6 @@ matplotlib.use('Agg' if '--self-test' in sys.argv else 'Qt5Agg')
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 # repo root on sys.path so `pico_scope.*` / `utilities.*` resolve even when
 # this file is run directly (Python only puts the script's own folder on
@@ -96,13 +95,18 @@ from pico_scope.mode_marks_cache import (ask_use_cached_marks,  # noqa: E402
                                          complete_pairs, load_cached_marks,
                                          make_record, resolve_csv, save_marks,
                                          trace_csv_path)
+from pico_scope import scope_trace  # noqa: E402
+from pico_scope.scope_trace import (is_capture_session,  # noqa: E402
+                                    session_scope_file, signal_column_for)
 from utilities.utils import (ask_long_arm_length,  # noqa: E402
                              choose_buffer_csv, psdata_buffer_csvs)
 
 # --- the measurements to map (this is the dictionary to edit) --------------
 # {y-axis value: PicoScope trace}. .psdata files are converted to CSV on the
 # fly (and you are asked which waveform buffer to use); .csv files are read as
-# they are. The keys need not be evenly spaced - the map keeps their spacing.
+# they are, and so is a capture folder from run_mode_video_pipeline.py (its
+# scope npz is the trace). The keys need not be evenly spaced - the map keeps
+# their spacing.
 MEASUREMENTS = {
     39: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\39CM\without EOM.psdata",
     40: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\40CM\without EOM.psdata",
@@ -219,16 +223,16 @@ def csv_candidates(path):
     path = Path(path)
     if path.suffix.lower() == '.psdata':
         return [Path(csv) for csv in psdata_buffer_csvs(path)]
+    if is_capture_session(path):
+        return [session_scope_file(path)]
     return [path]
 
 
-def load_trace(csv_path):
-    """(time, intensity) arrays from a PicoScope CSV export."""
-    # Rows 1 and 2 of a PicoScope export are the unit / blank header rows.
-    raw = pd.read_csv(csv_path, skiprows=[1, 2])
-    raw = raw.loc[:, [TIME_COLUMN, SIGNAL_COLUMN]].dropna()
-    return (raw[TIME_COLUMN].to_numpy(dtype=float),
-            raw[SIGNAL_COLUMN].to_numpy(dtype=float))
+def load_trace(csv_path, signal_column=SIGNAL_COLUMN):
+    """(time, intensity) arrays from a PicoScope CSV export or a capture's
+    scope npz (see pico_scope.scope_trace)."""
+    return scope_trace.load_trace(csv_path, signal_column,
+                                  time_column=TIME_COLUMN)
 
 
 def analyse_file(key, data_path, remark=False, accept_all=None):
@@ -251,12 +255,14 @@ def analyse_file(key, data_path, remark=False, accept_all=None):
     map and its sidecar, if it has one, is left untouched.
     """
     data_path = Path(data_path)
-    if not data_path.is_file():
-        raise FileNotFoundError(f"{Y_AXIS_LABEL} = {key:g}: no such file: {data_path}")
+    if not (data_path.is_file() or is_capture_session(data_path)):
+        raise FileNotFoundError(f"{Y_AXIS_LABEL} = {key:g}: no such file or "
+                                f"capture folder: {data_path}")
+    signal_column = signal_column_for(data_path, SIGNAL_COLUMN)
 
     if not remark:
         cached = load_cached_marks(data_path, min_pairs=2,
-                                   signal_column=SIGNAL_COLUMN)
+                                   signal_column=signal_column)
         if cached is not None and ask_use_cached_marks(cached, data_path,
                                                         accept_all=accept_all):
             print("  using the cached marks")
@@ -265,8 +271,8 @@ def analyse_file(key, data_path, remark=False, accept_all=None):
     candidates = csv_candidates(data_path)
     csv_path = choose_buffer_csv(candidates)
     while True:
-        x, y = load_trace(csv_path)
-        print(f"  loaded {len(x)} samples from '{SIGNAL_COLUMN}'")
+        x, y = load_trace(csv_path, signal_column)
+        print(f"  loaded {len(x)} samples from '{signal_column}'")
 
         # the folder is part of the title too: the file names repeat across
         # measurements, so the name alone does not say which trace this is
@@ -296,7 +302,7 @@ def analyse_file(key, data_path, remark=False, accept_all=None):
     long_arm = ask_long_arm_length()
 
     record = make_record(data_path, csv_path, marks, long_arm,
-                         signal_column=SIGNAL_COLUMN, key=key)
+                         signal_column=signal_column, key=key)
     save_marks(data_path, record)
     return record
 
@@ -738,7 +744,8 @@ def main(measurements=None, y_label=None, normalize_to=None):
             print(f"  {y_label} = {key:g} skipped")
             continue
 
-        x, y = load_trace(resolve_csv(record, path))
+        x, y = load_trace(resolve_csv(record, path),
+                          signal_column_for(path, SIGNAL_COLUMN))
         fsr_mhz = cavity_fsr_mhz(long_arm=record['long_arm_m'],
                                  mid_arm=MID_ARM_LENGTH,
                                  short_arm=SHORT_ARM_LENGTH)

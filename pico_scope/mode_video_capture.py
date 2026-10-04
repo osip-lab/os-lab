@@ -44,8 +44,9 @@ A session folder holding
     <stem>_mask.npy      the pixels the mode actually lit
     <stem>_session.json  camera settings, per-frame timing, brightness series
 
-The scope side stays a `.psdata` exported from PicoScope 7, exactly as before,
-so every existing loader and analysis script keeps working untouched.
+The scope side is `<stem>_scope.npz` when this script drives the scope (a
+Phase 1 capture kept the `.psdata` exported from PicoScope 7 instead); the
+spectrum scripts read either - see pico_scope/scope_trace.py.
 """
 
 import argparse

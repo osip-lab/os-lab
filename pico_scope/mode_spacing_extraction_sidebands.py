@@ -9,7 +9,9 @@ Pipeline
 --------
 1. Load a PicoScope trace (file path taken from the clipboard). Both .csv and
    .psdata files are accepted; .psdata files are converted to CSV on the fly
-   via PicoScope 7's command-line BatchConvert.
+   via PicoScope 7's command-line BatchConvert. A capture folder written by
+   pico_scope/run_mode_video_pipeline.py is accepted too: its scope npz is the
+   trace (see pico_scope.scope_trace).
 2. Answer the three console prompts, asked together before any window opens:
    the analysis mode, the long arm length in cm (it changes between
    measurements, so it is asked for every run rather than read from a config
@@ -65,11 +67,12 @@ matplotlib.use('Qt5Agg')
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
 from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
-                             get_picoscope_trace_path_from_clipboard)
+                             wait_for_path_from_clipboard)
+from pico_scope.mode_marks_cache import trace_csv_path
+from pico_scope.scope_trace import load_trace, signal_column_for
 # All the math (models, fit, scaling, NA mapping) lives in mode_analysis so
 # the kalishlot web GUI runs the identical computation on the live stream.
 from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
@@ -97,8 +100,12 @@ MID_ARM_LENGTH = 1.5e-2           # [m] only used by 4-element cavities
 N_points = 300                    # lens positions simulated across SHORT_ARM_LENGTHS
 
 
-# %% [Step 1] Load the PicoScope trace (.psdata or .csv) ---------------------
-csv_path, input_path = get_picoscope_trace_path_from_clipboard()
+# %% [Step 1] Load the PicoScope trace (.psdata, .csv or capture folder) -----
+# input_path is what the user copied (where the results line goes); csv_path
+# is the readable trace: the chosen buffer's CSV, or a capture's scope npz.
+input_path = wait_for_path_from_clipboard(filetype=('csv', 'psdata', 'directory'))
+csv_path = trace_csv_path(input_path)
+signal_column = signal_column_for(input_path, SIGNAL_COLUMN)
 print(f"Loading: {csv_path}")
 
 
@@ -110,6 +117,8 @@ def waveform_buffer_label(csv_path, input_path):
     exports a multi-buffer .psdata as '<stem>_<N>.csv' and a single-buffer one
     as plain '<stem>.csv', so the CSV name is what tells the buffers apart.
     """
+    if Path(csv_path).suffix.lower() == '.npz':
+        return 'single'   # a capture records one trace
     csv_stem = Path(csv_path).stem
     input_stem = Path(input_path).stem
     if csv_stem.startswith(input_stem):
@@ -120,13 +129,8 @@ def waveform_buffer_label(csv_path, input_path):
 waveform_buffer = waveform_buffer_label(csv_path, input_path)
 print(f"Waveform buffer: {waveform_buffer}")
 
-# Rows 1 and 2 of a PicoScope export are the unit / blank header rows.
-raw = pd.read_csv(csv_path, skiprows=[1, 2])
-raw = raw.loc[:, [TIME_COLUMN, SIGNAL_COLUMN]].dropna()
-
-x = raw[TIME_COLUMN].to_numpy(dtype=float)
-y = raw[SIGNAL_COLUMN].to_numpy(dtype=float)
-print(f"Loaded {len(x)} samples from column '{SIGNAL_COLUMN}'.")
+x, y = load_trace(csv_path, signal_column, time_column=TIME_COLUMN)
+print(f"Loaded {len(x)} samples from column '{signal_column}'.")
 
 
 # %% [Step 1.5] The console prompts: mode, long arm, sideband frequency ------
@@ -377,7 +381,8 @@ results = report_results(
 
 # %% [Step 11] Record the results next to the original data file ------------
 # Appends a one-line record to numerical-results.txt in the folder of the
-# original file (the .psdata/.csv the user copied, not the temporary CSV).
+# original file (the .psdata/.csv the user copied, not the temporary CSV; for
+# a capture folder, the folder holding all the captures).
 na_text = f"{results['NA']:.4f}" if results['NA'] is not None else "N/A"
 short_arm_text = (f"{results['short_arm_m'] * 1e3:.4f} mm"
                   if results['short_arm_m'] is not None else "N/A")

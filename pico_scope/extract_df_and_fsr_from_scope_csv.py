@@ -22,6 +22,7 @@ from pico_scope.mode_marking import mark_pairs, positions_and_widths
 from pico_scope.mode_marks_cache import (ask_use_cached_marks, complete_pairs,
                                          load_cached_marks, make_record,
                                          save_marks, trace_csv_path)
+from pico_scope.scope_trace import load_trace, signal_column_for
 
 # --- the cavity being measured (edit this when the setup changes) ----------
 # Element names come from the cavity-design catalog; list them in optical order.
@@ -43,11 +44,15 @@ SIGNAL_COLUMN = 'Channel D'  # intensity column to analyze
 # The NA mapping is NOT built here: the cavity-design simulation is run at the end of the
 # script, once every pair has been fitted, so that the measured mode spacing can be handed
 # to it and come back marked on its dependency plot.
-# %% Load the PicoScope trace (.psdata or .csv; psdata is converted on the fly)
+# %% Load the PicoScope trace (.psdata, .csv, or a mode-video capture folder)
 # The path that is copied is the one the sidecar and the results line belong
 # to, so the .psdata is kept as it is here and converted only when the trace
-# actually has to be drawn - a file that is already marked never is.
-input_path = wait_for_path_from_clipboard(filetype=('csv', 'psdata'))
+# actually has to be drawn - a file that is already marked never is. A capture
+# folder from pico_scope/run_mode_video_pipeline.py has no .psdata: its scope
+# npz is the trace, and the transmission channel it recorded is the column
+# (see pico_scope.scope_trace).
+input_path = wait_for_path_from_clipboard(filetype=('csv', 'psdata', 'directory'))
+signal_column = signal_column_for(input_path, SIGNAL_COLUMN)
 
 
 # %% Mark the mode pairs -----------------------------------------------------
@@ -60,7 +65,7 @@ input_path = wait_for_path_from_clipboard(filetype=('csv', 'psdata'))
 # before was measured with the long arm its sidecar holds, and typing it again
 # could only disagree with the marks. It feeds both the FSR and the NA
 # simulation, so it is settled before either is built.
-cached = load_cached_marks(input_path, min_pairs=2, signal_column=SIGNAL_COLUMN)
+cached = load_cached_marks(input_path, min_pairs=2, signal_column=signal_column)
 if cached is not None and ask_use_cached_marks(cached, input_path):
     print("  using the cached marks")
     marks = cached['marks']
@@ -68,12 +73,7 @@ if cached is not None and ask_use_cached_marks(cached, input_path):
     print(f"Long arm length: {long_arm_length * 100:.4g} cm (from the sidecar)")
 else:
     csv_path = trace_csv_path(input_path)
-    df = pd.read_csv(csv_path, skiprows=[1, 2])
-    df = df.loc[:, [TIME_COLUMN, SIGNAL_COLUMN]].dropna()
-    data_numpy = df.to_numpy()
-
-    x = data_numpy[:, 0]  # Time column
-    y = data_numpy[:, 1]  # intensity column
+    x, y = load_trace(csv_path, signal_column, time_column=TIME_COLUMN)
 
     raw_marks = mark_pairs(x, y, title=Path(input_path).name)
     marks = complete_pairs(raw_marks)
@@ -84,7 +84,7 @@ else:
         # next to the data, for this script's next run and for the 2D map
         save_marks(input_path, make_record(input_path, csv_path, marks,
                                            long_arm_length,
-                                           signal_column=SIGNAL_COLUMN))
+                                           signal_column=signal_column))
 
 lorentzian_positions, lorentzian_widths = positions_and_widths(marks)
 print("Marked pairs:", lorentzian_positions)
