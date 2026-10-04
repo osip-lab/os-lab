@@ -33,7 +33,7 @@ With --from-kalishlot - which is how the camera box's "mode video" button runs
 the pipeline - the boxes also lend their settings: the ROI, exposure, gain and
 frame rate from the camera box, the channel ranges, couplings and sample rate
 from the PicoScope box when one is open. Only what kalishlot cannot set (the
-number of frames, binning, ...) comes from the config - see
+capture duration, binning, ...) comes from the config - see
 adopt_kalishlot_settings(). When kalishlot also has the function generator
 open, its channels (waveform, frequency, amplitude, offset, on/off) are read -
 not borrowed, it keeps scanning - and recorded as 'function_generator' in the
@@ -120,7 +120,13 @@ FRAME_RATE_HZ = 100           # see the peak-blending check below
 # derive_exposure() below turns None into the number; a value pins it instead.
 EXPOSURE_US = None              # 9900 us at 100 Hz
 EXPOSURE_GAP_US = None          # the gap that leaves; derived alongside
-N_FRAMES = 120                  # 1.2 s at 100 Hz
+# How long the camera records, in seconds. The number of frames follows from
+# it and the frame rate the camera actually reached (see frames_for_duration),
+# rounded to the nearest whole frame - so a rate changed in the config, or
+# taken from kalishlot's box, keeps the same measurement length instead of
+# silently stretching or shrinking it.
+CAPTURE_DURATION_S = 1.2        # 120 frames at 100 Hz
+N_FRAMES = None                 # derived by configure(); not a setting
 # None: the deepest format the camera offers - Mono12 on the Basler, Mono10 on
 # the XIMEA, whose sensor has no more to give. Depth is wanted for headroom: as
 # the laser warms the transmission climbs, and a clipped peak makes a poor
@@ -583,7 +589,8 @@ def measure_light_level(cam, n_bursts=LEVEL_BURSTS, n_frames=None):
     figure that matters is the *worst* burst, not the average one: the capture
     only has to clip once to be spoiled.
     """
-    n_frames = n_frames or LEVEL_BURST_FRAMES or N_FRAMES
+    n_frames = (n_frames or LEVEL_BURST_FRAMES or N_FRAMES
+                or frames_for_duration(cam.resulting_frame_rate))
     saturation = cam.saturation_level
     peaks, fractions = [], []
     for _ in range(n_bursts):
@@ -934,7 +941,7 @@ def adopt_kalishlot_settings(kalishlot, serial, make):
     gain and - on the XIMEA, the only one with a rate in its box - the frame
     rate. From the PicoScope box, when one is open: the range and coupling of
     the transmission and aux channels, and the sample rate. Binning, pixel
-    format, the number of frames, which channel is which and the pads are not
+    format, the capture duration, which channel is which and the pads are not
     in kalishlot, so they stay the config's.
 
     The ROI replaces MANUAL_ROI and the reconnaissance alike: the box is where
@@ -1147,6 +1154,13 @@ def resolve_roi(cam, locate):
 
 
 # %% [Step 2] Configuring the camera ----------------------------------------
+def frames_for_duration(rate_hz, duration_s=None):
+    """The frames CAPTURE_DURATION_S takes at `rate_hz`, rounded to the
+    nearest whole frame (halves up), and never fewer than one."""
+    duration_s = CAPTURE_DURATION_S if duration_s is None else duration_s
+    return max(1, int(np.floor(duration_s * rate_hz + 0.5)))
+
+
 def configure(cam, offset_y, roi_height):
     """Apply the capture settings and print every check worth failing on."""
     if offset_y is None or roi_height is None:
@@ -1193,10 +1207,15 @@ def configure(cam, offset_y, roi_height):
         warnings.warn(message)
         print(f'  ! {message}')
 
+    # the frame count is settled here, from the rate the camera actually
+    # runs at, and written back so every later step records that number
+    global N_FRAMES
+    N_FRAMES = frames_for_duration(actual_hz)
     period = 1.0 / actual_hz
     burst = N_FRAMES * period
 
-    print(f'  burst {burst:.3f} s for {N_FRAMES} frames, '
+    print(f'  burst {burst:.3f} s ({CAPTURE_DURATION_S:g} s asked) = '
+          f'{N_FRAMES} frames at {actual_hz:.1f} Hz, '
           f'{N_FRAMES * roi["width"] * roi["height"] / 1e6:.0f} MB')
     return {'roi': roi, 'binning': binning_info, 'timestamps': list(stamps),
             'pixel_format': pixel_format, 'binning_mode': cam.binning_mode,
@@ -1398,7 +1417,6 @@ def capture_synchronized(serial_number=None, output_root=None,
     """
     from pico_scope.ps4000a_scope import PicoScope4000A
 
-    n_frames = N_FRAMES if n_frames is None else n_frames
     camera_cls, serial_number, make = resolve_camera(make, serial_number)
     resolve_manual_roi(serial_number, make)
     cam = camera_cls(serial_number)
@@ -1410,6 +1428,8 @@ def capture_synchronized(serial_number=None, output_root=None,
         checks = configure(cam, offset_y, roi_height)
         if roi_choice is not None:
             checks['roi_choice'] = roi_choice
+        if n_frames is None:
+            n_frames = N_FRAMES       # from CAPTURE_DURATION_S, by configure()
         burst_s = n_frames / checks['resulting_hz']
 
         print('\n--- light level ---')
@@ -1993,17 +2013,26 @@ def _self_test():
     assert [c['channel'] for c in generator['channels']] == [1, 2], generator
     assert generator['channels'][0]['frequency_hz'] == 2.0, generator
     with tempfile.TemporaryDirectory() as folder:
-        run_config.dump_into(folder, resolved={'N_FRAMES': 3})
+        run_config.dump_into(folder, resolved={'CAPTURE_DURATION_S': 1.0})
         plain = json.loads((Path(folder) / 'run_config_resolved.json')
                            .read_text(encoding='utf-8'))
         assert 'function_generator' not in plain, plain
-        run_config.dump_into(folder, resolved={'N_FRAMES': 3},
+        run_config.dump_into(folder, resolved={'CAPTURE_DURATION_S': 1.0},
                              extra={'function_generator': generator})
         record = json.loads((Path(folder) / 'run_config_resolved.json')
                             .read_text(encoding='utf-8'))
         assert record['function_generator']['channels'][0]['waveform'] == 'ramp'
     print("  the function generator's channels are recorded when kalishlot "
           'has its box open, and nothing changes when it does not')
+
+    # the duration becomes the nearest whole number of frames at the rate
+    # the camera reached, halves rounding up, and never none
+    assert frames_for_duration(100.0, 1.2) == 120
+    assert frames_for_duration(150.0, 6.667) == 1000        # 1000.05
+    assert frames_for_duration(30.0, 0.05) == 2             # 1.5 rounds up
+    assert frames_for_duration(97.3, 1.2) == 117            # 116.76
+    assert frames_for_duration(10.0, 0.01) == 1
+    print('  the capture duration becomes the nearest whole number of frames')
 
     # the run-button configuration has to name something this file can do
     assert ACTION in ('capture', 'levels', 'locate', 'self-test'), ACTION
@@ -2029,8 +2058,10 @@ def main():
     parser.add_argument('--serial', default=None,
                         help='camera serial number; defaults to SERIAL_NUMBER '
                              'in this file, or the only camera connected')
-    parser.add_argument('--frames', type=int, default=None,
-                        help=f'frames to record (default {N_FRAMES})')
+    parser.add_argument('--duration', type=float, default=None,
+                        help=f'seconds to record (default '
+                             f'{CAPTURE_DURATION_S:g}); the number of frames '
+                             f'follows from the frame rate')
     parser.add_argument('--no-prompt', action='store_true',
                         help='record immediately instead of waiting for Enter; '
                              'the PicoScope recording must already be running '
@@ -2068,8 +2099,8 @@ def main():
         action = 'locate'
     locate = LOCATE_FIRST and not args.no_locate
     strict_levels = STRICT_LEVELS or args.strict_levels
-    if args.frames:
-        globals()['N_FRAMES'] = args.frames    # the command line wins over
+    if args.duration:
+        globals()['CAPTURE_DURATION_S'] = args.duration  # the command line wins over
                                                # the config, which wins over
                                                # the default declared above
 

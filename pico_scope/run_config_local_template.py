@@ -56,7 +56,9 @@ class capture:
     # is why this is derived rather than typed beside the rate and forgotten at
     # the next change. Put a number here only to pin a shorter exposure.
     EXPOSURE_US = None
-    N_FRAMES = 120                  # 1.2 s at 100 Hz
+    # How long to record, in seconds; the number of frames is this times the
+    # frame rate the camera reaches, rounded to the nearest whole frame.
+    CAPTURE_DURATION_S = 1.2        # 120 frames at 100 Hz
     # None: the deepest format the camera offers - Mono12 on the Basler, Mono10
     # on the XIMEA, whose sensor has no more to give. Depth is wanted for
     # headroom: as the laser warms the transmission climbs, and a clipped peak

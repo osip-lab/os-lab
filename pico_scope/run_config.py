@@ -81,7 +81,7 @@ ENV_VAR = 'MODE_VIDEO_CONFIG'
 SECTIONS = {
     'capture': ('mode_video_capture', (
         'ACTION', 'CAMERA', 'DRIVE_SCOPE', 'LOCATE_FIRST', 'STRICT_LEVELS',
-        'SERIAL_NUMBER', 'FRAME_RATE_HZ', 'EXPOSURE_US', 'N_FRAMES',
+        'SERIAL_NUMBER', 'FRAME_RATE_HZ', 'EXPOSURE_US', 'CAPTURE_DURATION_S',
         'PIXEL_FORMAT', 'GAIN_DB', 'BINNING', 'THROUGHPUT_BPS',
         'MANUAL_ROI', 'ROI_WIDTH', 'ROI_HEIGHT_CANDIDATES',
         'ROI_MIN_MARGIN_ROWS', 'ROI_OFFSET_X',
@@ -509,11 +509,11 @@ def _self_test():
     class _Good:
         class capture:
             BINNING = 4
-            N_FRAMES = 120
+            CAPTURE_DURATION_S = 1.2
 
-    namespace = {'BINNING': 2, 'N_FRAMES': 120}
+    namespace = {'BINNING': 2, 'CAPTURE_DURATION_S': 1.2}
     changed = apply('capture', namespace, _Good)
-    assert namespace['BINNING'] == 4 and namespace['N_FRAMES'] == 120
+    assert namespace['BINNING'] == 4 and namespace['CAPTURE_DURATION_S'] == 1.2
     assert changed == {'BINNING': 4}, changed
     print('  apply() overwrites the constants and names only what it moved')
 

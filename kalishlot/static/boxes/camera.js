@@ -125,7 +125,7 @@ export function createCameraBox(device, container, sendCommand) {
         <button class="cam-record-fit" title="append the current fit values to the log">record fit values</button>
       </span>
       <span class="subgroup">
-        <button class="cam-pipeline" title="run pico_scope/run_mode_video_pipeline.py (capture, sync, viewer) in a console window on the kalishlot PC. It borrows this camera and the scope and hands them back when it ends. Every setting kalishlot has is taken from the boxes — this box's ROI, exposure, gain and frame rate; the PicoScope box's channel ranges, couplings and sample rate when one is open — and only the rest (number of frames, binning, …) from run_config_local.py">mode video ▶</button>
+        <button class="cam-pipeline" title="run pico_scope/run_mode_video_pipeline.py (capture, sync, viewer) in a console window on the kalishlot PC. It borrows this camera and the scope and hands them back when it ends. Every setting kalishlot has is taken from the boxes — this box's ROI, exposure, gain and frame rate; the PicoScope box's channel ranges, couplings and sample rate when one is open — and only the rest (capture duration, binning, …) from run_config_local.py">mode video ▶</button>
       </span>
       <span class="cam-status status-line"></span>
     </div>
