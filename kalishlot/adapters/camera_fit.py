@@ -35,29 +35,44 @@ class CameraFitMixin:
         self._fit_loop = None
         self._fitting = False
         self._fit_guess = None  # {'x_0', 'y_0', 'sigma'} in sensor px, or None
-        self._fit_threshold = 0.0  # counts above background; 0 = fit every frame
-        self._last_frame = None  # newest full-resolution frame
+        # the frame trigger: counts above background; 0 = every frame passes
+        self._fit_threshold = 0.0
+        self._last_frame = None  # newest full-resolution frame shown
         self._last_brightness_emit = 0.0
 
-    def _store_fit_frame(self, frame):
-        """Call from the frame-producing thread with each full-res frame.
+    def _passes_trigger(self, frame, force=False):
+        """Whether a frame is bright enough to be shown and fitted.
 
-        The trigger threshold is checked HERE, not in the fit loop: the loop
-        keeps only the newest submitted frame, so with a blinking beam a
-        below-threshold frame arriving right after a bright one would
-        overwrite it before the fit thread wakes. Gating at submit time lets
-        the bright frame sit in the loop until fitted, no matter how many
-        dark frames follow.
+        The trigger is for a blinking beam (the transmission during a scan):
+        a frame dimmer than the threshold is dropped before it reaches the
+        display or the fit, so the view holds the last bright frame until the
+        next one arrives, and the fit only ever sees what is on screen.
+        Checked once, here, per frame - never in the fit loop, which keeps
+        only the newest submitted frame and would let a dark frame overwrite
+        a bright one before the fit thread wakes.
+
+        The brightness is measured whenever there is a threshold or a fit (it
+        is the readout that sets the threshold) and broadcast a few times a
+        second, with whether the view is holding. `force` lets a frame
+        through regardless - a single frame that was asked for is shown.
         """
-        self._last_frame = frame
-        if not self._fitting or self._fit_loop is None:
-            return
+        if self._fit_threshold <= 0 and not self._fitting:
+            return True
         brightness = beam_brightness(frame, self._fit_guess)
+        passes = (force or self._fit_threshold <= 0
+                  or brightness >= self._fit_threshold)
         now = time.monotonic()
         if now - self._last_brightness_emit >= BRIGHTNESS_EMIT_INTERVAL_S:
             self._last_brightness_emit = now
-            self.emit({'type': 'brightness', 'value': round(brightness, 1)})
-        if self._fit_threshold <= 0 or brightness >= self._fit_threshold:
+            self.emit({'type': 'brightness', 'value': round(brightness, 1),
+                       'held': not passes})
+        return passes
+
+    def _store_fit_frame(self, frame):
+        """Call from the frame-producing thread with each full-res frame
+        that passed the trigger (see _passes_trigger)."""
+        self._last_frame = frame
+        if self._fitting and self._fit_loop is not None:
             self._fit_loop.submit(frame)
 
     def fit_describe(self):

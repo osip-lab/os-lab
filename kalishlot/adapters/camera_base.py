@@ -91,6 +91,9 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
         self._init_levels()
         self._init_markers()
         self._playing = True
+        # the next frame is a requested single frame: shown even when it is
+        # below the trigger, since it was asked for
+        self._snap_requested = False
         # None, or {'x', 'y', 'width', 'height'} in UNCROPPED sensor pixels
         self._roi = None
 
@@ -159,9 +162,14 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
             step = self.DISPLAY_DOWNSAMPLE
             display = display[y // step:(y + height) // step,
                               x // step:(x + width) // step]
+        # the intensity chart measures every frame - it watches the light
+        # itself, blinks included; the trigger only decides what is shown
+        self._store_levels_frame(frame)
+        force, self._snap_requested = self._snap_requested, False
+        if not self._passes_trigger(frame, force=force):
+            return   # below the trigger: the view holds the last bright frame
         self._store_display_frame(display)
         self._store_fit_frame(frame)
-        self._store_levels_frame(frame)
 
     # ------------------------------------------------------------------ ROI
     def _set_roi(self, x, y, width, height):
@@ -305,6 +313,7 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
             self.emit({'type': 'status', 'playing': False})
             return {'ok': True}
         if name == 'snap':
+            self._snap_requested = True
             self._snap()
             return {'ok': True}
         if name == 'set_setting':

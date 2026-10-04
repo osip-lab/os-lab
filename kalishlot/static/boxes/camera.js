@@ -99,10 +99,10 @@ export function createCameraBox(device, container, sendCommand) {
       </span>
       <span class="subgroup">
         <label class="field"
-               title="fit only frames at least this bright (counts above background); empty or 0 = fit every frame">
+               title="show (and fit) only frames at least this bright, in counts above background: a dimmer frame is dropped and the view holds the last bright one. Brightness is measured inside the guess circle when there is one, so draw it on the mode you want to catch. Empty or 0 = show every frame">
           trigger <input type="number" class="cam-trigger" min="0" placeholder="off"></label>
         <span class="cam-brightness readout"
-              title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set"></span>
+              title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set. 'held' = below the trigger, the view is showing the last frame that passed"></span>
       </span>
       <span class="subgroup">
         <span class="field"
@@ -832,13 +832,15 @@ export function createCameraBox(device, container, sendCommand) {
   const brightnessSpan = container.querySelector('.cam-brightness');
   let fitThreshold = 0;
   let lastBrightness = null; // newest 'brightness' event value, or null
+  let lastHeld = false;      // ... and whether the view is holding a frame
 
   function paintBrightness() {
     if (lastBrightness === null) {
       brightnessSpan.textContent = '';
       return;
     }
-    brightnessSpan.textContent = lastBrightness.toFixed(0);
+    const holding = lastHeld && fitThreshold > 0;
+    brightnessSpan.textContent = lastBrightness.toFixed(0) + (holding ? ' held' : '');
     const above = fitThreshold <= 0 || lastBrightness >= fitThreshold;
     brightnessSpan.style.color = above ? '#52c46a' : 'rgba(224, 85, 85, 0.9)';
   }
@@ -1374,6 +1376,7 @@ export function createCameraBox(device, container, sendCommand) {
           : (editRect ? 'drag the rectangle, then choose apply' : 'ROI cleared');
       } else if (event.type === 'brightness') {
         lastBrightness = event.value;
+        lastHeld = event.held ?? false;
         paintBrightness();
       } else if (event.type === 'fit_threshold') {
         showThreshold(event.value);
