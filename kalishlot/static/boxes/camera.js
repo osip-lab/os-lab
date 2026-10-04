@@ -6,8 +6,8 @@
 //              radius -> sigma; lives on the server so the fit can use it.
 // Shared by every camera-like device type (dummy, Basler).
 //
-// The ROI dropdown has the three states it can be in: no ROI, editing the
-// rectangle (drag it out, then move it or pull its handles), and applied —
+// The ROI radio buttons are the three states it can be in: no ROI, editing
+// the rectangle (drag it out, then move it or pull its handles), and applied —
 // at which point the cropped frame IS the image and every coordinate in the
 // box (fit, guess, marker, the rectangle itself) counts from its corner.
 // Whether the crop happens in the camera or in the server is the adapter's
@@ -41,6 +41,7 @@ const COLOR_ROI = 'rgba(255, 205, 70, 0.95)';
 const GRID_SPACING_MM = 1;
 const ROI_HANDLE_PX = 9;   // hit radius for the rectangle's handles, css px
 const ROI_MIN_PX = 16;     // matches CameraAdapterBase.MIN_ROI_PX
+let roiGroupCount = 0;
 
 const LEVELS_MIN_W = 240;  // width the image gives up for the strip chart
 const LEVELS_AVERAGE_S = 10;  // span of the dashed mean line on that chart
@@ -68,6 +69,8 @@ export function createCameraBox(device, container, sendCommand) {
   const pixelMm = device.pixel_size_mm ?? 0;
   const levelsMax = device.levels_max ?? 4095; // raw-data full scale
 
+  // radio groups are document-wide by name, so each box needs its own
+  const roiGroup = `cam-roi-${++roiGroupCount}`;
   container.innerHTML = `
     <div class="toolbar cam-controls">
       <button class="play-toggle"></button>
@@ -94,13 +97,13 @@ export function createCameraBox(device, container, sendCommand) {
               title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set"></span>
       </span>
       <span class="subgroup">
-        <label class="field"
-               title="crop the camera to a region: pick Edit ROI, drag the rectangle on the image (its handles resize it, its middle moves it), then Apply ROI">
-          ROI <select class="cam-roi">
-            <option value="none">No ROI</option>
-            <option value="edit">Edit ROI</option>
-            <option value="apply">Apply ROI</option>
-          </select></label>
+        <span class="field"
+              title="crop the camera to a region: pick edit (the full sensor is shown, with the current ROI on it), drag the rectangle on the image (its handles resize it, its middle moves it), then apply">
+          ROI <span class="segmented cam-roi" role="radiogroup">
+            <label><input type="radio" name="${roiGroup}" value="none"><span>none</span></label>
+            <label><input type="radio" name="${roiGroup}" value="edit"><span>edit</span></label>
+            <label><input type="radio" name="${roiGroup}" value="apply"><span>apply</span></label>
+          </span></span>
       </span>
       <span class="subgroup">
         <button class="cam-mark" title="drag from the circle center to its edge">marker ◯</button>
@@ -766,7 +769,11 @@ export function createCameraBox(device, container, sendCommand) {
     if (shape) [sensorH, sensorW] = shape;
     if (full) [fullH, fullW] = full;
     if (changed || editRect) {
-      editRect = null;
+      // 'edit' on an applied ROI clears the crop first, and the rectangle
+      // waits for the full frame to arrive: it is the old ROI, now on the
+      // whole sensor, ready to be moved or resized
+      editRect = !newRoi && pendingEditRect ? pendingEditRect : null;
+      pendingEditRect = null;
       roiDrag = null;
       marker = null;
       fitParams = null;
@@ -829,11 +836,15 @@ export function createCameraBox(device, container, sendCommand) {
   triggerInput.addEventListener('blur', commitTrigger);
 
   // ------------------------------------------------------------------ ROI
-  // Three states in one dropdown: no crop, editing the rectangle, cropped.
-  // 'Apply ROI' sends the rectangle in current-frame pixels; the server
-  // translates it onto the sensor (so applying twice zooms further in) and
-  // answers with a 'roi' event carrying the size the hardware snapped to.
-  const roiSelect = container.querySelector('.cam-roi');
+  // Three states as radio buttons: no crop, editing the rectangle, cropped.
+  // Editing always happens on the full sensor — choosing 'edit' while cropped
+  // clears the crop and puts the old ROI back as the rectangle — so a new ROI
+  // can be bigger than, or outside, the current one. 'apply' sends the
+  // rectangle in current-frame pixels; the server translates it onto the
+  // sensor and answers with a 'roi' event carrying the size the hardware
+  // snapped to.
+  const roiInputs = [...container.querySelectorAll('.cam-roi input')];
+  let pendingEditRect = null;   // the ROI to edit once the full frame is back
   const ROI_HANDLES = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'];
   const ROI_CURSORS = {nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize',
                        w: 'ew-resize', e: 'ew-resize', sw: 'nesw-resize',
@@ -841,24 +852,34 @@ export function createCameraBox(device, container, sendCommand) {
   let roiDrag = null;     // {handle, start:{x,y}, rect0} while dragging
 
   function showRoiState() {
-    roiSelect.value = editRect ? 'edit' : (roi ? 'apply' : 'none');
+    const value = editRect || pendingEditRect ? 'edit' : (roi ? 'apply' : 'none');
+    for (const input of roiInputs) input.checked = input.value === value;
     overlay.style.cursor = editRect ? 'crosshair' : (armed ? 'crosshair' : '');
   }
 
-  roiSelect.onchange = () => {
-    const mode = roiSelect.value;
+  const onRoiChange = (mode) => {
     if (mode === 'edit') {
       setArmed(null);   // the rectangle owns the pointer while editing
+      if (roi) {
+        pendingEditRect = {x: roi.x, y: roi.y, w: roi.width, h: roi.height};
+        status.textContent = 'showing the full sensor to edit the ROI…';
+        sendCommand(device.device_id, 'clear_roi').catch((e) => {
+          pendingEditRect = null;
+          status.textContent = e.message;
+          showRoiState();
+        });
+        return;   // the 'roi' event brings the full frame and the rectangle
+      }
       // start from the middle half of what is on screen; a drag on empty
       // image replaces it outright
       if (!editRect) {
         editRect = {x: sensorW / 4, y: sensorH / 4,
                     w: sensorW / 2, h: sensorH / 2};
       }
-      status.textContent = 'drag the rectangle, then choose Apply ROI';
+      status.textContent = 'drag the rectangle, then choose apply';
     } else if (mode === 'apply') {
       if (!editRect) {
-        status.textContent = 'nothing to apply — pick Edit ROI and drag a rectangle first';
+        status.textContent = 'nothing to apply — pick edit and drag a rectangle first';
         showRoiState();
         return;
       }
@@ -870,6 +891,7 @@ export function createCameraBox(device, container, sendCommand) {
       return;
     } else {
       editRect = null;
+      pendingEditRect = null;
       if (roi) {
         sendCommand(device.device_id, 'clear_roi')
           .catch((e) => { status.textContent = e.message; });
@@ -879,6 +901,7 @@ export function createCameraBox(device, container, sendCommand) {
     redrawOverlay();
     updateInfo();
   };
+  for (const input of roiInputs) input.onchange = () => onRoiChange(input.value);
 
   function roiHandleAt(event) {
     if (!editRect) return null;
@@ -1147,7 +1170,8 @@ export function createCameraBox(device, container, sendCommand) {
       } else if (event.type === 'roi') {
         applyRoiState(event.roi, event.sensor_shape, event.sensor_full);
         status.textContent = event.roi
-          ? `ROI ${event.roi.width}×${event.roi.height} applied` : 'ROI cleared';
+          ? `ROI ${event.roi.width}×${event.roi.height} applied`
+          : (editRect ? 'drag the rectangle, then choose apply' : 'ROI cleared');
       } else if (event.type === 'brightness') {
         lastBrightness = event.value;
         paintBrightness();
