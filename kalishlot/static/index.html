@@ -7,12 +7,18 @@
 <link rel="stylesheet" href="/vendor/gridstack.min.css">
 <link rel="stylesheet" href="/vendor/uPlot.min.css">
 <link rel="stylesheet" href="/styles.css">
+<script>
+  // Apply the saved theme before first paint so ultra-dark never flashes bright.
+  try { if (localStorage.getItem('kalishlot-theme') === 'ultra-dark')
+          document.documentElement.dataset.theme = 'ultra-dark'; } catch { }
+</script>
 </head>
 <body>
 <header>
   <h1>OS Lab Dashboard</h1>
   <button id="add-device">+ add device</button>
   <span id="server-status" class="status-line"></span>
+  <button id="theme-toggle" title="toggle ultra-dark mode for a dark lab">ultra-dark</button>
 </header>
 <div class="grid-stack"></div>
 <div id="modal-backdrop" hidden>

@@ -25,6 +25,21 @@ const grid = GridStack.init({
 
 initLogger();
 
+// ------------------------------------------------------------ theme toggle
+// Ultra-dark is applied in index.html before first paint; this only flips it.
+const themeToggle = document.getElementById('theme-toggle');
+function syncThemeToggle() {
+  themeToggle.classList.toggle('lit', document.documentElement.dataset.theme === 'ultra-dark');
+}
+themeToggle.onclick = () => {
+  const root = document.documentElement;
+  if (root.dataset.theme === 'ultra-dark') delete root.dataset.theme;
+  else root.dataset.theme = 'ultra-dark';
+  try { localStorage.setItem('kalishlot-theme', root.dataset.theme ?? ''); } catch { /* not persisted */ }
+  syncThemeToggle();
+};
+syncThemeToggle();
+
 const openBoxes = new Map(); // device_id -> { element, cleanup }
 
 // ------------------------------------------------------------- API helpers

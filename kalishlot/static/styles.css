@@ -543,3 +543,45 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
     transition: none !important;
   }
 }
+
+/* ------------------------------------------------------------ ultra-dark
+   For working in the darkened lab: pitch-black ground, dim text, no glows.
+   Toggled by the header button (html[data-theme="ultra-dark"]). Canvases
+   (plots, camera frames) draw with fixed JS colors, so they are dimmed
+   with a filter rather than retokened. */
+#theme-toggle.lit { color: var(--amber); border-color: rgba(232, 166, 62, 0.35); }
+
+:root[data-theme="ultra-dark"] {
+  --ink: #000;
+  --panel: #000;
+  --raised: #050505;
+  --well: #000;
+  --line: #161616;
+  --line-soft: #0e0e0e;
+  --text: #5a5a5a;
+  --muted: #383838;
+  --amber: #6e4f1d;
+  --run: #275e33;
+  --alert: #6b2828;
+}
+:root[data-theme="ultra-dark"] body { background: #000; }
+:root[data-theme="ultra-dark"] header,
+:root[data-theme="ultra-dark"] .box-header { background: #000; }
+:root[data-theme="ultra-dark"] *,
+:root[data-theme="ultra-dark"] *::before,
+:root[data-theme="ultra-dark"] *::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+:root[data-theme="ultra-dark"] button:hover:not(:disabled),
+:root[data-theme="ultra-dark"] #add-device,
+:root[data-theme="ultra-dark"] #add-device:hover:not(:disabled) {
+  background: #0a0a0a;
+  border-color: #262626;
+}
+:root[data-theme="ultra-dark"] input[type="number"]:hover,
+:root[data-theme="ultra-dark"] select:hover { border-color: #262626; }
+:root[data-theme="ultra-dark"] canvas,
+:root[data-theme="ultra-dark"] img,
+:root[data-theme="ultra-dark"] video { filter: brightness(0.4); }
+:root[data-theme="ultra-dark"] .u-legend { color: var(--text); }
