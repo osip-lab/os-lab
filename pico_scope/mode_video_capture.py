@@ -34,7 +34,11 @@ the pipeline - the boxes also lend their settings: the ROI, exposure, gain and
 frame rate from the camera box, the channel ranges, couplings and sample rate
 from the PicoScope box when one is open. Only what kalishlot cannot set (the
 number of frames, binning, ...) comes from the config - see
-adopt_kalishlot_settings().
+adopt_kalishlot_settings(). When kalishlot also has the function generator
+open, its channels (waveform, frequency, amplitude, offset, on/off) are read -
+not borrowed, it keeps scanning - and recorded as 'function_generator' in the
+session JSON and in run_config_resolved.json, so the capture says how fast the
+laser was being scanned. With no generator box, nothing is added.
 
 ## What comes out
 
@@ -68,7 +72,7 @@ from pico_scope import run_config  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
 from utilities.utils import wait_for_path_from_clipboard  # noqa: E402
-from kalishlot.loan_client import borrow_from_kalishlot  # noqa: E402
+from kalishlot.loan_client import borrow_from_kalishlot, open_devices  # noqa: E402
 
 # The camera makes this script can drive. Imported one at a time and only when
 # needed: a machine with just one SDK installed must still run, and importing
@@ -888,6 +892,39 @@ def _box_setting(describe, name, zero_is_unset=True):
     return None
 
 
+# The function generator's state as kalishlot's box showed it when the run
+# started, or None - no kalishlot, no generator box, or not --from-kalishlot.
+# Read, never borrowed: the generator has to keep scanning during the capture.
+KALISHLOT_FUNCTION_GENERATOR = None
+
+
+def read_kalishlot_function_generator():
+    """The open function-generator box's channels, for the capture record.
+
+    It is how fast and how far the laser was being scanned, which the
+    spectrum's time axis means nothing without. Read through kalishlot's
+    device list rather than lent: describe() asks the instrument itself, so
+    a change made on the front panel is in it too. None when kalishlot is not
+    running or has no generator open - the record is then left as it was.
+    """
+    generator = next((device for device in open_devices() or []
+                      if device.get('type') == 'rigol_dg'), None)
+    if generator is None:
+        return None
+    channels = [dict(state, channel=number) for number, state
+                in enumerate(generator.get('channels') or [], start=1)]
+    for state in channels:
+        print(f"  function generator CH{state['channel']}: "
+              f"{'on' if state.get('on') else 'off'}, {state.get('waveform')}, "
+              f"{state.get('frequency_hz', 0):g} Hz, "
+              f"{state.get('amplitude_vpp', 0):g} Vpp, "
+              f"offset {state.get('offset_v', 0):g} V")
+    return {'device_id': generator.get('device_id'),
+            'label': generator.get('label'),
+            'read_at': datetime.now().isoformat(timespec='seconds'),
+            'channels': channels}
+
+
 def adopt_kalishlot_settings(kalishlot, serial, make):
     """Take the run's settings from kalishlot's boxes, as they were just
     before the loan; whatever a box cannot set stays the config's.
@@ -1226,6 +1263,8 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
         'brightness_full': frame_brightness(frames).tolist(),
         'brightness_masked': frame_brightness(frames, mask).tolist(),
     }
+    if KALISHLOT_FUNCTION_GENERATOR is not None:
+        session['function_generator'] = KALISHLOT_FUNCTION_GENERATOR
     # Serialise before writing anything large. The metadata is the fragile
     # part - it is assembled from a dozen measurements, any of which can carry
     # a type json refuses - and it is also the irreplaceable part, since the
@@ -1246,8 +1285,11 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     # than only what was typed. Both capture paths come through here, so a
     # capture run straight from this script is recorded the same as one the
     # pipeline drove.
+    extra = ({'function_generator': KALISHLOT_FUNCTION_GENERATOR}
+             if KALISHLOT_FUNCTION_GENERATOR is not None else None)
     run_config.dump_into(folder,
-                         resolved=run_config.resolved_values('capture', globals()))
+                         resolved=run_config.resolved_values('capture', globals()),
+                         extra=extra)
     return session_path, mask
 
 
@@ -1926,6 +1968,43 @@ def _self_test():
           "unmeasured one stays 0 and says so rather than borrowing the "
           "other camera's")
 
+    # The function generator is read from kalishlot's device list, never lent,
+    # and recorded only when a box is open: a run without one writes the
+    # same run_config_resolved.json it always did.
+    global open_devices
+    real_open_devices = open_devices
+    try:
+        open_devices = lambda: None                   # kalishlot not running
+        assert read_kalishlot_function_generator() is None
+        open_devices = lambda: [{'device_id': 'ximea_camera:1',
+                                 'type': 'ximea_camera'}]
+        assert read_kalishlot_function_generator() is None
+        open_devices = lambda: [{
+            'device_id': 'rigol_dg:USB0::1', 'type': 'rigol_dg',
+            'label': 'Rigol DG822',
+            'channels': [{'on': True, 'waveform': 'ramp', 'frequency_hz': 2.0,
+                          'amplitude_vpp': 4.0, 'offset_v': 0.0},
+                         {'on': False, 'waveform': 'sine',
+                          'frequency_hz': 1e3, 'amplitude_vpp': 1.0,
+                          'offset_v': 0.0}]}]
+        generator = read_kalishlot_function_generator()
+    finally:
+        open_devices = real_open_devices
+    assert [c['channel'] for c in generator['channels']] == [1, 2], generator
+    assert generator['channels'][0]['frequency_hz'] == 2.0, generator
+    with tempfile.TemporaryDirectory() as folder:
+        run_config.dump_into(folder, resolved={'N_FRAMES': 3})
+        plain = json.loads((Path(folder) / 'run_config_resolved.json')
+                           .read_text(encoding='utf-8'))
+        assert 'function_generator' not in plain, plain
+        run_config.dump_into(folder, resolved={'N_FRAMES': 3},
+                             extra={'function_generator': generator})
+        record = json.loads((Path(folder) / 'run_config_resolved.json')
+                            .read_text(encoding='utf-8'))
+        assert record['function_generator']['channels'][0]['waveform'] == 'ramp'
+    print("  the function generator's channels are recorded when kalishlot "
+          'has its box open, and nothing changes when it does not')
+
     # the run-button configuration has to name something this file can do
     assert ACTION in ('capture', 'levels', 'locate', 'self-test'), ACTION
     assert CAMERA is None or CAMERA in CAMERA_BACKENDS, CAMERA
@@ -2032,9 +2111,11 @@ def kalishlot_wants(make=None, serial=None, drive_scope=False):
 
 
 def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
+    global KALISHLOT_FUNCTION_GENERATOR
     camera_cls, serial, make = resolve_camera(args.camera, args.serial)
     if from_kalishlot():
         adopt_kalishlot_settings(lent, serial, make)
+        KALISHLOT_FUNCTION_GENERATOR = read_kalishlot_function_generator()
     # As soon as the camera is known, so the 'levels' and 'locate' paths below
     # see the same ROI a capture would. Idempotent: once it has resolved,
     # MANUAL_ROI is an ordinary dict and the capture paths leave it alone.

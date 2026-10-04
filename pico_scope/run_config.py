@@ -404,7 +404,7 @@ def _json_safe(value):
     return repr(value)
 
 
-def dump_into(folder, resolved=None, section='capture'):
+def dump_into(folder, resolved=None, section='capture', extra=None):
     """Record the run parameters beside a capture.
 
     Two files, because they answer different questions. The verbatim copy keeps
@@ -413,6 +413,11 @@ def dump_into(folder, resolved=None, section='capture'):
     camera ran, which is not the same thing - the exposure is derived from the
     frame rate, and the ROI that gets used may be one the script chose rather
     than one that was typed.
+
+    `extra` adds top-level entries to the JSON for state that is not a config
+    setting but describes the run - the function generator's channels, read
+    from kalishlot. Left out when None, so a run without it records exactly
+    what it always did.
     """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -431,6 +436,8 @@ def dump_into(folder, resolved=None, section='capture'):
         'section': section,
         'values': {name: _json_safe(value) for name, value in sorted(values.items())},
     }
+    for key, value in (extra or {}).items():
+        record[key] = _json_safe(value)
     path = folder / 'run_config_resolved.json'
     path.write_text(json.dumps(record, indent=1), encoding='utf-8')
     written.append(path)
