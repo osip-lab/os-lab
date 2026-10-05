@@ -56,6 +56,40 @@ def envelope(samples, max_points):
     return out, per_bucket / 2  # each output point spans half a bucket
 
 
+def rigid_envelope(samples, end, max_points, n_window):
+    """Like envelope(), but with buckets fixed to absolute sample numbers.
+
+    `samples` end just before absolute index `end`. Bucket k always holds
+    samples [k*bucket, (k+1)*bucket), so as a rolling window advances the same
+    samples produce the same min and max: the trace slides left rigidly instead
+    of being re-cut - and re-jittered - from the newest sample on every refresh.
+    Only complete buckets are shown; the newest, part-filled one waits.
+
+    The bucket size follows from the window length `n_window` (in samples) and
+    max_points alone, never from how much data has arrived, so it is the same
+    on every call - also while the buffer is still filling. Returns (out, first, step):
+    min/max interleaved, `first` the absolute sample number of out[0] and
+    `step` the samples between consecutive points (always bucket / 2), so
+    point i sits at first + i * step. A window short enough to show every
+    sample comes back as it is, with step 1.
+    """
+    n = len(samples)
+    start = end - n
+    if n_window <= max_points:
+        return samples, start, 1
+    bucket = -(-n_window // (max_points // 2))  # ceil: <= max_points // 2
+    first_bucket = -(-start // bucket)    # first complete bucket
+    last_bucket = end // bucket           # one past the last complete one
+    if last_bucket <= first_bucket:
+        return samples[:0], start, bucket / 2
+    block = samples[first_bucket * bucket - start:last_bucket * bucket - start]
+    block = block.reshape(last_bucket - first_bucket, bucket)
+    out = np.empty(2 * len(block), dtype=samples.dtype)
+    out[0::2] = block.min(axis=1)
+    out[1::2] = block.max(axis=1)
+    return out, first_bucket * bucket + bucket / 4, bucket / 2
+
+
 class Trigger:
     """Rising-edge trigger that freezes the view on each crossing.
 
@@ -281,8 +315,8 @@ class PicoScopeAdapter(DeviceAdapter):
             if frozen is not None:      # freeze the triggered frame on screen
                 self._snapshot = frozen
             else:
-                dt, window = self.scope.read_window(self.window_s)
-                self._snapshot = {'dt': dt, 'channels': window}
+                dt, window, end = self.scope.read_window_aligned(self.window_s)
+                self._snapshot = {'dt': dt, 'channels': window, 'end': end}
             self._playing.clear()
             try:
                 self._emit_chunk(self._snapshot)
@@ -397,8 +431,8 @@ class PicoScopeAdapter(DeviceAdapter):
 
     def _emit_chunk(self, snapshot=None, trigger_state='off'):
         if snapshot is None:
-            dt, window = self.scope.read_window(self.window_s)
-            snapshot = {'dt': dt, 'channels': window}
+            dt, window, end = self.scope.read_window_aligned(self.window_s)
+            snapshot = {'dt': dt, 'channels': window, 'end': end}
         event = self._chunk_event(snapshot, trigger_state)
         if event is not None:
             self.emit(event)
@@ -408,13 +442,27 @@ class PicoScopeAdapter(DeviceAdapter):
         there is nothing in it. trigger_state is what the box reports: 'off',
         'auto' (rolling, waiting for a crossing) or 'triggered' (frozen)."""
         dt, window = snapshot['dt'], snapshot['channels']
+        # A live window knows where it ends in absolute samples, and is
+        # decimated in buckets fixed to those, so it scrolls rigidly. A frozen
+        # trigger frame has no such end and no scrolling to be rigid about.
+        end = snapshot.get('end')
         channels = {}
         clipped = []
         n_max = 0
+        t_first = t_last = None
         for name, adc in window.items():
             if not len(adc):
                 continue
-            decimated, stride = envelope(adc, MAX_POINTS)
+            if end is None:
+                decimated, stride = envelope(adc, MAX_POINTS)
+            else:
+                decimated, first, step = rigid_envelope(adc, end, MAX_POINTS,
+                                                      int(self.window_s / dt))
+                if not len(decimated):
+                    continue
+                # time on the chart's axis: the newest sample is at 0
+                t_first = (first - (end - 1)) * dt
+                t_last = t_first + (len(decimated) - 1) * step * dt
             volts = self.scope.to_volts(name, decimated)
             channels[name] = [round(float(v), 5) for v in volts]
             n_max = max(n_max, len(adc))
@@ -428,6 +476,9 @@ class PicoScopeAdapter(DeviceAdapter):
         return {'type': 'scope_data',
                 'window_s': self.window_s,
                 'span_s': n_max * dt,  # actual data span (fills up after start)
+                # where the first and last point sit; absent for a frozen
+                # frame, which fills the span from -span_s to 0
+                't_first': t_first, 't_last': t_last,
                 'trigger_state': trigger_state,
                 'clipped': clipped,  # channels that hit their range
                 'channels': channels}
