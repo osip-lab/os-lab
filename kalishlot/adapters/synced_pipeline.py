@@ -61,6 +61,8 @@ _p('capture.CAPTURE_DURATION_S', 'float', 'measurement length', unit='s',
    min=0.01)
 _p('capture.FRAMES_FORMAT', 'choice', 'frames compression',
    choices=['h264', 'lossless'])
+_p('capture.H264_CRF', 'int', 'h264 quality (CRF: 0 = lossless, 51 = harshest)',
+   min=0, max=51)
 _p('capture.BINNING', 'choice', 'binning', choices=[1, 2, 4])
 _p('capture.PIXEL_FORMAT', 'text', 'pixel format (blank = deepest)',
    optional=True)

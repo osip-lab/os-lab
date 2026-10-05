@@ -244,6 +244,10 @@ MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as li
 # than raw; a 12-bit stack is rescaled to 0-255, ~8 counts rms of 3010 lost),
 # 'lossless' is FFV1, bit-exact and about 3x smaller. See frame_codec.py.
 FRAMES_FORMAT = 'h264'
+# H.264 quality (FRAMES_FORMAT 'h264' only): 0 is lossless, 51 the harshest.
+# 18 is visually transparent; lower is bigger, and past ~10 gains nothing,
+# since the 8-bit step dominates. Recorded in the session as frames_crf.
+H264_CRF = 18
 
 # Text added after the timestamp in the session folder's name, e.g. 'no_EOM'
 # gives 2026-10-05_112839_no_EOM. The files inside keep the bare timestamp.
@@ -1403,7 +1407,10 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     text = json.dumps(session, indent=1, default=_json_default)
     fps = timing.get('period_s_median')
     frames_path, info = save_frames(folder / f'{stem}_frames', frames,
-                                    FRAMES_FORMAT, 1 / fps if fps else 30.0)
+                                    FRAMES_FORMAT, 1 / fps if fps else 30.0,
+                                    H264_CRF)
+    if FRAMES_FORMAT == 'h264':
+        session['frames_crf'] = H264_CRF
     session['frames_file'] = frames_path.name
     session['frames_scale'] = info['scale']
     text = json.dumps(session, indent=1, default=_json_default)

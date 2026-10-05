@@ -66,19 +66,22 @@ def _raw_pix_fmt(dtype):
                      f'(uint8 and uint16 only)')
 
 
-def save_frames(stem_path, frames, fmt='h264', fps=30.0):
+def save_frames(stem_path, frames, fmt='h264', fps=30.0, crf=H264_CRF):
     """Write `frames` (n, h, w) next to `stem_path` and return the details.
 
     `stem_path` has no suffix; the codec's own is added. Returns
     (path, info) where info = {'format', 'scale'} is what `load_frames` needs
     besides the file - store it in the session record. `fps` only sets the
-    playback speed of the file.
+    playback speed of the file. `crf` is the H.264 quality, 0 (lossless) to 51
+    (worst); lower = bigger and closer to the source. Ignored for 'lossless'.
     """
     if fmt not in FORMATS:
         raise ValueError(f'frame format {fmt!r} is not one of {FORMATS}')
     frames = np.ascontiguousarray(frames)
     if frames.ndim != 3:
         raise ValueError(f'expected frames shaped (n, h, w), got {frames.shape}')
+    if not 0 <= crf <= 51:
+        raise ValueError(f'crf {crf!r} must be between 0 and 51')
     n, h, w = frames.shape
     path = Path(str(stem_path) + _SUFFIX[fmt])
 
@@ -94,7 +97,7 @@ def save_frames(stem_path, frames, fmt='h264', fps=30.0):
         # yuv420p wants even dimensions, so the frame is padded and the
         # padding cropped off again on load
         codec = ['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
-                 '-c:v', 'libx264', '-crf', str(H264_CRF),
+                 '-c:v', 'libx264', '-crf', str(int(crf)),
                  '-pix_fmt', 'yuv420p']
     else:
         source, pix_fmt = frames, _raw_pix_fmt(frames.dtype)
