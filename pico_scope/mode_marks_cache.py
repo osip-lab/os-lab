@@ -62,12 +62,13 @@ def trace_csv_path(path):
 
 
 def cache_file(data_path):
-    """The marks sidecar for a data file: '<stem>.modemarks.json' beside it -
-    or, for a mode-video capture folder, '<folder>.modemarks.json' inside it,
-    so it stays with the capture it belongs to."""
+    """The marks sidecar for a data file: '<stem>.modemarks.json' beside it.
+    A mode-video capture folder is marked on its scope npz, so its sidecar is
+    that npz's - the one mode_video_sync_mark.py writes - and not named after
+    the folder, which a rename would orphan."""
     data_path = Path(data_path)
-    if data_path.is_dir():
-        return data_path / (data_path.name + CACHE_SUFFIX)
+    if is_capture_session(data_path):
+        data_path = session_scope_file(data_path)
     return data_path.with_name(data_path.stem + CACHE_SUFFIX)
 
 
@@ -275,8 +276,8 @@ def _self_test():
         save_marks(data_path, keyed)
         assert load_cached_marks(data_path)['key'] == 36.0
 
-    # a mode-video capture folder: the sidecar lives inside it, and the trace
-    # the marks are positions on is its scope npz
+    # a mode-video capture folder: the marks are positions on its scope npz,
+    # and the folder shares that npz's sidecar
     import numpy as np
     with tempfile.TemporaryDirectory() as root:
         folder = Path(root) / '2026-10-04_120000'
@@ -286,7 +287,8 @@ def _self_test():
         (folder / 's_session.json').write_text(json.dumps(
             {'scope': {'file': 's_scope.npz', 'channel': 'D'}}),
             encoding='utf-8')
-        assert cache_file(folder) == folder / '2026-10-04_120000.modemarks.json'
+        assert cache_file(folder) == folder / 's_scope.modemarks.json'
+        assert cache_file(folder) == cache_file(folder / 's_scope.npz')
         npz = trace_csv_path(folder)
         assert Path(npz).name == 's_scope.npz', npz
         save_marks(folder, make_record(folder, npz, marks, 0.4,
