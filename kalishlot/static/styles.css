@@ -361,6 +361,35 @@ body.satellite .grid-stack-item-content { animation: none; }
   gap: 8px;
 }
 
+/* ------------------------------------------------ synced video + scope box */
+.sp-body { border: 0; padding: 0; margin: 0; min-width: 0; display: flex;
+           flex-direction: column; gap: 6px; overflow: auto; flex: 1; }
+.sp-body.is-disabled { opacity: 0.4; pointer-events: none; }
+.sp-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.sp-row > span:first-child { min-width: 190px; color: var(--muted); }
+.sp-row input[type="text"], .sp-row input[type="number"] { flex: 0 1 220px; min-width: 60px; }
+.sp-folder .sp-row input[type="text"] { flex: 1 1 auto; max-width: 560px; }
+.sp-row .unit { min-width: 26px; }
+.sp-row select { flex: 0 1 auto; }
+.sp-folder .sp-row > span:first-child { min-width: 90px; }
+.sp-adopt-row > .sp-row > span:first-of-type { min-width: 170px; color: var(--text); }
+.sp-box-value { color: var(--amber); }
+.sp-auto { margin: 2px 0 6px 26px; padding-left: 8px; border-left: 1px solid var(--line);
+           display: flex; flex-direction: column; gap: 4px; }
+.sp-row.is-edited input:not([type="checkbox"]), input.is-edited,
+.sp-row.is-edited select { border-color: var(--amber); }
+.sp-reset { padding: 0 5px; border-color: transparent; background: none; color: var(--amber); }
+.sp-bad { color: var(--alert); }
+.sp-advanced, .sp-sync { border-top: 1px solid var(--line); padding-top: 4px; }
+.sp-advanced summary, .sp-sync summary { cursor: pointer; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.sp-advanced > div, .sp-sync > div { display: flex; flex-direction: column; gap: 4px;
+  margin-top: 6px; }
+.sp-run { gap: 10px; }
+.sp-log { flex: 0 0 140px; margin: 0; overflow: auto; background: var(--well);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+  font: 11px var(--font-data); white-space: pre-wrap; color: var(--muted); }
+
 /* --------------------------------------------------------- PicoScope box */
 .scope-chart {
   flex: 1;
