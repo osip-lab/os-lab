@@ -285,7 +285,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   function show() {
     const camera = state.dependencies.cameras;
     const missing = [];
-    if (!camera.length) missing.push('a camera');
+    if (!camera.length) missing.push('a XIMEA or Basler camera');
     if (!state.dependencies.scopes.length) missing.push('a PicoScope');
     gate.textContent = missing.length
       ? `open ${missing.join(' and ')} on the dashboard to use this box` : '';

@@ -289,6 +289,28 @@ UI conventions: settings inputs commit on **Enter or focus loss** (the lab's
 explicit preference), and after a `setting_applied` event the input shows the
 value the hardware accepted.
 
+## A box that is not a device: the synced video + scope pipeline
+
+`adapters/synced_pipeline.py` + `static/boxes/synced_pipeline.js` is a *virtual*
+device: no hardware, `VIRTUAL = True`. Making it an adapter (rather than a
+frontend-only box) gets re-attach, satellite windows, saved settings and the
+command route for free; `VIRTUAL` keeps it out of the idle watchdog and out of
+`close_all_devices`, which exist to protect hardware. It reads which cameras and
+scope exist from the server (`registry`, lent devices included, so it does not
+grey out mid-run), holds the parameters of a `pico_scope/` mode-video run, and
+runs it as a child process whose output it streams to the box (`log` / `run`
+events). `PARAMS` in the adapter is the single list of offered parameters - the
+box draws its widgets from `describe()['params']`, and the smoke test checks every
+name against `run_config.SECTIONS`.
+
+What a run is told travels as a JSON file named in `MODE_VIDEO_PARAMS`
+(`run_config.run_params()`): the edited values, laid over the config file, and
+per-parameter `adopt` flags saying which camera/scope box values the capture
+takes (`mode_video_capture.adopt_kalishlot_settings`). Values never edited keep
+the config file's, which is also what the widgets show. The save folder's
+"browse" opens Windows' own folder window on the server PC (tkinter), which is
+the lab PC the capture runs on too; the textbox stays the source of truth.
+
 ## Step 4 — test without hardware first
 
 `adapters/dummy_camera.py` exists exactly for this: a synthetic device
@@ -316,8 +338,6 @@ must allow inbound Python — it prompts once).
 | `GET /api/idle` | idle-watchdog config + any warning already counting down |
 | `POST /api/idle/dismiss` | dismiss the warning / restart the countdown |
 | `WS /ws/idle` | watchdog broadcasts: `idle_warning`, `idle_clear`, `idle_disconnected` |
-| `GET /api/pipelines/{name}` | state of a launchable script (`PIPELINES` in server.py): running, returncode |
-| `POST /api/pipelines/{name}` | launch it in its own console window on the server PC; 409 if already running |
 
 `device_id` is always `f'{type_name}:{address}'`.
 
