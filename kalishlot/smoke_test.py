@@ -518,6 +518,47 @@ def check_exposure_rate():
           '(100 Hz -> 9.95 ms, 20 ms -> 49.9 Hz, 2 kHz -> capped at 500)')
 
 
+def check_picoscope_rigid_envelope():
+    """A rolling window decimated at two different moments gives the same
+    min/max for the samples both show, so the trace scrolls rigidly. The old
+    newest-aligned buckets were re-cut on every refresh and jittered. No
+    hardware: the decimation is a pure function."""
+    import numpy as np
+    from adapters.picoscope import MAX_POINTS, envelope, rigid_envelope
+
+    rng = np.random.default_rng(1)
+    n_window = 10_000
+    signal = rng.integers(-2000, 2000, 30_000).astype(np.int16)  # noisy
+
+    def view(end):
+        return rigid_envelope(signal[end - n_window:end], end, MAX_POINTS,
+                              n_window)
+
+    def by_position(end):
+        out, first, step = view(end)
+        return {round(first + i * step, 3): v for i, v in enumerate(out)}
+
+    a, b = by_position(20_000), by_position(20_000 + 37)   # 37 samples later
+    shared = a.keys() & b.keys()
+    assert len(shared) > 0.9 * len(a), (len(shared), len(a))
+    assert all(a[k] == b[k] for k in shared), 'shared points moved'
+    # whereas the newest-aligned envelope changes under the same shift
+    old_a = envelope(signal[20_000 - n_window:20_000], MAX_POINTS)[0]
+    old_b = envelope(signal[20_037 - n_window:20_037], MAX_POINTS)[0]
+    assert not np.array_equal(old_a[:-74], old_b[74:][:len(old_a) - 74]),         'expected the old envelope to jitter'
+    # a bucket still holds the window's extremes, and nothing is invented
+    out, first, step = view(20_000)
+    assert len(out) <= MAX_POINTS and step * 2 == -(-n_window // 500)
+    assert out.min() >= signal.min() and out.max() <= signal.max()
+    # a short window shows every sample; a part-filled one keeps its bucket
+    short = signal[:500]
+    assert rigid_envelope(short, 500, MAX_POINTS, 500)[0] is short
+    part = rigid_envelope(signal[:3000], 3000, MAX_POINTS, n_window)
+    assert part[2] == step
+    print('picoscope envelope scrolls rigidly ok '
+          f'({len(shared)} of {len(a)} points unchanged after a shift)')
+
+
 def check_picoscope_restore():
     """The saved channels come back even when channel A - the only one on
     when the scope opens - is saved disabled. Disabling A first would leave
@@ -766,6 +807,7 @@ def main():
         print('re-open restores persisted settings ok (exposure 5000, ROI 300x400)')
 
         check_picoscope_restore()
+        check_picoscope_rigid_envelope()
         check_camera_markers()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))

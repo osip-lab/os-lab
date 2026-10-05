@@ -506,7 +506,11 @@ export function createPicoScopeBox(device, container, sendCommand) {
       controls.clip.hidden = !isClipped;
       controls.range.classList.toggle('clipped', isClipped);
     }
-    const data = chartData(-event.span_s, 0, event.channels);
+    // a live window says where its points sit (they are cut from fixed
+    // sample numbers, so it scrolls rigidly); a frozen frame fills the span
+    const data = event.t_first == null
+      ? chartData(-event.span_s, 0, event.channels)
+      : chartData(event.t_first, event.t_last, event.channels);
     if (!data) return;
     windowData = data;
     if (!isPlaying && xView) {

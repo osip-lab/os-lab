@@ -543,6 +543,31 @@ class PicoScope4000A:
         n = int(seconds / dt)
         return dt, {name: ring.last(n) for name, ring in self._rings.items()}
 
+    def read_window_aligned(self, seconds):
+        """Newest `seconds` of data with every channel ending at the same
+        absolute sample: (dt, {channel: int16 array}, end), where `end` is the
+        absolute index just past the last sample returned.
+
+        Unlike read_window, which each channel answers at its own newest
+        sample, this lets a caller place samples by their absolute index - so
+        a display can decimate the same buckets of samples on every refresh
+        instead of cutting new ones from the moving newest edge. Arrays may be
+        shorter right after a (re)start while the buffer fills.
+        """
+        dt = 1.0 / self.sample_rate_hz
+        n = int(seconds / dt)
+        rings = self._rings
+        if not rings:
+            return dt, {}, 0
+        end = min(ring.written for ring in rings.values())
+        window = {}
+        for name, ring in rings.items():
+            span = ring.span(max(0, end - n), end)
+            if span is None:        # overwritten while we looked: a later tick
+                return dt, {}, end  # will have it
+            window[name] = span
+        return dt, window, end
+
     def samples_written(self, name):
         """Absolute index of the next sample of a streamed channel, or None
         when the channel is not streaming."""
