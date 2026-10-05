@@ -245,6 +245,10 @@ MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as li
 # 'lossless' is FFV1, bit-exact and about 3x smaller. See frame_codec.py.
 FRAMES_FORMAT = 'h264'
 
+# Text added after the timestamp in the session folder's name, e.g. 'no_EOM'
+# gives 2026-10-05_112839_no_EOM. The files inside keep the bare timestamp.
+FOLDER_SUFFIX = ''
+
 # A clipped peak is the one thing that reliably breaks the alignment fit: the
 # camera stops tracking the photodiode exactly where the signal is strongest.
 # Measured earlier on this setup, 1% of samples clipped is survivable and 5%
@@ -317,6 +321,12 @@ def derive_exposure():
 
 
 derive_exposure()
+
+
+def folder_name(stamp):
+    """The session folder's name: the timestamp, then FOLDER_SUFFIX if any."""
+    suffix = (FOLDER_SUFFIX or '').strip()
+    return f'{stamp}_{suffix}' if suffix else stamp
 
 
 def default_output_root():
@@ -1459,7 +1469,7 @@ def capture(serial_number=None, output_root=None,
         root = output_root if output_root is not None else (
             prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
         stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-        folder = Path(root) / stamp
+        folder = Path(root) / folder_name(stamp)
         session_path, mask = save_session(
             folder, stamp, frames, meta, timing, checks, cam.describe(),
             mode_location)
@@ -1657,7 +1667,7 @@ def capture_synchronized(serial_number=None, output_root=None,
     root = output_root if output_root is not None else (
         prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-    folder = Path(root) / stamp
+    folder = Path(root) / folder_name(stamp)
     session_path, mask = save_session(
         folder, stamp, frames, meta, timing, checks, camera_info,
         mode_location)

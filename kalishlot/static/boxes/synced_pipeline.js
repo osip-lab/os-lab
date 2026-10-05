@@ -17,6 +17,7 @@
 import { connectDeviceStream } from './stream.js';
 
 const POLL_MS = 1500;
+const FORBIDDEN_NAME_CHARS = /[<>:"/\|?*\u0000-\u001f]/g;
 // what the capture does by itself for a row that is not taken from the box
 const AUTO_RULE = {
   exposure: 'derived from the frame rate: the whole period less a 1% gap',
@@ -95,6 +96,13 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     } else {
       input = document.createElement('input');
       input.type = ['float', 'int', 'optfloat'].includes(param.kind) ? 'number' : 'text';
+      if (param.kind === 'foldername') {
+        // the box takes no character a folder name cannot have
+        input.addEventListener('input', () => {
+          const clean = input.value.replace(FORBIDDEN_NAME_CHARS, '');
+          if (clean !== input.value) input.value = clean;
+        });
+      }
       if (input.type === 'number') input.step = 'any';
       input.spellcheck = false;
     }

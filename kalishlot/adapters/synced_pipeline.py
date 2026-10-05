@@ -39,6 +39,7 @@ CAMERA_TYPES = {'ximea_camera': 'ximea', 'basler_camera': 'basler'}
 SCOPE_TYPE = 'picoscope'
 FOLDER_PARAM = 'capture.OUTPUT_ROOT'
 SCOPE_CHANNELS = ('A', 'B', 'C', 'D')
+FORBIDDEN_NAME_CHARS = '<>:"/\|?*'     # what Windows will not take in a name
 
 # --- what the box offers ---------------------------------------------------
 # (key, kind, label, group, extras). key is "section.NAME" with the names of
@@ -55,6 +56,7 @@ def _p(key, kind, label, group='main', **extras):
 
 
 _p('capture.OUTPUT_ROOT', 'folder', 'save folder')
+_p('capture.FOLDER_SUFFIX', 'foldername', 'text after the timestamp')
 _p('capture.CAPTURE_DURATION_S', 'float', 'measurement length', unit='s',
    min=0.01)
 _p('capture.FRAMES_FORMAT', 'choice', 'frames compression',
@@ -157,6 +159,13 @@ def coerce(param, value):
         if not isinstance(value, bool):
             raise ValueError(f'{label}: expected true or false')
         return value
+    if kind == 'foldername':
+        text = '' if value is None else str(value)
+        bad = sorted({c for c in text if c in FORBIDDEN_NAME_CHARS or ord(c) < 32})
+        if bad:
+            raise ValueError(f'{label}: a folder name cannot contain '
+                             f'{" ".join(repr(c) for c in bad)}')
+        return text.strip().rstrip('.')
     if kind in ('text', 'folder'):
         text = '' if value is None else str(value).strip()
         if not text and param.get('optional'):
