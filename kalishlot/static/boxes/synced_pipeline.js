@@ -55,6 +55,10 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         <button class="sp-preset-delete">delete</button>
       </div>
     </fieldset>
+    <div class="toolbar sp-show-row">
+      <button class="sp-show" title="pick a capture folder; opens it in the interactive viewer (mode_video_sync_show.py) on the lab PC">show a capture…</button>
+      <span class="sp-show-state status-line"></span>
+    </div>
     <div class="toolbar sp-run">
       <button class="sp-start">run pipeline ▶</button>
       <button class="sp-stop" hidden>stop ■</button>
@@ -247,6 +251,21 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         send('preset_delete', { name }).then(refreshSoon).catch(fail);
       }
     };
+    $('.sp-show').onclick = async (event) => {
+      event.preventDefault();
+      const button = event.target;
+      button.disabled = true;
+      $('.sp-show-state').textContent = 'choose the capture folder in the window on the lab PC…';
+      try {
+        const result = await send('show_session', {});
+        if (!result.path) $('.sp-show-state').textContent = '';
+      } catch (error) {
+        $('.sp-show-state').textContent = '';
+        fail(error);
+      }
+      button.disabled = false;
+      refreshSoon();
+    };
     $('.sp-start').onclick = () => send('start', {}).catch(fail);
     $('.sp-stop').onclick = () => send('stop', {}).catch(fail);
   }
@@ -357,6 +376,17 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       }
     }
     showRun();
+    showViewer();
+  }
+
+  function showViewer() {
+    const viewer = state.show;
+    const line = $('.sp-show-state');
+    if (!viewer || (!viewer.folder && !viewer.error)) return;
+    if (viewer.error) line.textContent = `viewer failed: ${viewer.error}`;
+    else if (viewer.running) line.textContent = `showing ${viewer.folder}`;
+    else line.textContent = `closed ${viewer.folder}`;
+    line.classList.toggle('sp-bad', Boolean(viewer.error));
   }
 
   function showRun() {
@@ -424,6 +454,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     onEvent(event) {
       if (event.type === 'log') appendLog([event.line]);
       else if (event.type === 'run') { state.run = event.run; showRun(); }
+      else if (event.type === 'show') { state.show = event.show; showViewer(); }
       else if (event.type === 'param_applied') { state.edited[event.key] = event.value; show(); }
       else if (event.type === 'param_reset') { delete state.edited[event.key]; show(); }
       else if (event.type === 'adopt_applied') { state.adopt[event.key] = event.value; show(); }
