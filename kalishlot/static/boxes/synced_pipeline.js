@@ -389,9 +389,14 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   let closed = false;
   async function refresh() {
     try {
-      const response = await fetch('/api/devices');
+      const [response, loansResponse] = await Promise.all(
+        [fetch('/api/devices'), fetch('/api/loans')]);
       if (!response.ok) throw new Error(response.statusText);
       const all = await response.json();
+      // a device lent to a run is closed, so it is not in that list; what it
+      // looked like when lent is what the run took its values from, and is
+      // what the rows must keep showing meanwhile
+      const lent = loansResponse.ok ? await loansResponse.json() : [];
       const mine = all.find((d) => d.device_id === device.device_id);
       if (mine) {
         const wasRunning = state.run?.running;
@@ -399,6 +404,9 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         if (!wasRunning && mine.run.running) { logEl.textContent = ''; }
       }
       boxes = Object.fromEntries(all.map((d) => [d.device_id, d]));
+      for (const loan of lent) {
+        boxes[loan.device_id] ??= { ...loan.describe, device_id: loan.device_id };
+      }
       show();
     } catch { /* the stream's own status line reports a lost server */ }
     if (!closed) timer = setTimeout(refresh, POLL_MS);
