@@ -121,6 +121,7 @@ FRAME_RATE_HZ = 100           # see the peak-blending check below
 # derive_exposure() below turns None into the number; a value pins it instead.
 EXPOSURE_US = None              # 9900 us at 100 Hz
 EXPOSURE_GAP_US = None          # the gap that leaves; derived alongside
+EXPOSURE_DERIVED = False        # whether EXPOSURE_US was derived, not typed
 # How long the camera records, in seconds. The number of frames follows from
 # it and the frame rate the camera actually reached (see frames_for_duration),
 # rounded to the nearest whole frame - so a rate changed in the config, or
@@ -244,6 +245,10 @@ MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as li
 # 'lossless' is FFV1, bit-exact and about 3x smaller. See frame_codec.py.
 FRAMES_FORMAT = 'h264'
 
+# Text added after the timestamp in the session folder's name, e.g. 'no_EOM'
+# gives 2026-10-05_112839_no_EOM. The files inside keep the bare timestamp.
+FOLDER_SUFFIX = ''
+
 # A clipped peak is the one thing that reliably breaks the alignment fit: the
 # camera stops tracking the photodiode exactly where the signal is strongest.
 # Measured earlier on this setup, 1% of samples clipped is survivable and 5%
@@ -305,7 +310,8 @@ def derive_exposure():
     that a config raising the rate raises the exposure with it. A config that
     names an exposure keeps it, and only the gap is worked back out.
     """
-    global EXPOSURE_US, EXPOSURE_GAP_US
+    global EXPOSURE_US, EXPOSURE_GAP_US, EXPOSURE_DERIVED
+    EXPOSURE_DERIVED = EXPOSURE_US is None
     if EXPOSURE_US is None:
         EXPOSURE_GAP_US = max(100.0, 0.01 * 1e6 / FRAME_RATE_HZ)
         EXPOSURE_US = 1e6 / FRAME_RATE_HZ - EXPOSURE_GAP_US
@@ -315,6 +321,12 @@ def derive_exposure():
 
 
 derive_exposure()
+
+
+def folder_name(stamp):
+    """The session folder's name: the timestamp, then FOLDER_SUFFIX if any."""
+    suffix = (FOLDER_SUFFIX or '').strip()
+    return f'{stamp}_{suffix}' if suffix else stamp
 
 
 def default_output_root():
@@ -955,6 +967,11 @@ def from_kalishlot():
     return os.environ.get(FROM_KALISHLOT_ENV) == '1'
 
 
+def gain_from_kalishlot():
+    """True when the gain is the box's, so the capture must not trim it."""
+    return from_kalishlot() and run_config.adopt_flags()['gain']
+
+
 def _box_setting(describe, name, zero_is_unset=True):
     """A setting's value as a kalishlot box shows it, or None when the box
     has none (the Basler has no frame rate) or has not read it yet - which it
@@ -1015,6 +1032,15 @@ def adopt_kalishlot_settings(kalishlot, serial, make):
     the mode was just being looked at. The scope range replaces auto-ranging
     for the same reason - it is the one known not to clip.
 
+    Which of those the capture takes is `run_config.adopt_flags()`: roi,
+    exposure, gain, frame_rate and scope_range each default to taken, and a
+    run parameter file (kalishlot's synced-pipeline box) can turn any off. Off
+    means the capture's own logic decides instead - the ROI is located, the
+    exposure derived from the frame rate, the gain trimmed by the light-level
+    check, the scope range found by auto-ranging - from the config's values.
+    Coupling, the aux channel and the sample rate have no such logic, so they
+    always come from the boxes.
+
     Written back into the module, like MANUAL_ROI, so run_config_resolved.json
     records the values actually used.
     """
@@ -1022,6 +1048,7 @@ def adopt_kalishlot_settings(kalishlot, serial, make):
     global SCOPE_RANGE_V, SCOPE_COUPLING, SCOPE_AUX_RANGE_V, SCOPE_AUX_COUPLING
     global SCOPE_SAMPLE_INTERVAL_S
     kalishlot = kalishlot or {}
+    adopt = run_config.adopt_flags()
     print('--- settings from kalishlot ---')
 
     camera = kalishlot.get(f'{KALISHLOT_CAMERA_TYPES[make]}:{serial}')
@@ -1029,22 +1056,30 @@ def adopt_kalishlot_settings(kalishlot, serial, make):
         print(f'  ! kalishlot holds no {make} {serial}; the camera settings '
               f"are the config's")
     else:
-        MANUAL_ROI = kalishlot_roi(camera)
+        if adopt['roi']:
+            MANUAL_ROI = kalishlot_roi(camera)
         exposure = _box_setting(camera, 'exposure')
         gain = _box_setting(camera, 'gain', zero_is_unset=False)
         rate = _box_setting(camera, 'framerate')
-        if rate is not None:
+        if rate is not None and adopt['frame_rate']:
             FRAME_RATE_HZ = rate
         # None (not read yet) derives it from the rate in force, rather than
         # keeping one derived for the config's rate, which may not fit
-        EXPOSURE_US = exposure
+        if adopt['exposure']:
+            EXPOSURE_US = exposure
+        elif EXPOSURE_DERIVED:
+            EXPOSURE_US = None      # derived for another rate; derive afresh
         derive_exposure()
-        if gain is not None:
+        if gain is not None and adopt['gain']:
             GAIN_DB = gain
+        taken = [name for name in ('roi', 'exposure', 'gain', 'frame_rate')
+                 if adopt[name]]
         print(f'  exposure {EXPOSURE_US:.0f} us, gain {GAIN_DB:.1f} dB, frame '
               f'rate {FRAME_RATE_HZ:g} Hz'
-              + ('' if rate is not None else " (the config's - the box has "
-                                             'no frame rate)'))
+              + ('' if rate is not None or not adopt['frame_rate']
+                 else " (the config's - the box has no frame rate)"))
+        print(f'  taken from the box: {", ".join(taken) or "nothing"}; the '
+              f"rest is the capture's own")
 
     scope = next((device for device in kalishlot.values()
                   if device.get('type') == 'picoscope'), None)
@@ -1064,7 +1099,9 @@ def adopt_kalishlot_settings(kalishlot, serial, make):
                       f"keeping the config's range and coupling")
             continue
         if role == 'signal':
-            SCOPE_RANGE_V, SCOPE_COUPLING = config['range_v'], config['coupling']
+            if adopt['scope_range']:
+                SCOPE_RANGE_V = config['range_v']
+            SCOPE_COUPLING = config['coupling']
         else:
             SCOPE_AUX_RANGE_V, SCOPE_AUX_COUPLING = (config['range_v'],
                                                      config['coupling'])
@@ -1432,7 +1469,7 @@ def capture(serial_number=None, output_root=None,
         root = output_root if output_root is not None else (
             prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
         stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-        folder = Path(root) / stamp
+        folder = Path(root) / folder_name(stamp)
         session_path, mask = save_session(
             folder, stamp, frames, meta, timing, checks, cam.describe(),
             mode_location)
@@ -1630,7 +1667,7 @@ def capture_synchronized(serial_number=None, output_root=None,
     root = output_root if output_root is not None else (
         prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
     stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-    folder = Path(root) / stamp
+    folder = Path(root) / folder_name(stamp)
     session_path, mask = save_session(
         folder, stamp, frames, meta, timing, checks, camera_info,
         mode_location)
@@ -1692,6 +1729,7 @@ def capture_synchronized(serial_number=None, output_root=None,
 
 # %% [Step 4] Self-test -------------------------------------------------------
 def _self_test():
+    global MANUAL_ROI, EXPOSURE_US, GAIN_DB, FRAME_RATE_HZ, SCOPE_RANGE_V
     """No hardware: check the session round-trips and the checks bite."""
     import tempfile
     from pico_scope.mode_video_sync import load_session, release_frames
@@ -1709,6 +1747,8 @@ def _self_test():
     pixel_size = 5.5 / 1000.0
     fake_camera_info = {'serial_number': 'x', 'make': 'basler',
                         'pixel_size_mm': pixel_size}
+    global FRAMES_FORMAT
+    configured_format, FRAMES_FORMAT = FRAMES_FORMAT, 'h264'  # not the config's
     with tempfile.TemporaryDirectory() as folder:
         path, mask = save_session(folder, 'test', frames, meta, timing,
                                   {'burst_s': 0.12}, fake_camera_info, None)
@@ -1738,7 +1778,6 @@ def _self_test():
     print('  session round-trips, both brightness series present')
 
     # lossless is bit-exact, and a 12-bit stack keeps its counts under h264
-    global FRAMES_FORMAT
     chosen = FRAMES_FORMAT
     try:
         FRAMES_FORMAT = 'lossless'
@@ -1757,7 +1796,7 @@ def _self_test():
             assert loaded.dtype == np.uint16 and session['frames_scale'] > 1
             assert np.abs(loaded.astype(int) - deep).max() < 16 * 60
     finally:
-        FRAMES_FORMAT = chosen
+        FRAMES_FORMAT = configured_format
     print('  lossless is exact; a 16-bit stack is rescaled and restored')
 
     # numpy scalars must survive, and a cycle must not be constructible: both
@@ -2122,6 +2161,62 @@ def _self_test():
           "unmeasured one stays 0 and says so rather than borrowing the "
           "other camera's")
 
+    # Which box values are taken is per parameter (the synced-pipeline box's
+    # checkboxes): off hands the decision back to the capture's own logic
+    import json as _json
+    import tempfile as _tempfile
+    saved = (MANUAL_ROI, EXPOSURE_US, GAIN_DB, FRAME_RATE_HZ, SCOPE_RANGE_V,
+             os.environ.get(run_config.PARAMS_ENV_VAR))
+    box = {
+        'ximea_camera:T': {
+            'type': 'ximea_camera', 'device_id': 'ximea_camera:T',
+            'roi': {'x': 100, 'y': 200, 'width': 400, 'height': 300},
+            'sensor_full': [2048, 2048],
+            'settings': [{'name': 'exposure', 'value': 5000.0},
+                         {'name': 'gain', 'value': 6.0},
+                         {'name': 'framerate', 'value': 200.0}]},
+        'picoscope:S': {
+            'type': 'picoscope', 'device_id': 'picoscope:S',
+            'settings': [{'name': 'sample_rate_hz', 'value': 100000.0}],
+            'channels': {SCOPE_CHANNEL: {'enabled': True, 'range_v': 0.5,
+                                         'coupling': 'AC'}}},
+    }
+
+    def adopt_with(adopt):
+        global MANUAL_ROI, EXPOSURE_US, GAIN_DB, FRAME_RATE_HZ, SCOPE_RANGE_V
+        MANUAL_ROI, EXPOSURE_US, GAIN_DB, FRAME_RATE_HZ, SCOPE_RANGE_V = (
+            None, None, 1.0, 100.0, None)
+        derive_exposure()
+        with _tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'params.json'
+            path.write_text(_json.dumps({'adopt': adopt}), encoding='utf-8')
+            os.environ[run_config.PARAMS_ENV_VAR] = str(path)
+            run_config._params_cache = (None, None)
+            adopt_kalishlot_settings(box, 'T', 'ximea')
+    try:
+        adopt_with({})                                    # all taken, as before
+        assert MANUAL_ROI is not None and EXPOSURE_US == 5000.0
+        assert GAIN_DB == 6.0 and FRAME_RATE_HZ == 200.0 and SCOPE_RANGE_V == 0.5
+        adopt_with({'roi': False, 'exposure': False, 'gain': False,
+                    'frame_rate': False, 'scope_range': False})
+        assert MANUAL_ROI is None, 'roi off: the mode is located instead'
+        assert GAIN_DB == 1.0 and FRAME_RATE_HZ == 100.0, 'gain and rate stay the configs'
+        assert SCOPE_RANGE_V is None, 'range off: auto-ranged'
+        assert abs(EXPOSURE_US - 9900.0) < 1e-6, EXPOSURE_US  # derived at 100 Hz
+        adopt_with({'exposure': False, 'frame_rate': True})   # derived at 200 Hz, 100 us gap
+        assert FRAME_RATE_HZ == 200.0 and abs(EXPOSURE_US - 4900.0) < 1e-6,             EXPOSURE_US
+        assert MANUAL_ROI is not None and GAIN_DB == 6.0
+    finally:
+        (MANUAL_ROI, EXPOSURE_US, GAIN_DB, FRAME_RATE_HZ, SCOPE_RANGE_V,
+         env_value) = saved
+        if env_value is None:
+            os.environ.pop(run_config.PARAMS_ENV_VAR, None)
+        else:
+            os.environ[run_config.PARAMS_ENV_VAR] = env_value
+        run_config._params_cache = (None, None)
+        derive_exposure()
+    print('  each box value is taken, or left to the capture own logic')
+
     # The function generator is read from kalishlot's device list, never lent,
     # and recorded only when a box is open: a run without one writes the
     # same run_config_resolved.json it always did.
@@ -2347,7 +2442,7 @@ def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
             offset_y, roi_height, _, _ = resolve_roi(cam, locate)
             configure(cam, offset_y, roi_height)
             print('\n--- light level ---')
-            level = check_light_level(cam, adjust_gain=not from_kalishlot())
+            level = check_light_level(cam, adjust_gain=not gain_from_kalishlot())
             print(f"  {'OK' if level['ok'] else 'TOO BRIGHT'}: "
                   f"{level['advice'] or 'peak is in range'}")
         finally:
@@ -2359,7 +2454,7 @@ def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
         # rather than trimmed away
         capture_synchronized(serial, locate=locate, make=make,
                              require_level=strict_levels,
-                             adjust_gain=not from_kalishlot())
+                             adjust_gain=not gain_from_kalishlot())
     else:
         capture(serial, locate=locate, make=make, prompt=not args.no_prompt)
 

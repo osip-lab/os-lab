@@ -22,8 +22,6 @@ import argparse
 import asyncio
 import json
 import os
-import subprocess
-import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -33,7 +31,7 @@ from pathlib import Path
 # analysis code (e.g. the cavity-design NA simulation) may import matplotlib
 # and even call plt.show(); the server must never open GUI windows, and doing
 # so from a worker thread crashes on some backends. The launched pipelines get
-# the backend the user had instead - their viewer is a window (PIPELINES).
+# the backend the user had instead - their viewer is a window.
 _USER_MPLBACKEND = os.environ.get('MPLBACKEND')
 os.environ.setdefault('MPLBACKEND', 'Agg')
 
@@ -46,9 +44,10 @@ from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
 from adapters.picoscope import PicoScopeAdapter
 from adapters.rigol_dg import RigolDGAdapter
+from adapters.synced_pipeline import SyncedPipelineAdapter
 
 _ADAPTERS = [DummyCameraAdapter, BaslerCameraAdapter,
-             RigolDGAdapter, PicoScopeAdapter]
+             RigolDGAdapter, PicoScopeAdapter, SyncedPipelineAdapter]
 
 # XIMEA is optional where the others are not: its Python package is not on
 # PyPI and has to be copied out of the XIMEA Software Package by hand (see
@@ -94,6 +93,12 @@ app = FastAPI(title='OS Lab dashboard', lifespan=lifespan)
 
 devices = {}  # device_id -> adapter instance
 devices_lock = threading.Lock()
+
+
+def is_virtual(adapter):
+    """A box with no hardware behind it (the synced-pipeline box): it takes
+    no part in the idle shutdown, which exists to protect hardware."""
+    return getattr(adapter, 'VIRTUAL', False)
 
 # ------------------------------------------------- settings persistence
 # Last-used settings per device, kept on disk so a re-opened device (even
@@ -153,8 +158,13 @@ def close_all_devices():
     dark, so a script handing one back afterwards must not switch it on again.
     """
     with devices_lock:
-        open_devices = list(devices.items())
-        devices.clear()
+        # boxes with no hardware stay: nothing to switch off, and their saved
+        # parameters are not worth a restart of the page
+        open_devices = [(device_id, adapter)
+                        for device_id, adapter in devices.items()
+                        if not is_virtual(adapter)]
+        for device_id, _ in open_devices:
+            del devices[device_id]
         loaned = list(loans)
         loans.clear()
     for device_id, adapter in open_devices:
@@ -210,7 +220,7 @@ async def idle_watchdog():
         with idle_lock:
             last_activity, warned_at = _last_activity, _warned_at
         with devices_lock:
-            any_open = bool(devices)
+            any_open = any(not is_virtual(a) for a in devices.values())
 
         if warned_at is None:
             # nothing to protect while no device is open, and the countdown
@@ -446,6 +456,10 @@ def close_device(device_id: str):
 # mid-loan can still build its box (app.js), which then waits like the rest.
 loans = {}
 
+# the synced-pipeline box gates itself on which cameras and scope exist, lent
+# ones included; it reads these without the lock (describe() runs under it)
+SyncedPipelineAdapter.registry = staticmethod(lambda: (devices, loans))
+
 
 class LendRequest(BaseModel):
     borrower: str = 'a script'
@@ -520,74 +534,51 @@ def device_command(device_id: str, request: CommandRequest):
     return result
 
 
-# ----------------------------------------------------------------- pipelines
-# Standalone scripts a box can launch, e.g. the camera box's "mode video"
-# button. Each runs in a console window of its own on THIS PC — the scripts
-# print as they go and may ask for input (the capture takes its output folder
-# from the clipboard), so they need one — and borrows from kalishlot whatever
-# devices it needs, exactly as when started by hand (loan_client.py). The
-# console closes by itself on success and waits for a key on failure, so the
-# error stays readable.
+# ----------------------------------------------------------------- pipeline
+# The synced video + scope pipeline (adapters/synced_pipeline.py) runs the
+# pico_scope/ scripts as a child process whose output it streams to its box.
+# The scripts borrow from kalishlot whatever devices they need, exactly as when
+# started by hand (loan_client.py); these two helpers are what the adapter needs
+# from the server around that.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# name -> (script, its arguments)
-PIPELINES = {
-    # every setting the boxes have comes from them, the rest from the config
-    'mode_video': (REPO_ROOT / 'pico_scope' / 'run_mode_video_pipeline.py',
-                   ['--from-kalishlot']),
-}
-pipeline_lock = threading.Lock()
-pipeline_runs = {}  # name -> {'process', 'started'}, the latest run of each
 
 
-def pipeline_state(name):
-    run = pipeline_runs.get(name)
-    if run is None:
-        return {'name': name, 'running': False, 'returncode': None, 'started': None}
-    returncode = run['process'].poll()
-    return {'name': name, 'running': returncode is None,
-            'returncode': returncode, 'started': run['started']}
+def pipeline_environment():
+    """The environment a pipeline script runs in: ours, without the matplotlib
+    backend this server may have forced, so the scripts' plots can open."""
+    environment = dict(os.environ)
+    if _USER_MPLBACKEND is None:
+        environment.pop('MPLBACKEND', None)
+    return environment
 
 
-def pipeline_or_404(name):
-    if name not in PIPELINES:
-        raise HTTPException(status_code=404, detail=f'no pipeline {name!r}')
-    return PIPELINES[name]
+RETURN_TRIES = 6        # a device a killed borrower held can be busy a moment
+RETURN_RETRY_S = 1.0
 
 
-@app.get('/api/pipelines/{name}')
-def get_pipeline(name: str):
-    pipeline_or_404(name)
-    with pipeline_lock:
-        return pipeline_state(name)
+def return_loans_of(borrower):
+    """Hand back every device `borrower` still has on loan - for a run that
+    was stopped, whose script never got to return them itself. Devices no one
+    borrowed under that name are left alone."""
+    with devices_lock:
+        pending = [device_id for device_id, loan in loans.items()
+                   if loan.get('borrower') == borrower]
+    for device_id in pending:
+        for attempt in range(RETURN_TRIES):
+            try:
+                return_device(device_id)
+                break
+            except HTTPException as error:
+                if error.status_code == 404:      # closed or returned meanwhile
+                    break
+                if attempt == RETURN_TRIES - 1:
+                    print(f'could not return {device_id}: {error.detail}')
+                else:
+                    time.sleep(RETURN_RETRY_S)
 
 
-@app.post('/api/pipelines/{name}')
-def start_pipeline(name: str):
-    script, arguments = pipeline_or_404(name)
-    note_activity()
-    with pipeline_lock:
-        if pipeline_state(name)['running']:
-            raise HTTPException(status_code=409,
-                                detail=f'{script.name} is already running')
-        environment = dict(os.environ)
-        if _USER_MPLBACKEND is None:
-            environment.pop('MPLBACKEND', None)
-        python_command = [sys.executable, str(script), *arguments]
-        python = subprocess.list2cmdline(python_command)
-        if os.name == 'nt':
-            # /s strips exactly the outer quotes, so paths with spaces survive
-            command = (f'cmd /s /c "title {script.name} & {python} '
-                       f'|| (pause & exit /b 1)"')
-            process = subprocess.Popen(
-                command, cwd=REPO_ROOT, env=environment,
-                creationflags=subprocess.CREATE_NEW_CONSOLE)
-        else:
-            process = subprocess.Popen(python_command, cwd=REPO_ROOT,
-                                       env=environment)
-        pipeline_runs[name] = {
-            'process': process,
-            'started': datetime.now().isoformat(timespec='seconds')}
-        return pipeline_state(name)
+SyncedPipelineAdapter.child_environment = staticmethod(pipeline_environment)
+SyncedPipelineAdapter.return_loans = staticmethod(return_loans_of)
 
 
 # ----------------------------------------------------------------- streaming
