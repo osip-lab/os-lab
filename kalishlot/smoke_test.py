@@ -673,6 +673,106 @@ def check_synced_pipeline():
           'validated and persisted, presets spare the folder)')
 
 
+def check_synced_pipeline_run():
+    """Starting, streaming and stopping a run, against a stand-in script: the
+    output reaches the box line by line, the step and session are picked out,
+    the run's parameters arrive in the environment, and a stop kills the whole
+    tree and hands the borrowed devices back. No hardware."""
+    import json as _json
+    import os
+    import sys
+    import tempfile
+    from adapters import synced_pipeline as sp
+    from pico_scope import run_config
+
+    class Stub:
+        def __init__(self, type_name):
+            self.type_name = type_name
+
+    sp.SyncedPipelineAdapter.registry = staticmethod(lambda: (
+        {'ximea_camera:SN1': Stub('ximea_camera'), 'picoscope:S': Stub('picoscope')},
+        {}))
+    returned = []
+    sp.SyncedPipelineAdapter.return_loans = staticmethod(returned.append)
+
+    def wait(condition, what, timeout=10.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if condition():
+                return
+            time.sleep(0.05)
+        raise AssertionError(f'timed out waiting for {what}')
+
+    quick = """
+import json, os, sys
+p = json.load(open(os.environ['MODE_VIDEO_PARAMS']))
+print('=== mode_video_capture.py ===')
+print('duration', p['sections']['capture']['CAPTURE_DURATION_S'])
+print('SESSION_PATH=C:/somewhere/session')
+print('=== mode_video_sync.py ===')
+sys.exit(int(os.environ.get('STUB_EXIT', '0')))
+"""
+    slow = """
+import time
+print('working', flush=True)
+time.sleep(60)
+"""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        adapter = sp.SyncedPipelineAdapter('main')
+        adapter.command('set_param', {'key': 'capture.OUTPUT_ROOT', 'value': tmp})
+        adapter.command('set_param', {'key': 'capture.CAPTURE_DURATION_S',
+                                      'value': 3})
+        events = adapter.add_listener()
+
+        sp.SyncedPipelineAdapter.pipeline_command = staticmethod(
+            lambda: [sys.executable, '-u', '-c', quick])
+        adapter.command('start', {})
+        wait(lambda: not adapter.run['running'], 'the quick run to end')
+        run = adapter.run
+        assert run['returncode'] == 0 and run['error'] is None, run
+        assert run['session'] == 'C:/somewhere/session', run
+        assert run['step'] == 'mode_video_sync', run
+        assert 'duration 3.0' in adapter.describe()['log'], adapter.describe()['log']
+        seen = []
+        while not events.empty():
+            seen.append(events.get_nowait())
+        assert any(e['type'] == 'log' and e['line'] == 'duration 3.0' for e in seen)
+        assert not os.path.exists(os.environ.get(run_config.PARAMS_ENV_VAR, 'x'))
+
+        # a failing run says so
+        os.environ['STUB_EXIT'] = '3'
+        adapter.command('start', {})
+        wait(lambda: not adapter.run['running'], 'the failing run to end')
+        assert adapter.run['returncode'] == 3 and 'code 3' in adapter.run['error']
+        os.environ.pop('STUB_EXIT')
+
+        # a run that cannot start does not start, and two cannot overlap
+        sp.SyncedPipelineAdapter.pipeline_command = staticmethod(
+            lambda: [sys.executable, '-u', '-c', slow])
+        adapter.command('start', {})
+        wait(lambda: 'working' in adapter.describe()['log'], 'the slow run')
+        try:
+            adapter.command('start', {})
+        except ValueError as error:
+            assert 'already' in str(error)
+        else:
+            raise AssertionError('a second run should be refused')
+
+        adapter.command('stop', {})
+        assert adapter.run['running'] is False and adapter.run['stopped'], adapter.run
+        assert adapter._process.poll() is not None, 'the run must be dead'
+        assert returned == [sp.LOAN_BORROWER], returned
+        try:
+            adapter.command('stop', {})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('nothing to stop')
+    print('synced-pipeline run ok (streams, parses steps, stops the tree, '
+          'returns the loans)')
+
+
 def check_picoscope_restore():
     """The saved channels come back even when channel A - the only one on
     when the scope opens - is saved disabled. Disabling A first would leave
@@ -923,6 +1023,7 @@ def main():
         check_picoscope_restore()
         check_picoscope_rigid_envelope()
         check_synced_pipeline()
+        check_synced_pipeline_run()
         check_camera_markers()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))

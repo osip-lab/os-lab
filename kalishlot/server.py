@@ -570,6 +570,44 @@ def pipeline_or_404(name):
     return PIPELINES[name]
 
 
+def pipeline_environment():
+    """The environment a pipeline script runs in: ours, without the matplotlib
+    backend this server may have forced, so the scripts' plots can open."""
+    environment = dict(os.environ)
+    if _USER_MPLBACKEND is None:
+        environment.pop('MPLBACKEND', None)
+    return environment
+
+
+RETURN_TRIES = 6        # a device a killed borrower held can be busy a moment
+RETURN_RETRY_S = 1.0
+
+
+def return_loans_of(borrower):
+    """Hand back every device `borrower` still has on loan - for a run that
+    was stopped, whose script never got to return them itself. Devices no one
+    borrowed under that name are left alone."""
+    with devices_lock:
+        pending = [device_id for device_id, loan in loans.items()
+                   if loan.get('borrower') == borrower]
+    for device_id in pending:
+        for attempt in range(RETURN_TRIES):
+            try:
+                return_device(device_id)
+                break
+            except HTTPException as error:
+                if error.status_code == 404:      # closed or returned meanwhile
+                    break
+                if attempt == RETURN_TRIES - 1:
+                    print(f'could not return {device_id}: {error.detail}')
+                else:
+                    time.sleep(RETURN_RETRY_S)
+
+
+SyncedPipelineAdapter.child_environment = staticmethod(pipeline_environment)
+SyncedPipelineAdapter.return_loans = staticmethod(return_loans_of)
+
+
 @app.get('/api/pipelines/{name}')
 def get_pipeline(name: str):
     pipeline_or_404(name)
@@ -585,9 +623,7 @@ def start_pipeline(name: str):
         if pipeline_state(name)['running']:
             raise HTTPException(status_code=409,
                                 detail=f'{script.name} is already running')
-        environment = dict(os.environ)
-        if _USER_MPLBACKEND is None:
-            environment.pop('MPLBACKEND', None)
+        environment = pipeline_environment()
         python_command = [sys.executable, str(script), *arguments]
         python = subprocess.list2cmdline(python_command)
         if os.name == 'nt':

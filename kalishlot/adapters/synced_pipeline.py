@@ -19,8 +19,14 @@ PARAMS below is the one list of what the box offers; the frontend draws its
 widgets from it and the smoke test checks every name against run_config.SECTIONS.
 """
 
+import collections
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -135,6 +141,12 @@ AUTO_OVERRIDES = {
     'scope_range': {'capture.SCOPE_RANGE_V': None},
 }
 PRESET_EXCLUDED = {FOLDER_PARAM}      # a preset is a recipe, not a place
+
+PIPELINE_SCRIPT = _REPO_ROOT / 'pico_scope' / 'run_mode_video_pipeline.py'
+SESSION_MARKER = 'SESSION_PATH='      # the capture prints where it saved
+LOG_KEEP = 600                        # lines kept for a box that attaches late
+STOP_WAIT_S = 5.0
+LOAN_BORROWER = 'mode_video_capture.py'
 
 
 # --- values ----------------------------------------------------------------
@@ -264,6 +276,13 @@ class SyncedPipelineAdapter(DeviceAdapter):
     # purpose - describe() is called with the server's device lock held.
     registry = None
     pick_folder_fn = staticmethod(ask_directory)
+    # Set by server.py: () -> the environment a run starts with, and
+    # (borrower) -> hands back whatever that borrower still had on loan.
+    child_environment = staticmethod(lambda: dict(os.environ))
+    return_loans = staticmethod(lambda borrower: None)
+    # what is run; replaced by the tests with a stand-in script
+    pipeline_command = staticmethod(
+        lambda: [sys.executable, '-u', str(PIPELINE_SCRIPT), '--from-kalishlot'])
 
     @staticmethod
     def list_available():
@@ -276,12 +295,22 @@ class SyncedPipelineAdapter(DeviceAdapter):
         self.presets = {}           # name -> {'edited', 'adopt'}
         self.camera_id = None       # the user's pick; None = the first open one
         self._lock = threading.Lock()
+        self._process = None
+        self._params_path = None
+        self._log = collections.deque(maxlen=LOG_KEEP)
+        self.run = {'running': False, 'returncode': None, 'started': None,
+                    'ended': None, 'step': None, 'session': None,
+                    'stopped': False, 'error': None}
 
     def open(self):
         pass
 
     def close(self):
-        pass
+        if self.run['running']:
+            try:
+                self._stop()
+            except Exception:
+                pass
 
     # ---- what the box needs to know about the rest of the dashboard
     def dependencies(self):
@@ -324,7 +353,8 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'label': 'SYNCED VIDEO + SCOPE PIPELINE',
             'commands': ['set_param', 'reset_param', 'set_adopt',
                          'choose_camera', 'pick_folder', 'check_folder',
-                         'preset_save', 'preset_load', 'preset_delete'],
+                         'preset_save', 'preset_load', 'preset_delete',
+                         'start', 'stop'],
             'params': PARAMS,
             'adopt_rows': [{'key': k, 'label': label}
                            for k, label in ADOPT_ROWS],
@@ -335,6 +365,8 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'camera_id': camera['device_id'] if camera else None,
             'dependencies': dependencies,
             'ready': bool(camera and dependencies['scopes']),
+            'run': dict(self.run),
+            'log': list(self._log)[-200:],
         }
 
     def settings_snapshot(self):
@@ -423,7 +455,103 @@ class SyncedPipelineAdapter(DeviceAdapter):
             if self.presets.pop(args.get('name'), None) is None:
                 raise ValueError(f'no preset {args.get("name")!r}')
             return {'ok': True, 'presets': sorted(self.presets)}
+        if name == 'start':
+            return self._start()
+        if name == 'stop':
+            return self._stop()
         raise ValueError(f'unknown command {name!r}')
+
+    # ---- running the pipeline
+    def _set_run(self, **changes):
+        self.run.update(changes)
+        self.emit({'type': 'run', 'run': dict(self.run)})
+
+    def _log_line(self, line):
+        self._log.append(line)
+        self.emit({'type': 'log', 'line': line})
+
+    def _start(self):
+        if self.run['running']:
+            raise ValueError('a run is already in progress')
+        params = self.run_params()          # raises when it cannot start
+        handle, path = tempfile.mkstemp(prefix='kalishlot_params_',
+                                        suffix='.json')
+        with os.fdopen(handle, 'w', encoding='utf-8') as file:
+            json.dump(params, file, indent=1)
+        environment = dict(self.child_environment())
+        environment[run_config.PARAMS_ENV_VAR] = path
+        environment['PYTHONIOENCODING'] = 'utf-8'
+        flags = 0
+        if os.name == 'nt':
+            flags = (subprocess.CREATE_NO_WINDOW
+                     | subprocess.CREATE_NEW_PROCESS_GROUP)
+        try:
+            process = subprocess.Popen(
+                self.pipeline_command(), cwd=_REPO_ROOT, env=environment,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+                errors='replace', bufsize=1, creationflags=flags)
+        except OSError:
+            os.unlink(path)
+            raise
+        self._process, self._params_path = process, path
+        self._log.clear()
+        self._set_run(running=True, returncode=None, stopped=False,
+                      started=datetime.now().isoformat(timespec='seconds'),
+                      ended=None, step=None, session=None, error=None)
+        threading.Thread(target=self._read, args=(process, path),
+                         daemon=True).start()
+        return {'ok': True}
+
+    def _read(self, process, params_path):
+        """Relay the run's output until it ends, then record how it ended."""
+        try:
+            for raw in process.stdout:
+                line = raw.rstrip('\r\n')
+                if line.startswith('=== ') and line.endswith(' ==='):
+                    self._set_run(step=line.strip('= ').replace('.py', ''))
+                elif line.startswith(SESSION_MARKER):
+                    self._set_run(session=line[len(SESSION_MARKER):].strip())
+                self._log_line(line)
+        except Exception as error:      # a reader that dies must not hang
+            self._log_line(f'(output reader stopped: {error})')
+        returncode = process.wait()
+        try:
+            os.unlink(params_path)
+        except OSError:
+            pass
+        if process is not self._process or self.run['stopped']:
+            return          # a stop finishes the record, once devices are back
+        self._set_run(
+            running=False, returncode=returncode,
+            ended=datetime.now().isoformat(timespec='seconds'),
+            error=None if returncode == 0 else f'exited with code {returncode}')
+
+    def _stop(self):
+        process = self._process
+        if not self.run['running'] or process is None:
+            raise ValueError('no run to stop')
+        self.run['stopped'] = True
+        # the whole tree: the pipeline's capture is a child of a child, and it
+        # is the capture that holds the camera and the scope
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True)
+        else:
+            process.kill()
+        try:
+            process.wait(STOP_WAIT_S)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        self._log_line('--- stopped from the box ---')
+        # a killed borrower returns nothing, so the devices come back here
+        try:
+            self.return_loans(LOAN_BORROWER)
+        finally:
+            self._set_run(running=False, returncode=process.returncode,
+                          ended=datetime.now().isoformat(timespec='seconds'),
+                          error=None)
+        return {'ok': True}
 
     @staticmethod
     def _param(key):
