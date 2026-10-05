@@ -44,7 +44,8 @@ laser was being scanned. With no generator box, nothing is added.
 
 A session folder holding
 
-    <stem>_frames.npy    the frame stack, uint8 or uint16
+    <stem>_frames.mp4    the frame stack - .mkv when FRAMES_FORMAT is
+                         'lossless'; older captures hold a raw .npy
     <stem>_mask.npy      the pixels the mode actually lit
     <stem>_session.json  camera settings, per-frame timing, brightness series
 
@@ -69,6 +70,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from camera_core import burst_timing  # noqa: E402
 from pico_scope import run_config  # noqa: E402
+from pico_scope.frame_codec import FORMATS as FRAMES_FORMATS, save_frames  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
 from kalishlot.loan_client import borrow_from_kalishlot, open_devices  # noqa: E402
@@ -236,6 +238,11 @@ HOST_T0_BIAS_S = {'basler': 0.0399, 'ximea': -0.1451}
 
 # --- what the capture is checked against -----------------------------------
 MASK_THRESHOLD = 0.15           # fraction of the peak-to-peak that counts as lit
+
+# How the frame stack is stored. 'h264' is 8-bit and lossy (about 200x smaller
+# than raw; a 12-bit stack is rescaled to 0-255, ~8 counts rms of 3010 lost),
+# 'lossless' is FFV1, bit-exact and about 3x smaller. See frame_codec.py.
+FRAMES_FORMAT = 'h264'
 
 # A clipped peak is the one thing that reliably breaks the alignment fit: the
 # camera stops tracking the photodiode exactly where the signal is strongest.
@@ -1312,7 +1319,10 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     mask = varying_pixel_mask(frames, MASK_THRESHOLD)
-    frames_name, mask_name = f'{stem}_frames.npy', f'{stem}_mask.npy'
+    if FRAMES_FORMAT not in FRAMES_FORMATS:
+        raise ValueError(f'FRAMES_FORMAT {FRAMES_FORMAT!r} is not one of '
+                         f'{FRAMES_FORMATS}')
+    mask_name = f'{stem}_mask.npy'
 
     session = {
         'created': datetime.now().isoformat(timespec='seconds'),
@@ -1322,7 +1332,9 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
                            'see pico_scope/mode_video_sync.py',
             'signal_column': 'Channel D',
         },
-        'frames_file': frames_name,
+        'frames_file': None,        # filled in once the file is written
+        'frames_format': FRAMES_FORMAT,
+        'frames_scale': None,
         'mask_file': mask_name,
         'frames_shape': list(frames.shape),
         'frames_dtype': str(frames.dtype),
@@ -1352,7 +1364,12 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     # nothing could interpret. Failing before the arrays exist costs a rerun;
     # failing after costs the data.
     text = json.dumps(session, indent=1, default=_json_default)
-    np.save(folder / frames_name, frames)
+    fps = timing.get('period_s_median')
+    frames_path, info = save_frames(folder / f'{stem}_frames', frames,
+                                    FRAMES_FORMAT, 1 / fps if fps else 30.0)
+    session['frames_file'] = frames_path.name
+    session['frames_scale'] = info['scale']
+    text = json.dumps(session, indent=1, default=_json_default)
     np.save(folder / mask_name, mask)
     session_path = folder / f'{stem}_session.json'
     session_path.write_text(text, encoding='utf-8')
@@ -1697,7 +1714,11 @@ def _self_test():
                                   {'burst_s': 0.12}, fake_camera_info, None)
         session, loaded = load_session(path)
         assert loaded.shape == frames.shape, loaded.shape
-        assert np.array_equal(np.asarray(loaded), frames)
+        assert session['frames_format'] == 'h264'
+        assert loaded.dtype == frames.dtype
+        # lossy, but close: well under one grey level per 20 on average
+        err = np.abs(np.asarray(loaded).astype(int) - frames)
+        assert err.mean() < 8 and err.max() < 60, (err.mean(), err.max())
         assert session['frames_dtype'] == 'uint8'
         assert len(session['meta']) == n
         assert len(session['brightness_full']) == n
@@ -1715,6 +1736,29 @@ def _self_test():
         # cannot be removed until the frames are released.
         release_frames(loaded)
     print('  session round-trips, both brightness series present')
+
+    # lossless is bit-exact, and a 12-bit stack keeps its counts under h264
+    global FRAMES_FORMAT
+    chosen = FRAMES_FORMAT
+    try:
+        FRAMES_FORMAT = 'lossless'
+        with tempfile.TemporaryDirectory() as folder:
+            path, _ = save_session(folder, 'll', frames, meta, timing,
+                                   {'burst_s': 0.12}, fake_camera_info, None)
+            session, loaded = load_session(path)
+            assert session['frames_file'].endswith('.mkv')
+            assert np.array_equal(loaded, frames)
+        deep = (frames.astype(np.uint16) * 16)
+        FRAMES_FORMAT = 'h264'
+        with tempfile.TemporaryDirectory() as folder:
+            path, _ = save_session(folder, 'deep', deep, meta, timing,
+                                   {'burst_s': 0.12}, fake_camera_info, None)
+            session, loaded = load_session(path)
+            assert loaded.dtype == np.uint16 and session['frames_scale'] > 1
+            assert np.abs(loaded.astype(int) - deep).max() < 16 * 60
+    finally:
+        FRAMES_FORMAT = chosen
+    print('  lossless is exact; a 16-bit stack is rescaled and restored')
 
     # numpy scalars must survive, and a cycle must not be constructible: both
     # have cost a capture its session file after the frames were written
@@ -1737,7 +1781,7 @@ def _self_test():
             pass
         else:
             raise AssertionError('unserialisable metadata should have raised')
-        leftovers = list(Path(folder).glob('*.npy'))
+        leftovers = list(Path(folder).glob('*_frames.*'))
         assert not leftovers, f'frames written despite failed metadata: {leftovers}'
     print('  numpy metadata survives, and a metadata failure leaves no orphan '
           'arrays')

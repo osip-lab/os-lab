@@ -70,6 +70,7 @@ AUX_COLUMN = 'Channel B'
 AUX_LABEL = 'Temperature modulation Voltage'
 
 from pico_scope import run_config  # noqa: E402
+from pico_scope.frame_codec import load_frames  # noqa: E402
 CONFIG_CHANGES = run_config.apply('sync', globals())
 
 # Where captures are written, shared with mode_video_capture.py so that an
@@ -274,13 +275,15 @@ def load_session(path, mmap=True):
     """Read a capture written by pico_scope/mode_video_capture.py.
 
     `path` may be the session JSON or the folder holding it. Returns
-    (session_dict, frames); the frame stack is memory-mapped by default, since
-    a capture is tens of megabytes and most callers only touch a few frames.
+    (session_dict, frames). The frames come back as an in-memory array of the
+    dtype they were captured with - decoded from video, so a lossy H.264
+    capture is approximate (see frame_codec.py).
 
-    On Windows a memory-mapped file stays locked until the array is released,
-    so the session folder cannot be deleted or overwritten while it is open.
-    Pass `mmap=False` to read the frames into memory instead, or call
-    `release_frames()` when done.
+    A legacy .npy capture is memory-mapped by default, since it is tens of
+    megabytes and most callers only touch a few frames. On Windows a
+    memory-mapped file stays locked until the array is released, so the session
+    folder cannot be deleted or overwritten while it is open: pass `mmap=False`
+    to read it into memory instead, or call `release_frames()` when done.
     """
     path = Path(path)
     if path.is_dir():
@@ -292,7 +295,12 @@ def load_session(path, mmap=True):
         path = candidates[0]
     session = json.loads(path.read_text(encoding='utf-8'))
     frames_path = path.parent / session['frames_file']
-    frames = np.load(frames_path, mmap_mode='r' if mmap else None)
+    if frames_path.suffix == '.npy':
+        frames = np.load(frames_path, mmap_mode='r' if mmap else None)
+    else:
+        frames = load_frames(frames_path, session['frames_shape'],
+                             session['frames_dtype'],
+                             session.get('frames_scale') or 1.0)
     return session, frames
 
 

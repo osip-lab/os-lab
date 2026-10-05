@@ -272,7 +272,11 @@ instant in the dead time between exposures; `nearest_frame` always returns one.
 
 ## What a session folder holds
 
-    <stem>_frames.npy     the frame stack, uint16 (Mono12)
+    <stem>_frames.mp4     the frame stack as 8-bit H.264 (FRAMES_FORMAT 'h264',
+                          the default; lossy, ~200x smaller than raw) or
+                          <stem>_frames.mkv, FFV1, bit-exact ('lossless').
+                          Older captures hold a raw .npy, which still loads.
+                          See frame_codec.py; the scale is in session.json.
     <stem>_mask.npy       the pixels the mode lit
     <stem>_scope.npz      the spectrum: t and signal, seconds and volts
     <stem>_session.json   camera settings, per-frame timestamps, the offset,
@@ -583,7 +587,7 @@ and 6) → prompt *"start the PicoScope recording now, then press Enter"* →
 
 Saves a session folder:
 
-- `<stem>_frames.npy` — uint16 stack (100 frames of 512×512 ≈ 52 MB).
+- `<stem>_frames.mp4` — the frame stack (see "What a session folder holds").
 - `<stem>_session.json` — camera settings, ROI, the per-frame `meta` rows, the
   sync channel name, and the computed checks.
 
