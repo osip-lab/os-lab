@@ -31,7 +31,13 @@ def api(path, method='GET', body=None):
 
 
 def start_server():
+    import tempfile
     import uvicorn
+    import server
+    # a private layout: the real one must neither be restored (it would open
+    # the lab's cameras) nor overwritten by this run
+    server.LAYOUT_PATH = Path(tempfile.mkdtemp()) / 'layout.json'
+    server.layout.update({'devices': [], 'boxes': {}})
     from server import app
     config = uvicorn.Config(app, host=HOST, port=PORT, log_level='warning')
     server = uvicorn.Server(config)
@@ -773,6 +779,76 @@ time.sleep(60)
           'returns the loans)')
 
 
+def check_layout():
+    """The dashboard layout is kept: devices open at shutdown come back, a
+    device the user closed does not, positions are merged and never forgotten,
+    and an unavailable device stays in the layout. Runs against a temporary
+    layout file and the dummy camera, restoring the server's own afterwards."""
+    import tempfile
+    import server
+
+    saved_path, saved_layout = server.LAYOUT_PATH, dict(server.layout)
+    saved_devices = dict(server.devices)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            server.LAYOUT_PATH = Path(tmp) / 'layout.json'
+            server.layout.update({'devices': [], 'boxes': {}})
+            server.devices.clear()
+
+            device = api('/api/devices', 'POST',
+                         {'type': 'dummy_camera', 'address': 'layout-test'})
+            device_id = device['device_id']
+            api('/api/devices', 'POST', {'type': 'dummy_camera', 'address': 'second'})
+            assert [d['device_id'] for d in api('/api/layout')['devices']] == [
+                device_id, 'dummy_camera:second']
+
+            # positions merge: a page with only some boxes cannot forget the rest
+            api('/api/layout/boxes', 'PUT', {'boxes': {
+                device_id: {'x': 1, 'y': 2, 'w': 5, 'h': 6}}})
+            api('/api/layout/boxes', 'PUT', {'boxes': {
+                'dummy_camera:second': {'x': 6, 'y': 0, 'w': 4, 'h': 3}}})
+            boxes = api('/api/layout')['boxes']
+            assert boxes[device_id] == {'x': 1, 'y': 2, 'w': 5, 'h': 6}, boxes
+            assert boxes['dummy_camera:second']['w'] == 4
+            try:
+                api('/api/layout/boxes', 'PUT', {'boxes': {device_id: {'x': 1}}})
+            except urllib.error.HTTPError as error:
+                assert error.code == 400
+            else:
+                raise AssertionError('an incomplete box should be refused')
+
+            # the idle shutdown closes the devices but keeps the layout
+            server.close_all_devices()
+            assert not server.devices
+            assert len(api('/api/layout')['devices']) == 2
+
+            # ... so a restart brings them back (plus one that cannot open)
+            with server.layout_lock:
+                server.layout['devices'].append(
+                    {'device_id': 'nosuch:x', 'type': 'nosuch', 'address': 'x'})
+            server.restore_layout()
+            assert device_id in server.devices
+            assert 'dummy_camera:second' in server.devices
+            assert any(d['device_id'] == 'nosuch:x'
+                       for d in api('/api/layout')['devices']), 'kept for later'
+
+            # closing a box is the user saying "not next time"; its place stays
+            api(f'/api/devices/{device_id}', 'DELETE')
+            assert device_id not in [d['device_id'] for d in api('/api/layout')['devices']]
+            assert api('/api/layout')['boxes'][device_id]['x'] == 1
+            assert json.loads(server.LAYOUT_PATH.read_text())['boxes'][device_id]
+            for other in ('dummy_camera:second',):
+                api(f'/api/devices/{other}', 'DELETE')
+    finally:
+        server.LAYOUT_PATH = saved_path
+        server.layout.clear()
+        server.layout.update(saved_layout)
+        server.devices.clear()
+        server.devices.update(saved_devices)
+    print('layout ok (devices and positions kept, user closes forgotten, '
+          'unavailable devices retained)')
+
+
 def check_picoscope_restore():
     """The saved channels come back even when channel A - the only one on
     when the scope opens - is saved disabled. Disabling A first would leave
@@ -1024,6 +1100,7 @@ def main():
         check_picoscope_rigid_envelope()
         check_synced_pipeline()
         check_synced_pipeline_run()
+        check_layout()
         check_camera_markers()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))
