@@ -8,6 +8,7 @@ it down.
 """
 
 import asyncio
+from pathlib import Path
 import json
 import threading
 import time
@@ -559,6 +560,119 @@ def check_picoscope_rigid_envelope():
           f'({len(shared)} of {len(a)} points unchanged after a shift)')
 
 
+def check_synced_pipeline():
+    """The synced-pipeline box's adapter: every offered parameter is a real
+    one, values are validated and persist, presets leave the folder alone, the
+    gate counts lent devices, and a run's parameters say what they must. No
+    hardware and no server: a registry of stand-in devices is supplied."""
+    import tempfile
+    from adapters import synced_pipeline as sp
+    from pico_scope import run_config
+
+    for param in sp.PARAMS:
+        section, name = param['key'].split('.')
+        assert name in run_config.SECTIONS[section][1], param['key']
+
+    class Stub:
+        def __init__(self, type_name):
+            self.type_name = type_name
+
+    registry = {'devices': {}, 'loans': {}}
+    sp.SyncedPipelineAdapter.registry = staticmethod(
+        lambda: (registry['devices'], registry['loans']))
+    adapter = sp.SyncedPipelineAdapter('main')
+    assert adapter.describe()['ready'] is False
+    registry['devices']['ximea_camera:SN1'] = Stub('ximea_camera')
+    assert adapter.describe()['ready'] is False, 'needs the scope too'
+    registry['devices']['picoscope:S'] = Stub('picoscope')
+    assert adapter.describe()['ready'] is True
+    # a lent device is closed but still counts, or the box would grey out
+    # in the middle of its own run
+    registry['loans']['picoscope:S'] = {'type': 'picoscope'}
+    del registry['devices']['picoscope:S']
+    assert adapter.describe()['ready'] is True
+    assert adapter.describe()['dependencies']['scopes'][0]['state'] == 'lent'
+
+    with tempfile.TemporaryDirectory() as tmp:
+        adapter.command('set_param', {'key': 'capture.OUTPUT_ROOT', 'value': tmp})
+        adapter.command('set_param', {'key': 'capture.CAPTURE_DURATION_S',
+                                      'value': '2.5'})
+        for bad in ({'key': 'capture.CAPTURE_DURATION_S', 'value': 'x'},
+                    {'key': 'capture.BINNING', 'value': 3},
+                    {'key': 'capture.NOPE', 'value': 1},
+                    {'key': 'capture.MASK_THRESHOLD', 'value': 5}):
+            try:
+                adapter.command('set_param', bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f'{bad} should have been refused')
+        adapter.command('set_adopt', {'key': 'exposure', 'value': False})
+        adapter.command('set_adopt', {'key': 'roi', 'value': False})
+
+        params = adapter.run_params()
+        capture = params['sections']['capture']
+        assert capture['CAPTURE_DURATION_S'] == 2.5
+        assert capture['OUTPUT_ROOT'] == str(Path(tmp)), capture['OUTPUT_ROOT']
+        assert capture['PROMPT_FOR_OUTPUT_ROOT'] is False
+        assert capture['CAMERA'] == 'ximea' and capture['SERIAL_NUMBER'] == 'SN1'
+        assert capture['EXPOSURE_US'] is None and capture['MANUAL_ROI'] is None
+        assert 'SCOPE_RANGE_V' not in capture, 'a ticked row is taken from the box'
+        assert params['adopt']['exposure'] is False and params['adopt']['gain']
+        assert 'sync' not in params['sections'], 'only what was edited is sent'
+
+        # persistence, with a stale entry that must be dropped
+        snapshot = adapter.settings_snapshot()
+        snapshot['edited']['capture.REMOVED_LONG_AGO'] = 1
+        restored = sp.SyncedPipelineAdapter('main')
+        restored.restore_settings(snapshot)
+        assert restored.edited == adapter.edited and restored.adopt == adapter.adopt
+
+        # presets keep the recipe, never the place
+        adapter.command('preset_save', {'name': 'slow'})
+        adapter.command('set_param', {'key': 'capture.CAPTURE_DURATION_S',
+                                      'value': 9})
+        adapter.command('set_param', {'key': 'capture.OUTPUT_ROOT',
+                                      'value': tmp + '/other'})
+        adapter.command('preset_load', {'name': 'slow'})
+        assert adapter.edited['capture.CAPTURE_DURATION_S'] == 2.5
+        assert adapter.edited['capture.OUTPUT_ROOT'] == tmp + '/other'
+        adapter.command('reset_param', {'key': 'capture.CAPTURE_DURATION_S'})
+        assert 'capture.CAPTURE_DURATION_S' not in adapter.edited
+
+        # the folder is judged before anything is recorded
+        assert sp.check_folder(tmp)[0]
+        assert sp.check_folder(tmp + '/new/deeper')[0]       # will be created
+        assert not sp.check_folder('relative/path')[0]
+        assert not sp.check_folder('')[0]
+        adapter.command('set_param', {'key': 'capture.OUTPUT_ROOT', 'value': ''})
+        try:
+            adapter.run_params()
+        except ValueError as error:
+            assert 'folder' in str(error)
+        else:
+            raise AssertionError('a run needs a save folder')
+
+        # browse fills the textbox through the dialog; cancelling changes nothing
+        sp.SyncedPipelineAdapter.pick_folder_fn = staticmethod(lambda start: tmp)
+        assert adapter.command('pick_folder', {})['path'] == tmp
+        assert adapter.edited['capture.OUTPUT_ROOT'] == tmp
+        sp.SyncedPipelineAdapter.pick_folder_fn = staticmethod(lambda start: None)
+        assert adapter.command('pick_folder', {})['path'] is None
+        assert adapter.edited['capture.OUTPUT_ROOT'] == tmp
+    del registry['loans']['picoscope:S']
+    try:
+        adapter.run_params()
+    except ValueError as error:
+        assert 'PicoScope' in str(error)
+    else:
+        raise AssertionError('a run needs the scope')
+    from server import is_virtual
+    assert is_virtual(adapter) and not is_virtual(Stub('picoscope'))
+    print('synced-pipeline adapter ok (gate counts lent devices, values '
+          'validated and persisted, presets spare the folder)')
+
+
 def check_picoscope_restore():
     """The saved channels come back even when channel A - the only one on
     when the scope opens - is saved disabled. Disabling A first would leave
@@ -808,6 +922,7 @@ def main():
 
         check_picoscope_restore()
         check_picoscope_rigid_envelope()
+        check_synced_pipeline()
         check_camera_markers()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))

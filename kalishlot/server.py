@@ -46,9 +46,10 @@ from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
 from adapters.picoscope import PicoScopeAdapter
 from adapters.rigol_dg import RigolDGAdapter
+from adapters.synced_pipeline import SyncedPipelineAdapter
 
 _ADAPTERS = [DummyCameraAdapter, BaslerCameraAdapter,
-             RigolDGAdapter, PicoScopeAdapter]
+             RigolDGAdapter, PicoScopeAdapter, SyncedPipelineAdapter]
 
 # XIMEA is optional where the others are not: its Python package is not on
 # PyPI and has to be copied out of the XIMEA Software Package by hand (see
@@ -94,6 +95,12 @@ app = FastAPI(title='OS Lab dashboard', lifespan=lifespan)
 
 devices = {}  # device_id -> adapter instance
 devices_lock = threading.Lock()
+
+
+def is_virtual(adapter):
+    """A box with no hardware behind it (the synced-pipeline box): it takes
+    no part in the idle shutdown, which exists to protect hardware."""
+    return getattr(adapter, 'VIRTUAL', False)
 
 # ------------------------------------------------- settings persistence
 # Last-used settings per device, kept on disk so a re-opened device (even
@@ -153,8 +160,13 @@ def close_all_devices():
     dark, so a script handing one back afterwards must not switch it on again.
     """
     with devices_lock:
-        open_devices = list(devices.items())
-        devices.clear()
+        # boxes with no hardware stay: nothing to switch off, and their saved
+        # parameters are not worth a restart of the page
+        open_devices = [(device_id, adapter)
+                        for device_id, adapter in devices.items()
+                        if not is_virtual(adapter)]
+        for device_id, _ in open_devices:
+            del devices[device_id]
         loaned = list(loans)
         loans.clear()
     for device_id, adapter in open_devices:
@@ -210,7 +222,7 @@ async def idle_watchdog():
         with idle_lock:
             last_activity, warned_at = _last_activity, _warned_at
         with devices_lock:
-            any_open = bool(devices)
+            any_open = any(not is_virtual(a) for a in devices.values())
 
         if warned_at is None:
             # nothing to protect while no device is open, and the countdown
@@ -445,6 +457,10 @@ def close_device(device_id: str):
 # devices_lock. 'describe' is the device's last describe(), so a page loaded
 # mid-loan can still build its box (app.js), which then waits like the rest.
 loans = {}
+
+# the synced-pipeline box gates itself on which cameras and scope exist, lent
+# ones included; it reads these without the lock (describe() runs under it)
+SyncedPipelineAdapter.registry = staticmethod(lambda: (devices, loans))
 
 
 class LendRequest(BaseModel):
