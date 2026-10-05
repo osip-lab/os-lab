@@ -73,6 +73,7 @@ HERE = Path(__file__).resolve().parent
 TEMPLATE_PATH = HERE / 'run_config_local_template.py'
 LOCAL_PATH = HERE / 'run_config_local.py'
 ENV_VAR = 'MODE_VIDEO_CONFIG'
+PARAMS_ENV_VAR = 'MODE_VIDEO_PARAMS'
 
 # Which names each script takes from the config, keyed by the class that holds
 # them. The names are exactly the module-level constants of that script, and
@@ -109,6 +110,50 @@ SECTIONS = {
         'N_points', 'SHORT_ARM_LENGTH',
     )),
 }
+
+# %% ------------------------------------------------------ parameter overrides
+# kalishlot's synced-pipeline box does not edit the config file: it writes the
+# parameters of one run to a JSON file and names it in MODE_VIDEO_PARAMS, which
+# every step of the pipeline inherits. The file looks like
+#
+#     {"sections": {"capture": {"CAPTURE_DURATION_S": 2.0, ...}, "sync": {...}},
+#      "adopt": {"roi": true, "exposure": false, ...}}
+#
+# `sections` is laid over the config file's own values, name by name and
+# validated against SECTIONS exactly as they are, so a typo fails loudly.
+# `adopt` says, per parameter, which of the kalishlot camera/scope box's values
+# the capture takes (see mode_video_capture.adopt_kalishlot_settings); absent
+# means "all of them", as --from-kalishlot always did.
+ADOPT_KEYS = ('roi', 'exposure', 'gain', 'frame_rate', 'scope_range')
+_params_cache = (None, None)    # (path, parsed), so the file is read once
+
+
+def run_params():
+    """The run's parameter file, parsed; {} when MODE_VIDEO_PARAMS is unset."""
+    global _params_cache
+    path = os.environ.get(PARAMS_ENV_VAR)
+    if not path:
+        return {}
+    if _params_cache[0] != path:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        unknown = sorted(set(data) - {'sections', 'adopt'})
+        if unknown:
+            raise KeyError(f'{path}: unknown entries {unknown}; expected '
+                           f'"sections" and "adopt"')
+        bad = sorted(set(data.get('adopt', {})) - set(ADOPT_KEYS))
+        if bad:
+            raise KeyError(f'{path}: unknown adopt keys {bad}; valid: '
+                           f'{", ".join(ADOPT_KEYS)}')
+        _params_cache = (path, data)
+    return _params_cache[1]
+
+
+def adopt_flags():
+    """Which kalishlot box values to take: {key: bool} for every ADOPT_KEY,
+    all True when the run has no parameter file or it does not say."""
+    given = run_params().get('adopt', {})
+    return {key: bool(given.get(key, True)) for key in ADOPT_KEYS}
+
 
 _loaded = None          # the config module, once imported
 _loaded_path = None     # where it came from, for the report and the dump
@@ -343,9 +388,11 @@ def section_values(section, config=None):
     config = load() if config is None else config
     block = getattr(config, section, None)
     if block is None:
-        return {}
+        block = type('_Empty', (), {})
     given = {name: value for name, value in vars(block).items()
              if not name.startswith('_')}
+    overrides = run_params().get('sections', {}).get(section, {})
+    given.update(overrides)
     unknown = sorted(set(given) - set(allowed))
     if unknown:
         raise KeyError(
@@ -374,6 +421,8 @@ def apply(section, namespace, config=None):
                 f'{SECTIONS[section][0]}.py has no constant {name}, but '
                 f'run_config lists it under section {section!r}. One of the '
                 f'two was renamed; the self-test catches this.')
+        if isinstance(namespace[name], tuple) and isinstance(value, list):
+            value = tuple(value)    # json has no tuples
         if namespace[name] != value or type(namespace[name]) is not type(value):
             changed[name] = value
         namespace[name] = value
@@ -427,6 +476,11 @@ def dump_into(folder, resolved=None, section='capture', extra=None):
         copy = folder / 'run_config_used.py'
         shutil.copyfile(_loaded_path, copy)
         written.append(copy)
+    if run_params():
+        # what the synced-pipeline box laid over that file for this run
+        params = folder / 'run_params_used.json'
+        params.write_text(json.dumps(run_params(), indent=1), encoding='utf-8')
+        written.append(params)
 
     values = dict(resolved or {})
     if not values:
@@ -593,6 +647,56 @@ def _self_test():
         assert record['values']['OUTPUT_ROOT'] == str(Path(tmp))
         assert any(p.name == 'run_config_resolved.json' for p in written)
     print('  the resolved values are written beside the capture as json')
+
+    # a run's parameter file lays over the config, validated like it, and says
+    # which box values to adopt
+    global _params_cache
+    saved_env = os.environ.get(PARAMS_ENV_VAR)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            params_file = Path(tmp) / 'params.json'
+            params_file.write_text(json.dumps({
+                'sections': {'capture': {'BINNING': 4,
+                                         'ROI_HEIGHT_CANDIDATES': [64, 128]}},
+                'adopt': {'exposure': False}}), encoding='utf-8')
+            os.environ[PARAMS_ENV_VAR] = str(params_file)
+            class _Block:
+                BINNING = 2
+                CAPTURE_DURATION_S = 1.2
+            config = type('_Config', (), {'capture': _Block})
+            values = section_values('capture', config)
+            assert values == {'BINNING': 4, 'CAPTURE_DURATION_S': 1.2,
+                              'ROI_HEIGHT_CANDIDATES': [64, 128]}, values
+            namespace = {'BINNING': 2, 'CAPTURE_DURATION_S': 1.2,
+                         'ROI_HEIGHT_CANDIDATES': (1, 2)}
+            apply('capture', namespace, config)
+            assert namespace['ROI_HEIGHT_CANDIDATES'] == (64, 128)
+            assert namespace['BINNING'] == 4
+            flags = adopt_flags()
+            assert flags['exposure'] is False and flags['roi'] is True, flags
+            written = dump_into(tmp + '/out', resolved={'BINNING': 4})
+            assert any(p.name == 'run_params_used.json' for p in written)
+            params_file.write_text(json.dumps(
+                {'sections': {'capture': {'NO_SUCH_SETTING': 1}}}),
+                encoding='utf-8')
+            _params_cache = (None, None)
+            try:
+                section_values('capture', config)
+            except KeyError as error:
+                assert 'NO_SUCH_SETTING' in str(error)
+            else:
+                raise AssertionError('an unknown override should be refused')
+            os.environ.pop(PARAMS_ENV_VAR)
+            _params_cache = (None, None)
+            assert adopt_flags() == dict.fromkeys(ADOPT_KEYS, True)
+            assert section_values('capture', config)['BINNING'] == 2
+    finally:
+        _params_cache = (None, None)
+        if saved_env is None:
+            os.environ.pop(PARAMS_ENV_VAR, None)
+        else:
+            os.environ[PARAMS_ENV_VAR] = saved_env
+    print('  a run parameter file overrides the config, and sets what to adopt')
 
     print('self-test passed')
 
