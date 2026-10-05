@@ -87,6 +87,7 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="subgroup">
         <label class="field">
           <input type="checkbox" class="cam-fit"> fit</label>
+        <button class="cam-fit-marker" disabled title="make a marker from the current fit (its 2σ ellipse). Available while the video is paused and the fit has a result">fit → marker</button>
       </span>
       <span class="subgroup">
         <label class="field" title="1 mm grid, centered on the image">
@@ -139,9 +140,11 @@ export function createCameraBox(device, container, sendCommand) {
     snap: container.querySelector('[data-command="snap"]'),
   };
   let isPlaying = true;
+  let onPlayingChange = () => {};   // set once the fit controls exist
 
   function setPlaying(playing) {
     isPlaying = playing;
+    onPlayingChange();
     showPlayToggle(buttons.toggle, playing);
     status.textContent = playing ? 'streaming' : 'paused';
   }
@@ -601,7 +604,15 @@ export function createCameraBox(device, container, sendCommand) {
   // ------------------------------------------------------------------ fit
   const fitCheck = container.querySelector('.cam-fit');
   fitCheck.checked = device.fitting ?? false;
+  const fitMarkerButton = container.querySelector('.cam-fit-marker');
+  function updateFitMarkerButton() {
+    fitMarkerButton.disabled = isPlaying || !fitCheck.checked || !fitParams;
+  }
+  onPlayingChange = updateFitMarkerButton;
+  updateFitMarkerButton();
+  fitMarkerButton.onclick = (event) => { event.preventDefault(); addFitMarker(); };
   fitCheck.onchange = () => {
+    updateFitMarkerButton();
     sendCommand(device.device_id, fitCheck.checked ? 'fit_on' : 'fit_off')
       .catch((e) => { status.textContent = e.message; });
   };
@@ -773,6 +784,7 @@ export function createCameraBox(device, container, sendCommand) {
 
   function clearFitDisplay() {
     fitParams = null;
+    updateFitMarkerButton();
     fitCross = null;
     fitReason = '';
     lastBrightness = null;
@@ -1043,15 +1055,25 @@ export function createCameraBox(device, container, sendCommand) {
   // and showMarkers() redraws from that.
 
   function toFrame(m) {
-    return {x: m.x - (roi ? roi.x : 0), y: m.y - (roi ? roi.y : 0), r: m.r};
+    return {x: m.x - (roi ? roi.x : 0), y: m.y - (roi ? roi.y : 0), r: m.r,
+            ellipse: m.ellipse};
   }
 
   function drawMarker(ctx, circle, color, label) {
-    drawCircle(ctx, circle, color, false);
+    if (circle.ellipse) {
+      ctx.strokeStyle = color;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.ellipse(toCss(circle.x), toCss(circle.y), toCss(circle.ellipse.a),
+        toCss(circle.ellipse.b), circle.ellipse.angle, 0, 2 * Math.PI);
+      ctx.stroke();
+      drawCross(ctx, toCss(circle.x), toCss(circle.y), 5);
+    } else drawCircle(ctx, circle, color, false);
     if (!label) return;
     // up and to the right of the circle, where it least covers the beam —
     // or below it when that would run off the top of the image
-    const offset = toCss(circle.r) * 0.71 + 3;
+    const reach = circle.ellipse ? Math.max(circle.ellipse.a, circle.ellipse.b) : circle.r;
+    const offset = toCss(reach) * 0.71 + 3;
     const above = toCss(circle.y) - offset;
     ctx.fillStyle = color;
     ctx.font = '11px Consolas, monospace';
@@ -1079,6 +1101,23 @@ export function createCameraBox(device, container, sendCommand) {
       x: circle.x + (roi ? roi.x : 0),
       y: circle.y + (roi ? roi.y : 0),
       r: circle.r,
+      visible: true,
+      color: nextMarkerColor(),
+    }]);
+  }
+
+  // the current fit as a marker: its 2 std ellipse (= the beam radius w)
+  function addFitMarker() {
+    if (isPlaying || !fitCheck.checked || !fitParams) return;
+    const p = fitParams;
+    const a = 2 * p.s_x, b = 2 * p.s_y;
+    sendMarkers([...markers, {
+      id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      label: nextMarkerLabel(),
+      x: p.x_0 + (roi ? roi.x : 0),
+      y: p.y_0 + (roi ? roi.y : 0),
+      r: (a + b) / 2,
+      ellipse: {a, b, angle: p.angle},
       visible: true,
       color: nextMarkerColor(),
     }]);
@@ -1302,6 +1341,7 @@ export function createCameraBox(device, container, sendCommand) {
       else if (event.type === 'fit_status') {
         fitCheck.checked = event.enabled;
         if (!event.enabled) clearFitDisplay();
+        updateFitMarkerButton();
       } else if (event.type === 'fit') {
         if (event.success) {
           fitParams = event.params;
@@ -1312,6 +1352,7 @@ export function createCameraBox(device, container, sendCommand) {
           fitCross = null;
           fitReason = `fit: ${event.reason}`;
         }
+        updateFitMarkerButton();
         redrawOverlay();
         drawStrips();
         updateInfo();

@@ -12,6 +12,10 @@ are in pixels of the current frame: a marker records a place on the sensor,
 and has to stay on it when the ROI changes - that is the whole point of
 comparing where the mode sits across configurations. The box converts.
 
+A marker made from a fit result also carries `ellipse` ({a, b, angle}: the 2 std
+semi-axes and rotation); it is drawn as that ellipse instead of the circle, and
+renamed, hidden and deleted like any other. Its `r` is the mean semi-axis.
+
 The browser owns the editing: it sends the whole list after every change
 (add, rename, show/hide, delete) and draws from the 'markers' event. One
 command for all of it keeps the server a store with validation, not a second
@@ -47,7 +51,26 @@ def _clean_marker(raw):
     if not marker['id']:
         raise ValueError('marker needs an id')
     marker['visible'] = bool(raw.get('visible', True))
+    ellipse = raw.get('ellipse')
+    if ellipse is not None:
+        marker['ellipse'] = _clean_ellipse(ellipse)
     return marker
+
+
+def _clean_ellipse(raw):
+    """{'a', 'b', 'angle'}: semi-axes in sensor px and the rotation in radians."""
+    if not isinstance(raw, dict):
+        raise ValueError(f'marker ellipse must be an object, not {raw!r}')
+    ellipse = {}
+    for key in ('a', 'b', 'angle'):
+        try:
+            value = float(raw[key])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f'marker ellipse needs a number {key!r}') from None
+        if not math.isfinite(value) or (key != 'angle' and value < 0):
+            raise ValueError(f'marker ellipse {key!r} = {value} is out of range')
+        ellipse[key] = round(value, 4)
+    return ellipse
 
 
 def clean_markers(raw_list):

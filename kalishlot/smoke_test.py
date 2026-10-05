@@ -1017,6 +1017,20 @@ def check_camera_markers():
     assert fresh.describe()['markers'] == snapshot['markers']
     fresh.restore_settings({'markers': [{'x': 1}]})   # malformed: dropped
     assert fresh.describe()['markers'] == []
+
+    # a marker made from a fit carries its ellipse, and keeps it
+    fit_marker = {'id': 'f', 'label': 'M3', 'x': 100, 'y': 90, 'r': 30,
+                  'ellipse': {'a': 40, 'b': 20, 'angle': 0.5}}
+    adapter.command('set_markers', {'markers': [fit_marker]})
+    assert adapter.describe()['markers'][0]['ellipse'] ==         {'a': 40.0, 'b': 20.0, 'angle': 0.5}
+    fresh.restore_settings(adapter.settings_snapshot())
+    assert fresh.describe()['markers'][0]['ellipse']['a'] == 40.0
+    try:
+        adapter.command('set_markers', {'markers': [
+            {**fit_marker, 'ellipse': {'a': -1, 'b': 2, 'angle': 0}}]})
+        raise AssertionError('accepted a negative semi-axis')
+    except ValueError:
+        pass
     print('camera markers validate, broadcast and persist ok')
 
 
