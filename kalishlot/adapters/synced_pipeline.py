@@ -121,6 +121,12 @@ _p('show.FIT_REBINNING', 'int', 'plot: fit rebinning', 'sync', min=1)
 _p('show.RENORMALIZE_PERCENTILE', 'float', 'plot: renormalise percentile',
    'sync', min=0.0, max=100.0)
 
+# not a run parameter (it never reaches the capture): the cavity's long arm,
+# kept with the saved settings for the mode-marking step, which asks for it.
+# Blank = not given.
+LONG_ARM_PARAM = {'key': 'long_arm_cm', 'kind': 'optfloat',
+                  'label': 'long arm length', 'min': 0.0}
+
 PARAM_BY_KEY = {p['key']: p for p in PARAMS}
 
 # adopt rows: (key, label). Ticked = the value of the camera/scope box; unticked
@@ -308,6 +314,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
         self.adopt = {key: True for key in run_config.ADOPT_KEYS}
         self.presets = {}           # name -> {'edited', 'adopt'}
         self.camera_id = None       # the user's pick; None = the first open one
+        self.long_arm_cm = None     # the cavity's long arm; None = not given
         self._lock = threading.Lock()
         self._process = None
         self._params_path = None
@@ -368,7 +375,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'type': self.type_name,
             'label': 'SYNCED VIDEO + SCOPE PIPELINE',
             'commands': ['set_param', 'reset_param', 'set_adopt',
-                         'choose_camera', 'pick_folder', 'check_folder',
+                         'choose_camera', 'set_long_arm', 'pick_folder', 'check_folder',
                          'preset_save', 'preset_load', 'preset_delete',
                          'start', 'stop', 'show_session'],
             'params': PARAMS,
@@ -379,6 +386,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'adopt': dict(self.adopt),
             'presets': sorted(self.presets),
             'camera_id': camera['device_id'] if camera else None,
+            'long_arm_cm': self.long_arm_cm,
             'dependencies': dependencies,
             'ready': bool(camera and dependencies['scopes']),
             'run': dict(self.run),
@@ -390,7 +398,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
         return {'edited': dict(self.edited), 'adopt': dict(self.adopt),
                 'presets': {name: dict(preset)
                             for name, preset in self.presets.items()},
-                'camera_id': self.camera_id}
+                'camera_id': self.camera_id, 'long_arm_cm': self.long_arm_cm}
 
     def restore_settings(self, snapshot):
         edited = {}
@@ -410,6 +418,10 @@ class SyncedPipelineAdapter(DeviceAdapter):
                         in (snapshot.get('presets') or {}).items()
                         if isinstance(preset, dict)}
         self.camera_id = snapshot.get('camera_id')
+        try:
+            self.long_arm_cm = coerce(LONG_ARM_PARAM, snapshot.get('long_arm_cm'))
+        except ValueError:
+            self.long_arm_cm = None
 
     # ---- commands
     def command(self, name, args):
@@ -440,6 +452,9 @@ class SyncedPipelineAdapter(DeviceAdapter):
         if name == 'choose_camera':
             self.camera_id = args.get('device_id') or None
             return {'ok': True}
+        if name == 'set_long_arm':
+            self.long_arm_cm = coerce(LONG_ARM_PARAM, args.get('value'))
+            return {'ok': True, 'value': self.long_arm_cm}
         if name == 'check_folder':
             ok, message = check_folder(args.get('path', self._folder()))
             return {'ok': ok, 'message': message}

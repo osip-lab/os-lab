@@ -634,6 +634,22 @@ def check_synced_pipeline():
         restored = sp.SyncedPipelineAdapter('main')
         restored.restore_settings(snapshot)
         assert restored.edited == adapter.edited and restored.adopt == adapter.adopt
+        assert restored.long_arm_cm is None and adapter.describe()['long_arm_cm'] is None
+
+        # the long arm: optional, saved with the settings, never sent to a run
+        adapter.command('set_long_arm', {'value': '34.4'})
+        assert adapter.describe()['long_arm_cm'] == 34.4
+        restored.restore_settings(adapter.settings_snapshot())
+        assert restored.long_arm_cm == 34.4
+        assert 'long_arm_cm' not in json.dumps(adapter.run_params())
+        for bad in ('abc', '-1'):
+            try:
+                adapter.command('set_long_arm', {'value': bad})
+                raise AssertionError('a bad long arm was accepted')
+            except ValueError:
+                pass
+        adapter.command('set_long_arm', {'value': ''})
+        assert adapter.long_arm_cm is None
 
         # presets keep the recipe, never the place
         adapter.command('preset_save', {'name': 'slow'})

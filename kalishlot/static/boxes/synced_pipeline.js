@@ -43,6 +43,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         </label>
         <div class="sp-folder-note status-line"></div>
       </div>
+      <label class="sp-row sp-long-arm"><span>long arm length</span>
+        <input type="number" class="sp-long-arm-input" step="any" min="0"
+               placeholder="blank = not set">
+        <span class="unit">cm</span>
+      </label>
       <div class="sp-adopt"></div>
       <div class="sp-main"></div>
       <details class="sp-advanced"><summary>advanced capture</summary><div></div></details>
@@ -234,6 +239,15 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       const target = param.auto_of && adoptRows[param.auto_of];
       if (target) target.auto.appendChild(widgets[param.key].row);
     }
+    const longArm = $('.sp-long-arm-input');
+    const commitLongArm = () => {
+      if (longArm.value === longArm.dataset.committed) return;
+      send('set_long_arm', { value: longArm.value })
+        .then(() => { longArm.dataset.committed = longArm.value; })
+        .catch((error) => { fail(error); show(); });
+    };
+    longArm.addEventListener('keydown', (event) => { if (event.key === 'Enter') commitLongArm(); });
+    longArm.addEventListener('blur', commitLongArm);
     $('.sp-camera-select').onchange = (event) =>
       send('choose_camera', { device_id: event.target.value }).catch(fail);
 
@@ -335,6 +349,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
 
     for (const [key, widget] of Object.entries(widgets)) {
       widget.write(valueOf(key), key in state.edited);
+    }
+    const longArm = $('.sp-long-arm-input');
+    if (document.activeElement !== longArm) {
+      longArm.value = state.long_arm_cm ?? '';
+      longArm.dataset.committed = longArm.value;
     }
     const folderNote = $('.sp-folder-note');
     const folder = valueOf('capture.OUTPUT_ROOT');
