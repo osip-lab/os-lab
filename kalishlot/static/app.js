@@ -32,6 +32,33 @@ const grid = SATELLITE_ID !== null ? null : GridStack.init({
 
 initLogger();
 
+// ------------------------------------------------------------------ layout
+// Where each box sat, kept by the server (layout.json) so the next session
+// brings the dashboard back as it was. Saved positions are fetched once before
+// the boxes are built, and every change of the grid is sent back, debounced.
+let savedBoxes = {};
+const SAVE_LAYOUT_MS = 400;
+let saveTimer = null;
+
+function saveLayout() {
+  if (!grid) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const boxes = {};
+    for (const node of grid.engine.nodes) {
+      const id = node.el?.dataset.deviceId;
+      if (id) boxes[id] = { x: node.x, y: node.y, w: node.w, h: node.h };
+    }
+    if (!Object.keys(boxes).length) return;
+    Object.assign(savedBoxes, boxes);   // a box closed and re-added meanwhile
+    fetch('/api/layout/boxes', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boxes }),
+    }).catch(() => { /* a layout that is not saved costs nothing but the layout */ });
+  }, SAVE_LAYOUT_MS);
+}
+if (grid) grid.on('change', saveLayout);
+
 // ------------------------------------------------------------ theme toggle
 // Ultra-dark is applied in index.html before first paint; this only flips it.
 const themeToggle = document.getElementById('theme-toggle');
@@ -148,8 +175,10 @@ function addBox(device) {
   element.querySelector('.box-log').onclick = () => openLogger();
   element.querySelector('.box-window').onclick = () => openSatellite(device, element);
 
+  element.dataset.deviceId = device.device_id;
   document.querySelector('.grid-stack').appendChild(element);
-  grid.makeWidget(element, { w: 5, h: 6 });
+  grid.makeWidget(element, { w: 5, h: 6, ...(savedBoxes[device.device_id] ?? {}) });
+  saveLayout();
 
   const body = element.querySelector('.box-body');
   const renderer = BOX_RENDERERS[device.type];
@@ -248,6 +277,7 @@ function removeBox(deviceId) {
 async function reattachOpenDevices() {
   const status = document.getElementById('server-status');
   try {
+    try { savedBoxes = (await api('/api/layout')).boxes ?? {}; } catch { savedBoxes = {}; }
     const open = await api('/api/devices');
     for (const device of open) addBox(device);
     // devices lent to a script get their box too, built from the state they

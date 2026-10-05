@@ -13,5 +13,6 @@ utilities/.ipynb_checkpoints/
 /Python-Driver-for-Thorlabs-power-meter/Thorlabs_DotNet_dll/
 /settings/local/
 kalishlot/device_state.json
+kalishlot/layout.json
 kalishlot/log_state.json
 pico_scope/run_config_local.py

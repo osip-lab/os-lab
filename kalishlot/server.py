@@ -78,6 +78,7 @@ IDLE_TICK_S = 0.25
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    restore_layout()    # before serving, so a page that loads sees them all
     watchdog = asyncio.create_task(idle_watchdog())
     yield
     watchdog.cancel()
@@ -93,6 +94,74 @@ app = FastAPI(title='OS Lab dashboard', lifespan=lifespan)
 
 devices = {}  # device_id -> adapter instance
 devices_lock = threading.Lock()
+
+
+# ------------------------------------------------------------------ layout
+# What the dashboard looked like when it was last used, so a restart brings it
+# back: which devices were open (in the order they were added) and where each
+# box sat. A device leaves the list only when the user closes its box - not when
+# the idle watchdog or a shutdown closes everything, which is exactly the case
+# this exists for. Positions are kept per device and never dropped, so a box
+# closed and reopened later returns to where it was.
+LAYOUT_PATH = Path(__file__).parent / 'layout.json'
+layout_lock = threading.Lock()
+layout = {'devices': [], 'boxes': {}}
+try:
+    _saved_layout = json.loads(LAYOUT_PATH.read_text())
+    layout['devices'] = [d for d in _saved_layout.get('devices', [])
+                         if isinstance(d, dict) and 'type' in d and 'address' in d]
+    layout['boxes'] = _saved_layout.get('boxes', {})
+except Exception:
+    pass
+
+
+def _write_layout():
+    """Persist `layout` (the caller holds layout_lock). Never raises: a layout
+    that cannot be saved must not break device control."""
+    try:
+        LAYOUT_PATH.write_text(json.dumps(layout, indent=1))
+    except Exception:
+        pass
+
+
+def layout_add(type_name, address):
+    device_id = f'{type_name}:{address}'
+    with layout_lock:
+        if not any(d['device_id'] == device_id for d in layout['devices']):
+            layout['devices'].append({'device_id': device_id, 'type': type_name,
+                                      'address': str(address)})
+            _write_layout()
+
+
+def layout_remove(device_id):
+    with layout_lock:
+        kept = [d for d in layout['devices'] if d['device_id'] != device_id]
+        if len(kept) != len(layout['devices']):
+            layout['devices'] = kept
+            _write_layout()
+
+
+def restore_layout():
+    """Re-open the devices the last session had open. A device that cannot be
+    opened (unplugged, switched off, its driver missing) is reported and left
+    in the layout, so it comes back by itself once it is available again."""
+    with layout_lock:
+        wanted = list(layout['devices'])
+    for entry in wanted:
+        device_id = entry['device_id']
+        if entry['type'] not in DEVICE_TYPES:
+            print(f'layout: {device_id}: this server has no such device type')
+            continue
+        try:
+            with devices_lock:
+                if device_id in devices:
+                    continue
+                devices[device_id] = open_adapter(entry['type'], entry['address'])
+            print(f'layout: re-opened {device_id}')
+        except HTTPException as error:
+            print(f'layout: {device_id} not re-opened: {error.detail}')
+        except Exception as error:
+            print(f'layout: {device_id} not re-opened: {error}')
 
 
 def is_virtual(adapter):
@@ -359,6 +428,33 @@ async def log_stream(websocket: WebSocket):
 
 
 # ------------------------------------------------------------------ REST API
+class BoxesRequest(BaseModel):
+    boxes: dict
+
+
+@app.get('/api/layout')
+def get_layout():
+    with layout_lock:
+        return {'devices': list(layout['devices']), 'boxes': dict(layout['boxes'])}
+
+
+@app.put('/api/layout/boxes')
+def put_layout_boxes(request: BoxesRequest):
+    """Merge box positions: {device_id: {x, y, w, h}}. Boxes not mentioned keep
+    theirs, so a page that has only some of them open cannot forget the rest."""
+    clean = {}
+    for device_id, box in request.boxes.items():
+        try:
+            clean[str(device_id)] = {key: int(box[key]) for key in 'xywh'}
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f'bad box for {device_id!r}: need x, y, w, h')
+    with layout_lock:
+        layout['boxes'].update(clean)
+        _write_layout()
+    return {'ok': True}
+
+
 @app.get('/api/device-types')
 def get_device_types():
     return [{'type': cls.type_name, 'display_name': cls.display_name}
@@ -417,6 +513,7 @@ def open_device(request: OpenRequest):
                 f'{loans[device_id]["borrower"]}; return it first')
         adapter = open_adapter(request.type, request.address)
         devices[device_id] = adapter
+    layout_add(request.type, request.address)
     return {'device_id': device_id, 'existing': False, **adapter.describe()}
 
 
@@ -429,6 +526,7 @@ def list_open_devices():
 
 @app.delete('/api/devices/{device_id:path}')
 def close_device(device_id: str):
+    layout_remove(device_id)    # the user closed it: do not bring it back
     with devices_lock:
         adapter = devices.pop(device_id, None)
         # closed while on loan: the borrower's return then finds nothing

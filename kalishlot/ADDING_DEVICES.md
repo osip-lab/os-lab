@@ -339,7 +339,19 @@ must allow inbound Python — it prompts once).
 | `POST /api/idle/dismiss` | dismiss the warning / restart the countdown |
 | `WS /ws/idle` | watchdog broadcasts: `idle_warning`, `idle_clear`, `idle_disconnected` |
 
+`GET /api/layout` and `PUT /api/layout/boxes` serve the saved dashboard layout (see
+"Layout" below).
+
 `device_id` is always `f'{type_name}:{address}'`.
+
+### Layout
+The server keeps `kalishlot/layout.json` (git-ignored): the devices open and where
+each box sits. On start it re-opens those devices before serving; the page puts
+each box back at its saved x/y/w/h and sends changes back (debounced). A device
+leaves the list only when its box is closed by the user - the idle shutdown and a
+server stop keep it, which is the case it exists for. One that cannot be opened
+at start (unplugged, off) is reported in the server's console and stays listed,
+so it returns once it is available. A new device type needs nothing for this.
 
 ### Idle watchdog
 
