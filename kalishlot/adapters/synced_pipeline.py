@@ -145,6 +145,8 @@ AUTO_OVERRIDES = {
 PRESET_EXCLUDED = {FOLDER_PARAM}      # a preset is a recipe, not a place
 
 PIPELINE_SCRIPT = _REPO_ROOT / 'pico_scope' / 'run_mode_video_pipeline.py'
+SHOW_SCRIPT = _REPO_ROOT / 'pico_scope' / 'mode_video_sync_show.py'
+SHOW_TAIL = 6                         # lines of a failed viewer's output kept
 SESSION_MARKER = 'SESSION_PATH='      # the capture prints where it saved
 LOG_KEEP = 600                        # lines kept for a box that attaches late
 STOP_WAIT_S = 5.0
@@ -292,6 +294,9 @@ class SyncedPipelineAdapter(DeviceAdapter):
     # what is run; replaced by the tests with a stand-in script
     pipeline_command = staticmethod(
         lambda: [sys.executable, '-u', str(PIPELINE_SCRIPT), '--from-kalishlot'])
+    show_command = staticmethod(
+        lambda folder: [sys.executable, '-u', str(SHOW_SCRIPT),
+                        '--session', folder])
 
     @staticmethod
     def list_available():
@@ -307,6 +312,8 @@ class SyncedPipelineAdapter(DeviceAdapter):
         self._process = None
         self._params_path = None
         self._log = collections.deque(maxlen=LOG_KEEP)
+        self.show = {'folder': None, 'running': False, 'error': None}
+        self._shows = 0             # viewers open now
         self.run = {'running': False, 'returncode': None, 'started': None,
                     'ended': None, 'step': None, 'session': None,
                     'stopped': False, 'error': None}
@@ -363,7 +370,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'commands': ['set_param', 'reset_param', 'set_adopt',
                          'choose_camera', 'pick_folder', 'check_folder',
                          'preset_save', 'preset_load', 'preset_delete',
-                         'start', 'stop'],
+                         'start', 'stop', 'show_session'],
             'params': PARAMS,
             'adopt_rows': [{'key': k, 'label': label}
                            for k, label in ADOPT_ROWS],
@@ -375,6 +382,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'dependencies': dependencies,
             'ready': bool(camera and dependencies['scopes']),
             'run': dict(self.run),
+            'show': dict(self.show),
             'log': list(self._log)[-200:],
         }
 
@@ -464,11 +472,78 @@ class SyncedPipelineAdapter(DeviceAdapter):
             if self.presets.pop(args.get('name'), None) is None:
                 raise ValueError(f'no preset {args.get("name")!r}')
             return {'ok': True, 'presets': sorted(self.presets)}
+        if name == 'show_session':
+            return self._show_session(args.get('path'))
         if name == 'start':
             return self._start()
         if name == 'stop':
             return self._stop()
         raise ValueError(f'unknown command {name!r}')
+
+    # ---- showing a past capture
+    def _show_session(self, path=None):
+        """Open a capture in the interactive viewer (mode_video_sync_show.py):
+        the folder window first, unless a path is given. The viewer is its own
+        process with its own window on this PC, and needs no camera or scope,
+        so it runs whether or not a pipeline run is going."""
+        if path is None:
+            path = self.pick_folder_fn(self.show['folder'] or self._folder())
+            if path is None:
+                return {'ok': True, 'path': None}      # the window was cancelled
+        folder = Path(str(path)).expanduser()
+        sessions = sorted(folder.glob('*_session.json')) if folder.is_dir() else []
+        if len(sessions) != 1:
+            raise ValueError(
+                f'{folder} is not a capture folder: expected exactly one '
+                f'*_session.json in it, found {len(sessions)}')
+        handle, params_path = tempfile.mkstemp(prefix='kalishlot_show_',
+                                               suffix='.json')
+        shown = {key.split('.', 1)[1]: value for key, value in self.edited.items()
+                 if key.startswith('show.') and key in PARAM_BY_KEY}
+        with os.fdopen(handle, 'w', encoding='utf-8') as file:
+            json.dump({'sections': {'show': shown}} if shown else {}, file)
+        environment = dict(self.child_environment())
+        environment[run_config.PARAMS_ENV_VAR] = params_path
+        environment['PYTHONIOENCODING'] = 'utf-8'
+        try:
+            process = subprocess.Popen(
+                self.show_command(str(folder)), cwd=_REPO_ROOT, env=environment,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+                errors='replace', bufsize=1)
+        except OSError:
+            os.unlink(params_path)
+            raise
+        self._shows += 1
+        self._set_show(folder=str(folder), running=True, error=None)
+        threading.Thread(target=self._watch_show,
+                         args=(process, params_path, str(folder)),
+                         daemon=True).start()
+        return {'ok': True, 'path': str(folder)}
+
+    def _set_show(self, **changes):
+        self.show.update(changes)
+        self.emit({'type': 'show', 'show': dict(self.show)})
+
+    def _watch_show(self, process, params_path, folder):
+        tail = collections.deque(maxlen=SHOW_TAIL)
+        try:
+            for raw in process.stdout:
+                tail.append(raw.rstrip('\r\n'))
+        except Exception:
+            pass
+        returncode = process.wait()
+        try:
+            os.unlink(params_path)
+        except OSError:
+            pass
+        self._shows -= 1
+        error = None
+        if returncode != 0:
+            error = ' | '.join(line for line in tail if line.strip())[-300:] \
+                or f'the viewer exited with code {returncode}'
+        if self._shows <= 0 or error:
+            self._set_show(folder=folder, running=self._shows > 0, error=error)
 
     # ---- running the pipeline
     def _set_run(self, **changes):

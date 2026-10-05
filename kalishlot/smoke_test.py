@@ -8,6 +8,7 @@ it down.
 """
 
 import asyncio
+import os
 from pathlib import Path
 import json
 import threading
@@ -867,6 +868,83 @@ def check_camera_restore_order():
     print('camera restore order ok (ROI before exposure and rate)')
 
 
+def check_synced_pipeline_show():
+    """The box's "show a capture" button: the folder is chosen (or refused),
+    the viewer is started as its own process on that folder with the box's plot
+    parameters, a failing viewer says why, and it needs no camera or scope.
+    No hardware: a stand-in script plays the viewer."""
+    import json as _json
+    import sys
+    import tempfile
+    from adapters import synced_pipeline as sp
+
+    sp.SyncedPipelineAdapter.registry = staticmethod(lambda: ({}, {}))
+    adapter = sp.SyncedPipelineAdapter('main')
+    assert adapter.describe()['ready'] is False        # and still works below
+
+    def wait(condition, what, timeout=10.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if condition():
+                return
+            time.sleep(0.05)
+        raise AssertionError(f'timed out waiting for {what}')
+
+    viewer = """
+import json, os, sys
+params = json.load(open(os.environ['MODE_VIDEO_PARAMS']))
+assert sys.argv[1] == '--session', sys.argv
+print('shade', params.get('sections', {}).get('show', {}).get('SHADE_ALPHA'))
+if os.environ.get('STUB_FAIL'):
+    print('no alignment in this capture')
+    sys.exit(2)
+"""
+    sp.SyncedPipelineAdapter.show_command = staticmethod(
+        lambda folder: [sys.executable, '-u', '-c', viewer, '--session', folder])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        capture = Path(tmp) / '2026-10-05_112839'
+        capture.mkdir()
+        (capture / '2026-10-05_112839_session.json').write_text('{}')
+        (Path(tmp) / 'empty').mkdir()
+
+        # not a capture folder: refused before anything starts
+        for bad in (str(Path(tmp) / 'empty'), str(Path(tmp) / 'missing')):
+            try:
+                adapter.command('show_session', {'path': bad})
+            except ValueError as error:
+                assert 'not a capture folder' in str(error)
+            else:
+                raise AssertionError(f'{bad} should have been refused')
+
+        # no path: the folder window decides; cancelling starts nothing
+        sp.SyncedPipelineAdapter.pick_folder_fn = staticmethod(lambda start: None)
+        assert adapter.command('show_session', {})['path'] is None
+        assert adapter.show['folder'] is None
+
+        sp.SyncedPipelineAdapter.pick_folder_fn = staticmethod(
+            lambda start: str(capture))
+        adapter.command('set_param', {'key': 'show.SHADE_ALPHA', 'value': 0.4})
+        events = adapter.add_listener()
+        result = adapter.command('show_session', {})
+        assert result['path'] == str(capture), result
+        wait(lambda: not adapter.show['running'], 'the viewer to end')
+        assert adapter.show['folder'] == str(capture) and adapter.show['error'] is None
+        seen = []
+        while not events.empty():
+            seen.append(events.get_nowait())
+        assert any(e['type'] == 'show' for e in seen), seen
+
+        # a viewer that fails says why
+        os.environ['STUB_FAIL'] = '1'
+        adapter.command('show_session', {'path': str(capture)})
+        wait(lambda: adapter.show['error'], 'the failure to be reported')
+        assert 'no alignment' in adapter.show['error'], adapter.show
+        os.environ.pop('STUB_FAIL')
+    print('synced-pipeline show ok (folder checked, viewer launched with the '
+          'plot parameters, failures reported)')
+
+
 def check_picoscope_restore():
     """The saved channels come back even when channel A - the only one on
     when the scope opens - is saved disabled. Disabling A first would leave
@@ -1119,6 +1197,7 @@ def main():
         check_synced_pipeline()
         check_synced_pipeline_run()
         check_layout()
+        check_synced_pipeline_show()
         check_camera_restore_order()
         check_camera_markers()
         check_exposure_rate()
