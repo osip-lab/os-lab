@@ -144,6 +144,8 @@ class capture:
 
     # --- what the capture is checked against -------------------------------
     MASK_THRESHOLD = 0.15     # fraction of the peak-to-peak that counts as lit
+    FRAMES_FORMAT = 'h264'    # 'h264' (8-bit, lossy, ~200x smaller than raw) or
+                              # 'lossless' (FFV1, bit-exact, ~3x smaller)
     # A clipped peak is the one thing that reliably breaks the alignment fit:
     # the camera stops tracking the photodiode exactly where the signal is
     # strongest. Measured on this setup, 1% of samples clipped is survivable
