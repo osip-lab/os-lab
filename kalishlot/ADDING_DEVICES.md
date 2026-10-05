@@ -278,6 +278,13 @@ import { createMyDeviceBox } from './boxes/my_device.js';
 const BOX_RENDERERS = { ..., my_device: createMyDeviceBox };
 ```
 
+Every box gets a ⧉ button that opens it in its own browser window
+(`/?box=<device_id>`, see `openSatellite` in `app.js`), to put an instrument on
+another screen. The window runs your renderer again as one more viewer of the
+same server-owned device, so a box needs nothing extra for it - but it must not
+assume it is the only viewer, and anything per-viewer (a zoom, say) is per
+window.
+
 UI conventions: settings inputs commit on **Enter or focus loss** (the lab's
 explicit preference), and after a `setting_applied` event the input shows the
 value the hardware accepted.

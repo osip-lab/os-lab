@@ -16,7 +16,12 @@ const BOX_RENDERERS = {
   picoscope: createPicoScopeBox,
 };
 
-const grid = GridStack.init({
+// ?box=<device_id> turns this page into a satellite window showing just that
+// one box, so an instrument can sit on another screen - see openSatellite().
+const SATELLITE_ID = new URLSearchParams(location.search).get('box');
+document.body.classList.toggle('satellite', SATELLITE_ID !== null);
+
+const grid = SATELLITE_ID !== null ? null : GridStack.init({
   cellHeight: 90,
   margin: 8,
   float: true,
@@ -132,12 +137,14 @@ function addBox(device) {
       <div class="box-header">
         <span class="box-title"></span>
         <button class="box-log" title="open log">log</button>
+        <button class="box-window" title="open in its own window (to move it to another screen)">⧉</button>
         <button class="box-close" title="close device and remove box">✕</button>
       </div>
       <div class="box-body"></div>
     </div>`;
   element.querySelector('.box-title').textContent = device.label;
   element.querySelector('.box-log').onclick = () => openLogger();
+  element.querySelector('.box-window').onclick = () => openSatellite(device, element);
 
   document.querySelector('.grid-stack').appendChild(element);
   grid.makeWidget(element, { w: 5, h: 6 });
@@ -158,6 +165,73 @@ function addBox(device) {
       console.warn('closing device failed:', error);
     }
   };
+}
+
+// ------------------------------------------------------- satellite windows
+// A box cannot leave the browser window it is drawn in, so "pop out" opens a
+// second window of this same page that draws only that box. Nothing is handed
+// over: the device belongs to the server, and the satellite attaches to it as
+// one more viewer, exactly as a second browser tab would. The box in the grid
+// stays live too. The window's name is per device, so pressing the button
+// again focuses the open one instead of making another.
+function openSatellite(device, element) {
+  const { width, height } = element.getBoundingClientRect();
+  const name = `kalishlot-${device.device_id.replace(/\W/g, '_')}`;
+  const url = `/?box=${encodeURIComponent(device.device_id)}`;
+  const features = `popup=yes,width=${Math.round(width)},height=${Math.round(height)}`;
+  const opened = window.open(url, name, features);
+  if (!opened) {
+    alert('the browser blocked the new window - allow pop-ups for this page');
+    return;
+  }
+  opened.focus();
+}
+
+// The satellite page: one box, filling the window.
+function showSatelliteNote(text) {
+  const holder = document.querySelector('.grid-stack');
+  holder.className = 'satellite-note';
+  holder.textContent = text;
+}
+
+async function runSatellite(deviceId) {
+  document.title = 'Kalishlot';
+  const holder = document.querySelector('.grid-stack');
+  const say = (text) => { holder.textContent = text; holder.className = 'satellite-note'; };
+  let device;
+  try {
+    const open = await api('/api/devices');
+    device = open.find((d) => d.device_id === deviceId);
+    if (!device) {     // lent to a script: the box waits for it, as in the grid
+      const loan = (await api('/api/loans')).find((l) => l.device_id === deviceId);
+      if (loan) device = { ...loan.describe, device_id: deviceId };
+    }
+  } catch (error) {
+    say(`server unreachable: ${error.message}`);
+    return;
+  }
+  if (!device) {
+    say(`${deviceId} is not open - open it in the dashboard first`);
+    return;
+  }
+  document.title = `${device.label} - Kalishlot`;
+  holder.className = 'satellite-box';
+  holder.innerHTML = `
+    <div class="grid-stack-item-content">
+      <div class="box-header">
+        <span class="box-title"></span>
+        <button class="box-log" title="open log">log</button>
+        <button class="box-close" title="close this window (the device stays open)">✕</button>
+      </div>
+      <div class="box-body"></div>
+    </div>`;
+  holder.querySelector('.box-title').textContent = device.label;
+  holder.querySelector('.box-log').onclick = () => openLogger();
+  holder.querySelector('.box-close').onclick = () => window.close();
+  const body = holder.querySelector('.box-body');
+  const renderer = BOX_RENDERERS[device.type];
+  if (renderer) renderer(device, body, sendCommand);
+  else body.textContent = `no renderer for device type ${device.type}`;
 }
 
 function removeBox(deviceId) {
@@ -185,12 +259,19 @@ async function reattachOpenDevices() {
   }
 }
 
-reattachOpenDevices();
+if (SATELLITE_ID === null) reattachOpenDevices();
+else runSatellite(SATELLITE_ID);
 
 // the idle watchdog closes the devices server-side; drop their boxes too, so
 // the canvas is not left full of boxes pointing at nothing
 initIdle({
   onDisconnected(deviceIds) {
+    if (SATELLITE_ID !== null) {
+      if (deviceIds.includes(SATELLITE_ID)) {
+        showSatelliteNote('idle timeout - the device was disconnected');
+      }
+      return;
+    }
     for (const deviceId of deviceIds) removeBox(deviceId);
     document.getElementById('server-status').textContent =
       `idle timeout — disconnected ${deviceIds.length} device(s)`;

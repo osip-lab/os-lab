@@ -318,10 +318,39 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.box-header .box-window {
+  border-color: transparent;
+  background: none;
+  padding: 0 5px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--muted);
+}
+.box-header .box-window:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+}
 .box-header .box-log:hover:not(:disabled) {
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
   border-color: transparent;
+}
+/* a satellite window (?box=...): the one box fills it, no dashboard around it */
+body.satellite header { display: none; }
+body.satellite .grid-stack-item-content { animation: none; }
+.satellite-box {
+  display: flex;
+  height: 100vh;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.satellite-box > .grid-stack-item-content { flex: 1; min-width: 0; }
+.satellite-note {
+  padding: 64px 16px;
+  text-align: center;
+  font: 12px var(--font-data);
+  color: var(--muted);
 }
 .box-body {
   flex: 1;
