@@ -259,12 +259,12 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
     def restore_settings(self, snapshot):
         self.restore_markers(snapshot.get('markers'))
         applied = False
-        for name, value in (snapshot.get('settings') or {}).items():
-            try:
-                self._apply_setting(name, float(value))
-                applied = True
-            except Exception:
-                pass  # setting no longer exists / out of range: skip it
+        # The ROI goes first. The frame rate a camera can sustain depends on
+        # the geometry, and a camera opens on the whole sensor, where the
+        # ceiling is a fraction of what the saved ROI allows: restoring the
+        # rate there clipped it (167 Hz came back as 42 Hz) and nothing raised
+        # it again once the ROI shrank. Both kinds of change go through the
+        # streamer's one queue, so they run in the order they are submitted.
         roi = snapshot.get('roi')
         if roi:
             try:
@@ -274,6 +274,12 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
                 applied = True
             except Exception:
                 pass  # sensor/binning changed under the stored ROI: skip it
+        for name, value in (snapshot.get('settings') or {}).items():
+            try:
+                self._apply_setting(name, float(value))
+                applied = True
+            except Exception:
+                pass  # setting no longer exists / out of range: skip it
         if applied and self.RESTORE_SETTLE_S:
             time.sleep(self.RESTORE_SETTLE_S)
 

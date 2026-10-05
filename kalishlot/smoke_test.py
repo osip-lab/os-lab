@@ -849,6 +849,24 @@ def check_layout():
           'unavailable devices retained)')
 
 
+def check_camera_restore_order():
+    """A camera's saved ROI is restored before its saved exposure and rate: the
+    rate it can sustain depends on the geometry, and restoring the rate on the
+    whole sensor clipped it for good. No hardware: the calls are recorded."""
+    from adapters.dummy_camera import DummyCameraAdapter
+
+    adapter = DummyCameraAdapter('order-test')
+    calls = []
+    adapter._set_roi = lambda *args: calls.append('roi')
+    adapter._apply_setting = lambda name, value: calls.append(name)
+    adapter.restore_settings({
+        'settings': {'exposure': 5914.0, 'gain': 5.0, 'framerate': 167.3},
+        'roi': {'x': 832, 'y': 890, 'width': 476, 'height': 468}})
+    assert calls[0] == 'roi', calls
+    assert set(calls[1:]) == {'exposure', 'gain', 'framerate'}, calls
+    print('camera restore order ok (ROI before exposure and rate)')
+
+
 def check_picoscope_restore():
     """The saved channels come back even when channel A - the only one on
     when the scope opens - is saved disabled. Disabling A first would leave
@@ -1101,6 +1119,7 @@ def main():
         check_synced_pipeline()
         check_synced_pipeline_run()
         check_layout()
+        check_camera_restore_order()
         check_camera_markers()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))
