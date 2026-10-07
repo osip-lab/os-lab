@@ -79,8 +79,6 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
                  placeholder="blank = no name added">
         </label>
         <div class="sp-start-actions">
-          <button class="sp-start-skip"
-                  title="start with no long arm saved and no name added">skip</button>
           <button class="sp-start-confirm">start capture ▶</button>
         </div>
         <div class="sp-start-error status-line sp-bad"></div>
@@ -322,7 +320,6 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         .then(closeStartDialog)
         .catch((err) => { error.textContent = err.message; });
     };
-    $('.sp-start-skip').onclick = (event) => { event.preventDefault(); run('', ''); };
     $('.sp-start-confirm').onclick = (event) => {
       event.preventDefault();
       run(longArm.value, folderLabel.value);
