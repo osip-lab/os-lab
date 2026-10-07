@@ -1090,7 +1090,74 @@ def check_camera_markers():
         raise AssertionError('accepted a negative semi-axis')
     except ValueError:
         pass
-    print('camera markers validate, broadcast and persist ok')
+
+    # save to a file and load it back, through stand-ins for the file windows
+    import tempfile
+    from adapters import camera_markers
+    folder = Path(tempfile.mkdtemp())
+    saved = folder / 'set.json'
+    adapter.command('set_markers', {'markers': markers})
+    DummyCameraAdapter.pick_save_file = staticmethod(lambda **kw: str(saved))
+    result = adapter.command('save_markers', {})
+    assert result['path'] == str(saved) and result['count'] == 2, result
+    record = json.loads(saved.read_text(encoding='utf-8'))
+    assert record['format'] == camera_markers.FILE_FORMAT, record
+    assert [m['label'] for m in record['markers']] == ['45 cm', '46 cm']
+    DummyCameraAdapter.pick_save_file = staticmethod(lambda **kw: None)
+    assert adapter.command('save_markers', {})['path'] is None   # cancelled
+    adapter.command('set_markers', {'markers': []})
+    try:
+        adapter.command('save_markers', {})
+        raise AssertionError('saved an empty list')
+    except ValueError:
+        pass
+
+    DummyCameraAdapter.pick_open_file = staticmethod(lambda **kw: str(saved))
+    adapter.command('set_markers', {'markers': [fit_marker, {
+        'id': 'a', 'label': 'mine', 'x': 1, 'y': 2, 'r': 3}]})   # 'a' is taken
+    events.clear()
+    adapter.command('load_markers', {'mode': 'add'})
+    labels = [m['label'] for m in adapter.describe()['markers']]
+    ids = [m['id'] for m in adapter.describe()['markers']]
+    assert labels == ['M3', 'mine', '45 cm', '46 cm'], labels
+    assert len(set(ids)) == 4, f'a loaded id clashed with an existing one: {ids}'
+    assert events[-1]['type'] == 'markers' and len(events[-1]['markers']) == 4
+    adapter.command('load_markers', {'mode': 'replace'})
+    assert [m['label'] for m in adapter.describe()['markers']] == ['45 cm', '46 cm']
+    DummyCameraAdapter.pick_open_file = staticmethod(lambda **kw: None)
+    adapter.command('load_markers', {'mode': 'replace'})          # cancelled
+    assert len(adapter.describe()['markers']) == 2, 'a cancelled window changed things'
+    for bad_mode in (None, 'merge'):
+        try:
+            adapter.command('load_markers', {'mode': bad_mode})
+            raise AssertionError(f'accepted mode {bad_mode!r}')
+        except ValueError:
+            pass
+    junk = folder / 'junk.json'
+    DummyCameraAdapter.pick_open_file = staticmethod(lambda **kw: str(junk))
+    for text in ('not json', '{"format": "other", "markers": []}',
+                 '[{"id": "x", "x": "nan", "y": 0, "r": 1}]'):
+        junk.write_text(text, encoding='utf-8')
+        try:
+            adapter.command('load_markers', {'mode': 'replace'})
+            raise AssertionError(f'loaded a bad file: {text}')
+        except ValueError:
+            pass
+    assert len(adapter.describe()['markers']) == 2, 'a bad file lost the list'
+    junk.write_text(json.dumps([markers[0]]), encoding='utf-8')   # a bare list
+    adapter.command('load_markers', {'mode': 'replace'})
+    assert len(adapter.describe()['markers']) == 1
+    full = [{'id': f'm{i}', 'x': 1, 'y': 1, 'r': 1}
+            for i in range(camera_markers.MAX_MARKERS)]
+    adapter.command('set_markers', {'markers': full})
+    junk.write_text(json.dumps([markers[0]]), encoding='utf-8')
+    try:
+        adapter.command('load_markers', {'mode': 'add'})
+        raise AssertionError('added past the limit')
+    except ValueError:
+        pass
+    assert len(adapter.describe()['markers']) == camera_markers.MAX_MARKERS
+    print('camera markers validate, broadcast, persist and save/load ok')
 
 
 async def close_code(socket, timeout=5):

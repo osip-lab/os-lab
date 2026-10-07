@@ -496,10 +496,45 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 .cam-marker-delete { border-color: transparent; background: none; color: var(--muted); }
 .cam-markers-footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 5px 6px;
   border-top: 1px solid var(--line-soft);
 }
+
+/* the replace-or-add question asked before a marker file is opened; on the
+   page itself (appended to body), like the pipeline box's start pop-up */
+.cam-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 15, 0.6);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.15s ease;
+}
+.cam-modal {
+  min-width: 320px;
+  max-width: 420px;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  animation: rise-in 0.18s ease;
+}
+.cam-modal h2 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cam-modal p { margin: 0 0 14px; font-size: 12px; line-height: 1.5; }
+.cam-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ------------------------------------------------------------- Rigol box */
 .rigol-channels {

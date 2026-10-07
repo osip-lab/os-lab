@@ -1149,6 +1149,9 @@ export function createCameraBox(device, container, sendCommand) {
   // typed, when that would throw the half-typed text away: then it is
   // rebuilt once the field is left.
   let markerListStale = false;
+  // set while a file window is open on the lab PC; read by renderMarkerList
+  let markerFileBusy = false;
+  let markerDialog = null;       // the replace/add pop-up while it is open
   let clearAllArmedUntil = 0;
 
   function renderMarkerList() {
@@ -1241,9 +1244,103 @@ export function createCameraBox(device, container, sendCommand) {
         }, 3000);
       });
 
+    // the file windows open on the lab PC, so these wait for them
+    const saveButton = footerButton('save…', 'save the markers to a file (a window opens on the lab PC)',
+      () => saveMarkers());
+    const openButton = footerButton('open…', 'load markers from a file, replacing or adding to these (asks first)',
+      () => openMarkersDialog());
+    saveButton.disabled = openButton.disabled = markerFileBusy;
+
     markerPanel.append(list, footer);
   }
   showMarkers(markers);
+
+  // --------------------------------------------------- marker files (save/open)
+  // The server opens Windows' own file window (adapters/file_dialogs.py) and
+  // reads or writes the file; the page only says what to do. Opening asks
+  // first - replace what is on the camera, or add to it - and only then does
+  // the file window appear. A cancelled window changes nothing.
+
+  async function markerFileCommand(name, args, waiting) {
+    markerFileBusy = true;
+    status.textContent = waiting;
+    renderMarkerList();
+    try {
+      return await sendCommand(device.device_id, name, args);
+    } catch (error) {
+      status.textContent = error.message;
+      return null;
+    } finally {
+      markerFileBusy = false;
+      renderMarkerList();
+    }
+  }
+
+  const fileName = (path) => path.split(/[\\/]/).pop();
+
+  async function saveMarkers() {
+    const result = await markerFileCommand(
+      'save_markers', {}, 'choose where to save the markers, in the window on the lab PC…');
+    if (!result) return;
+    status.textContent = result.path
+      ? `saved ${result.count} markers to ${fileName(result.path)}` : '';
+  }
+
+  async function loadMarkers(mode) {
+    const result = await markerFileCommand(
+      'load_markers', { mode }, 'choose the marker file, in the window on the lab PC…');
+    if (!result) return;
+    status.textContent = result.path
+      ? `loaded ${result.count} markers from ${fileName(result.path)} (${mode === 'add' ? 'added' : 'replaced'})`
+      : '';
+  }
+
+  function closeMarkerDialog() {
+    if (markerDialog) markerDialog.remove();
+    markerDialog = null;
+  }
+
+  function openMarkersDialog() {
+    closeMarkerDialog();
+    const backdrop = document.createElement('div');
+    backdrop.className = 'cam-modal-backdrop';
+    const box = document.createElement('div');
+    box.className = 'cam-modal';
+    const title = document.createElement('h2');
+    title.textContent = 'open markers';
+    const text = document.createElement('p');
+    text.textContent = `There ${markers.length === 1 ? 'is 1 marker' : `are ${markers.length} markers`} on the camera now. `
+      + 'The markers in the file should:';
+    const actions = document.createElement('div');
+    actions.className = 'cam-modal-actions';
+    const choice = (label, hint, mode) => {
+      const button = document.createElement('button');
+      button.textContent = label;
+      button.title = hint;
+      button.onclick = () => { closeMarkerDialog(); loadMarkers(mode); };
+      actions.appendChild(button);
+      return button;
+    };
+    const first = choice('replace the existing ones', 'delete the markers on the camera, then load the file', 'replace');
+    choice('be added on top', 'keep the markers on the camera and add the file\'s', 'add');
+    const cancel = document.createElement('button');
+    cancel.textContent = 'cancel';
+    cancel.onclick = closeMarkerDialog;
+    actions.appendChild(cancel);
+    box.append(title, text, actions);
+    backdrop.appendChild(box);
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) closeMarkerDialog();
+    });
+    backdrop.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeMarkerDialog();
+    });
+    // on the page itself, not in the box: a box can be moved or resized, and
+    // a pop-up should centre on the screen whatever the box is doing
+    document.body.appendChild(backdrop);
+    markerDialog = backdrop;
+    first.focus();
+  }
 
   // ------------------------------------------------------ clipboard export
   function composeFigure() {
@@ -1419,6 +1516,7 @@ export function createCameraBox(device, container, sendCommand) {
 
   return function cleanup() {
     stream.close();
+    closeMarkerDialog();
     resizeObserver.disconnect();
     if (levelsChart) levelsChart.destroy();
   };

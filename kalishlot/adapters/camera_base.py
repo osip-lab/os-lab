@@ -41,7 +41,8 @@ from .camera_markers import CameraMarkersMixin
 CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
                    'fit_on', 'fit_off', 'set_guess', 'clear_guess',
                    'set_fit_threshold', 'set_roi', 'clear_roi',
-                   'levels_on', 'levels_off', 'set_markers']
+                   'levels_on', 'levels_off', 'set_markers',
+                   'save_markers', 'load_markers']
 
 
 class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
