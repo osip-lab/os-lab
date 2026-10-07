@@ -311,6 +311,18 @@ the config file's, which is also what the widgets show. The save folder's
 "browse" opens Windows' own folder window on the server PC (tkinter), which is
 the lab PC the capture runs on too; the textbox stays the source of truth.
 
+Besides the full pipeline the box has **record video only** and **record scope
+only** buttons (`start` with `only: 'video' | 'scope'`). They run the pipeline
+with `--only`, i.e. the capture step alone: `--no-prompt --no-scope` for the
+camera, `--scope-only` (`capture_scope_only`, saved as `*_scope.npz` +
+`*_scope.json`, deliberately not `*_session.json`) for the PicoScope. Each
+needs only its own instrument (`ready_video` / `ready_scope`), and takes the
+box's settings, the folder and the start pop-up exactly like a full run.
+The video-only run also writes `<stamp>_preview.mp4` (`frame_codec.save_preview`):
+a stretched 8-bit H.264 at the capture's frame rate, so it plays in any media
+player in real time. The `.mkv` holds the raw sensor counts and looks black in
+one; full pipeline runs write no preview.
+
 ## Step 4 — test without hardware first
 
 `adapters/dummy_camera.py` exists exactly for this: a synthetic device

@@ -36,6 +36,10 @@ from pico_scope import run_config  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
 
 CAMERA_TYPES = {'ximea_camera': 'ximea', 'basler_camera': 'basler'}
+# The formats each camera type offers (their drivers' `formats`, which need the
+# camera to answer; the names a capture's PIXEL_FORMAT takes)
+PIXEL_FORMATS = {'ximea_camera': ['Mono8', 'Mono10'],
+                 'basler_camera': ['Mono8', 'Mono12p', 'Mono12']}
 SCOPE_TYPE = 'picoscope'
 FOLDER_PARAM = 'capture.OUTPUT_ROOT'
 SCOPE_CHANNELS = ('A', 'B', 'C', 'D')
@@ -63,8 +67,11 @@ _p('capture.FRAMES_FORMAT', 'choice', 'frames compression',
 _p('capture.H264_CRF', 'int', 'h264 quality (CRF: 0 = lossless, 51 = harshest)',
    min=0, max=51)
 _p('capture.BINNING', 'choice', 'binning', choices=[1, 2, 4])
-_p('capture.PIXEL_FORMAT', 'text', 'pixel format (blank = deepest)',
-   optional=True)
+# '' (the first button, "deepest") is None in the run: the camera's deepest.
+# A row of buttons, only the ones the chosen camera offers (PIXEL_FORMATS).
+_p('capture.PIXEL_FORMAT', 'choice', 'pixel format',
+   choices=['', 'Mono8', 'Mono10', 'Mono12', 'Mono12p'], optional=True,
+   segmented=True, labels={'': 'deepest'})
 _p('capture.LOCATE_FIRST', 'bool', 'locate the mode first (auto ROI)',
    auto_of='roi')
 _p('capture.STRICT_LEVELS', 'bool', 'refuse a clipped capture')
@@ -161,6 +168,9 @@ SHOW_TAIL = 6                         # lines of a failed viewer's output kept
 SESSION_MARKER = 'SESSION_PATH='      # the capture prints where it saved
 LOG_KEEP = 600                        # lines kept for a box that attaches late
 STOP_WAIT_S = 5.0
+# what a run records: everything and syncs it (None), or one instrument alone
+# with no sync and no viewer (the pipeline's --only)
+ONLY_MODES = ('video', 'scope')
 LOAN_BORROWER = 'mode_video_capture.py'
 
 
@@ -185,9 +195,11 @@ def coerce(param, value):
             return None
         return text
     if kind == 'choice':
+        if value is None and param.get('optional'):
+            value = ''
         for choice in param['choices']:
             if str(choice) == str(value):
-                return choice
+                return None if choice == '' and param.get('optional') else choice
         raise ValueError(f'{label}: {value!r} is not one of {param["choices"]}')
     if kind == 'intlist':
         items = value if isinstance(value, (list, tuple)) else \
@@ -327,7 +339,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
         self._shows = 0             # viewers open now
         self.run = {'running': False, 'returncode': None, 'started': None,
                     'ended': None, 'step': None, 'session': None,
-                    'stopped': False, 'error': None}
+                    'stopped': False, 'error': None, 'only': None}
 
     def open(self):
         pass
@@ -383,6 +395,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
                          'preset_save', 'preset_load', 'preset_delete',
                          'start', 'stop', 'show_session'],
             'params': PARAMS,
+            'pixel_formats': PIXEL_FORMATS,
             'adopt_rows': [{'key': k, 'label': label}
                            for k, label in ADOPT_ROWS],
             'edited': dict(self.edited),
@@ -392,6 +405,8 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'camera_id': camera['device_id'] if camera else None,
             'dependencies': dependencies,
             'ready': bool(camera and dependencies['scopes']),
+            'ready_video': camera is not None,
+            'ready_scope': bool(dependencies['scopes']),
             'run': dict(self.run),
             'show': dict(self.show),
             'log': list(self._log)[-200:],
@@ -569,6 +584,9 @@ class SyncedPipelineAdapter(DeviceAdapter):
         if self.run['running']:
             raise ValueError('a run is already in progress')
         args = args or {}
+        only = args.get('only') or None
+        if only not in (None, *ONLY_MODES):
+            raise ValueError(f'unknown run kind {only!r}')
         # from the start-of-capture pop-up: asked fresh every time, so a value
         # that was never (re)typed is skipped rather than reused.
         extra = {
@@ -577,7 +595,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
             LONG_ARM_FIELD['key']: coerce(LONG_ARM_FIELD,
                                           args.get('long_arm_cm')),
         }
-        params = self.run_params(extra)     # raises when it cannot start
+        params = self.run_params(extra, only)     # raises when it cannot start
         handle, path = tempfile.mkstemp(prefix='kalishlot_params_',
                                         suffix='.json')
         with os.fdopen(handle, 'w', encoding='utf-8') as file:
@@ -589,9 +607,12 @@ class SyncedPipelineAdapter(DeviceAdapter):
         if os.name == 'nt':
             flags = (subprocess.CREATE_NO_WINDOW
                      | subprocess.CREATE_NEW_PROCESS_GROUP)
+        command = self.pipeline_command()
+        if only:
+            command = [*command, '--only', only]
         try:
             process = subprocess.Popen(
-                self.pipeline_command(), cwd=_REPO_ROOT, env=environment,
+                command, cwd=_REPO_ROOT, env=environment,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding='utf-8',
                 errors='replace', bufsize=1, creationflags=flags)
@@ -602,7 +623,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
         self._log.clear()
         self._set_run(running=True, returncode=None, stopped=False,
                       started=datetime.now().isoformat(timespec='seconds'),
-                      ended=None, step=None, session=None, error=None)
+                      ended=None, step=None, session=None, error=None, only=only)
         threading.Thread(target=self._read, args=(process, path),
                          daemon=True).start()
         return {'ok': True}
@@ -669,15 +690,22 @@ class SyncedPipelineAdapter(DeviceAdapter):
             config_values().get(FOLDER_PARAM) or ''
 
     # ---- what a run is told
-    def run_params(self, extra=None):
+    def run_params(self, extra=None, only=None):
         """The JSON a run takes through MODE_VIDEO_PARAMS: the edited values,
         the start-of-capture pop-up's values (`extra`), what each unticked
         adopt row must say outright, the pipeline's own fixed choices, and the
-        adopt flags. Raises ValueError when the run cannot start (no camera or
-        scope, a bad save folder)."""
+        adopt flags. `only` ('video' or 'scope') asks for that instrument alone,
+        which then is the only one needed. Raises ValueError when the run
+        cannot start (a missing instrument, a bad save folder)."""
         dependencies = self.dependencies()
         camera = self.chosen_camera(dependencies)
-        if camera is None or not dependencies['scopes']:
+        if only == 'video':
+            if camera is None:
+                raise ValueError('needs an open camera')
+        elif only == 'scope':
+            if not dependencies['scopes']:
+                raise ValueError('needs an open PicoScope')
+        elif camera is None or not dependencies['scopes']:
             raise ValueError('needs an open camera and an open PicoScope')
         folder = self._folder()
         ok, message = check_folder(folder)
@@ -695,9 +723,14 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'capture.DRIVE_SCOPE': True,
             'capture.PROMPT_FOR_OUTPUT_ROOT': False,
             'capture.OUTPUT_ROOT': str(Path(folder).expanduser()),
-            'capture.CAMERA': CAMERA_TYPES[camera['type']],
-            'capture.SERIAL_NUMBER': camera['device_id'].split(':', 1)[1],
         })
+        if only != 'scope':
+            flat.update({
+                'capture.CAMERA': CAMERA_TYPES[camera['type']],
+                'capture.SERIAL_NUMBER': camera['device_id'].split(':', 1)[1],
+            })
+        if only == 'video':
+            flat['capture.DRIVE_SCOPE'] = False
         sections = {}
         for key, value in flat.items():
             section, name = key.split('.', 1)

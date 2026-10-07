@@ -9,7 +9,9 @@ The path is taken from the clipboard. Controls:
 
 Run from the repository root: python -m utilities.media_tools.plot_video
 """
+import json
 import os
+from pathlib import Path
 
 import cv2
 import matplotlib
@@ -25,6 +27,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # The GUI-free fitting module, the same one kalishlot's camera adapters use
 from basler_cam.gaussian_fit import fit_gaussian, gaussian2d, rebin_image
+from pico_scope import frame_codec
 from utilities.utils import wait_for_path_from_clipboard
 
 PIXEL_SIZE_MM = 0.0055
@@ -64,8 +67,37 @@ def maximize_window(fig):
             continue
 
 
+def load_capture_frames(path):
+    """(frames, fps) for the frames file of a mode-video capture, or None.
+
+    Those files hold the camera's own counts (10-12 bit, in a 16-bit lossless
+    container), which OpenCV would squeeze to 8 bits - a dim capture comes back
+    as a handful of grey levels. The capture's session record, next to the
+    video, says how to decode it exactly (shape, dtype, scale), which is what
+    `frame_codec.load_frames` takes. None when `path` is not such a file.
+    """
+    path = Path(path)
+    for session_path in path.parent.glob('*_session.json'):
+        try:
+            session = json.loads(session_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if session.get('frames_file') != path.name:
+            continue
+        frames = frame_codec.load_frames(
+            path, session['frames_shape'], session['frames_dtype'],
+            session.get('frames_scale') or 1.0)
+        period = (session.get('timing') or {}).get('period_s_median')
+        rate = 1 / period if period else session.get('requested_frame_rate_hz')
+        return frames, float(rate or 1.0)
+    return None
+
+
 def load_frames(path):
     """Return (frames, fps) for a video, or a single-frame stack for an image.
+
+    A capture's own frames file is decoded at full depth (see
+    `load_capture_frames`); anything else goes through OpenCV as 8-bit.
 
     Frames are decoded once into memory as grayscale, so stepping backwards is
     instant. `fps` falls back to 1 for images and for containers that report no
@@ -73,6 +105,10 @@ def load_frames(path):
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
+
+    capture = load_capture_frames(path)
+    if capture is not None:
+        return capture
 
     frames = []
     fps = 0.0
@@ -198,8 +234,9 @@ class VideoInspector:
         # --- Controls, stacked in the band under the trace ---
         self.frame_slider = Slider(self.fig.add_axes([0.25, 0.090, 0.65, 0.018]), 'Frame',
                                    0, max(len(self.frames) - 1, 1), valinit=0, valstep=1)
+        # 255 for an 8-bit video; a capture's frames reach the camera's own depth
         self.vmax_slider = Slider(self.fig.add_axes([0.25, 0.060, 0.65, 0.018]), 'vmax',
-                                  1, 255, valinit=vmax_default)
+                                  1, max(vmax_default, 255), valinit=vmax_default)
         self.rebin_textbox = TextBox(self.fig.add_axes([0.25, 0.026, 0.15, 0.025]), "Rebin",
                                      initial=str(self.rebin_factor))
         self.fig.text(0.5, 0.004, HELP_TEXT, ha='center', va='bottom', fontsize=9)

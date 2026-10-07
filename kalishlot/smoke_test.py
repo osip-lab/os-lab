@@ -628,6 +628,30 @@ def check_synced_pipeline():
         assert params['adopt']['exposure'] is False and params['adopt']['gain']
         assert 'sync' not in params['sections'], 'only what was edited is sent'
 
+        # the pixel format is picked from buttons: "deepest" is no value at all
+        adapter.command('set_param', {'key': 'capture.PIXEL_FORMAT',
+                                      'value': 'Mono8'})
+        assert adapter.run_params()['sections']['capture']['PIXEL_FORMAT'] == 'Mono8'
+        adapter.command('set_param', {'key': 'capture.PIXEL_FORMAT', 'value': ''})
+        assert adapter.edited['capture.PIXEL_FORMAT'] is None
+        assert adapter.run_params()['sections']['capture']['PIXEL_FORMAT'] is None
+        try:
+            adapter.command('set_param', {'key': 'capture.PIXEL_FORMAT',
+                                          'value': 'Mono9'})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('an unknown pixel format was accepted')
+        assert adapter.describe()['pixel_formats']['ximea_camera'] == ['Mono8', 'Mono10']
+        adapter.command('reset_param', {'key': 'capture.PIXEL_FORMAT'})
+
+        # one instrument alone: the other is neither needed nor named
+        video = adapter.run_params(only='video')['sections']['capture']
+        assert video['DRIVE_SCOPE'] is False and video['SERIAL_NUMBER'] == 'SN1'
+        scope = adapter.run_params(only='scope')['sections']['capture']
+        assert 'CAMERA' not in scope and 'SERIAL_NUMBER' not in scope, scope
+        assert scope['DRIVE_SCOPE'] is True
+
         # persistence, with a stale entry that must be dropped
         snapshot = adapter.settings_snapshot()
         snapshot['edited']['capture.REMOVED_LONG_AGO'] = 1
@@ -687,6 +711,16 @@ def check_synced_pipeline():
         assert 'PicoScope' in str(error)
     else:
         raise AssertionError('a run needs the scope')
+    # a camera alone can still record video; it cannot record the scope
+    description = adapter.describe()
+    assert description['ready_video'] and not description['ready_scope']
+    assert not description['ready']
+    try:
+        adapter.run_params(only='scope')
+    except ValueError as error:
+        assert 'PicoScope' in str(error)
+    else:
+        raise AssertionError('a scope-only run needs the scope')
     from server import is_virtual
     assert is_virtual(adapter) and not is_virtual(Stub('picoscope'))
     print('synced-pipeline adapter ok (gate counts lent devices, values '
@@ -773,6 +807,20 @@ time.sleep(60)
             seen.append(events.get_nowait())
         assert any(e['type'] == 'log' and e['line'] == 'duration 3.0' for e in seen)
         assert not os.path.exists(os.environ.get(run_config.PARAMS_ENV_VAR, 'x'))
+
+        # one instrument alone: the pipeline is told, and the run says so
+        adapter.command('start', {'only': 'video'})
+        wait(lambda: not adapter.run['running'], 'the video-only run to end')
+        assert adapter.run['only'] == 'video' and adapter.run['returncode'] == 0
+        adapter.command('start', {})
+        wait(lambda: not adapter.run['running'], 'the full run to end')
+        assert adapter.run['only'] is None
+        try:
+            adapter.command('start', {'only': 'audio'})
+        except ValueError as error:
+            assert 'audio' in str(error)
+        else:
+            raise AssertionError('an unknown run kind was accepted')
 
         # a failing run says so
         os.environ['STUB_EXIT'] = '3'

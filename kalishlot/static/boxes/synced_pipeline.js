@@ -61,6 +61,8 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     </div>
     <div class="toolbar sp-run">
       <button class="sp-start">run pipeline ▶</button>
+      <button class="sp-start-video" title="record the video with the settings above; no scope, no sync">record video only ●</button>
+      <button class="sp-start-scope" title="record the PicoScope with the settings above; no video, no sync">record scope only ●</button>
       <button class="sp-stop" hidden>stop ■</button>
       <span class="sp-run-state status-line"></span>
     </div>
@@ -68,7 +70,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     <div class="sp-message status-line"></div>
     <div class="sp-start-backdrop" hidden>
       <div class="sp-start-dialog">
-        <h2>before this capture</h2>
+        <h2 class="sp-start-title">before this capture</h2>
         <label class="sp-row"><span>long arm length</span>
           <input type="number" class="sp-start-long-arm" step="any" min="0"
                  placeholder="blank = not set">
@@ -136,7 +138,73 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     return value === null || value === undefined ? '' : value;
   }
 
+  // A choice drawn as one row of joined buttons (the camera box's ROI control),
+  // for values people should not have to spell. `formats` lists, per camera
+  // type, which choices exist; a button the chosen camera lacks is hidden.
+  let segmentedCount = 0;
+  function buildSegmented(param, parent) {
+    const row = document.createElement('div');
+    row.className = 'sp-row';
+    const name = document.createElement('span');
+    name.textContent = param.label;
+    const group = document.createElement('span');
+    group.className = 'segmented';
+    group.setAttribute('role', 'radiogroup');
+    const radioName = `sp-seg-${++segmentedCount}`;
+    const labels = {};
+    for (const choice of param.choices) {
+      const label = document.createElement('label');
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = radioName;
+      radio.value = String(choice);
+      const text = document.createElement('span');
+      text.textContent = param.labels?.[choice] ?? String(choice);
+      label.append(radio, text);
+      group.appendChild(label);
+      labels[choice] = { label, radio };
+      radio.onchange = () => {
+        send('set_param', { key: param.key, value: choice })
+          .catch((error) => { fail(error); show(); });
+      };
+    }
+    const reset = document.createElement('button');
+    reset.className = 'sp-reset';
+    reset.textContent = '↺';
+    reset.title = "back to the config file's value";
+    reset.onclick = (event) => {
+      event.preventDefault();
+      send('reset_param', { key: param.key }).catch(fail);
+    };
+    row.append(name, group, reset);
+    parent.appendChild(row);
+
+    const widget = {
+      row, param,
+      write(value, edited) {
+        const shown = display(param, value);
+        for (const [choice, { radio }] of Object.entries(labels)) {
+          radio.checked = choice === String(shown);
+        }
+        // the chosen camera's own formats (and always "deepest"); none known
+        // for the camera = show them all
+        const camera = state.dependencies.cameras.find((c) => c.device_id === state.camera_id)
+          ?? state.dependencies.cameras[0];
+        const offered = state.pixel_formats?.[camera?.type];
+        for (const [choice, { label }] of Object.entries(labels)) {
+          label.hidden = Boolean(offered) && choice !== '' &&
+            !offered.includes(choice) && choice !== String(shown);
+        }
+        row.classList.toggle('is-edited', edited);
+        reset.hidden = !edited;
+      },
+    };
+    widgets[param.key] = widget;
+    return widget;
+  }
+
   function buildParam(param, parent) {
+    if (param.segmented) return buildSegmented(param, parent);
     const row = document.createElement('label');
     row.className = 'sp-row';
     const name = document.createElement('span');
@@ -284,7 +352,9 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       button.disabled = false;
       refreshSoon();
     };
-    $('.sp-start').onclick = () => openStartDialog();
+    $('.sp-start').onclick = () => openStartDialog(null);
+    $('.sp-start-video').onclick = () => openStartDialog('video');
+    $('.sp-start-scope').onclick = () => openStartDialog('scope');
     $('.sp-stop').onclick = () => send('stop', {}).catch(fail);
     buildStartDialog();
   }
@@ -295,6 +365,10 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   // by accident. The long arm, once set and blurred, also fills the folder
   // label - we usually want both the same - but editing the label afterwards
   // never feeds back into the long arm.
+  let startKind = null;     // null = the whole pipeline, else 'video' / 'scope'
+  const START_TITLE = { video: 'before this video recording',
+                        scope: 'before this scope recording' };
+
   function buildStartDialog() {
     const backdrop = $('.sp-start-backdrop');
     const longArm = $('.sp-start-long-arm');
@@ -316,7 +390,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     });
     const run = (longArmCm, label) => {
       error.textContent = '';
-      send('start', { long_arm_cm: longArmCm, folder_label: label })
+      send('start', { long_arm_cm: longArmCm, folder_label: label, only: startKind })
         .then(closeStartDialog)
         .catch((err) => { error.textContent = err.message; });
     };
@@ -326,7 +400,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     };
   }
 
-  function openStartDialog() {
+  function openStartDialog(kind) {
+    startKind = kind;
+    $('.sp-start-title').textContent = START_TITLE[kind] ?? 'before this capture';
+    $('.sp-start-confirm').textContent = {
+      video: 'record video ●', scope: 'record scope ●' }[kind] ?? 'start capture ▶';
     $('.sp-start-long-arm').value = '';
     $('.sp-start-folder-label').value = '';
     $('.sp-start-error').textContent = '';
@@ -383,9 +461,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     if (!camera.length) missing.push('a XIMEA or Basler camera');
     if (!state.dependencies.scopes.length) missing.push('a PicoScope');
     gate.textContent = missing.length
-      ? `open ${missing.join(' and ')} on the dashboard to use this box` : '';
-    body.disabled = !state.ready;
-    body.classList.toggle('is-disabled', !state.ready);
+      ? `open ${missing.join(' and ')} on the dashboard to ${
+        missing.length < 2 ? 'run the full pipeline' : 'use this box'}` : '';
+    const usable = state.ready || state.ready_video || state.ready_scope;
+    body.disabled = !usable;
+    body.classList.toggle('is-disabled', !usable);
 
     const select = $('.sp-camera-select');
     $('.sp-camera').hidden = camera.length < 2;
@@ -460,9 +540,12 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   function showRun() {
     const run = state.run;
     $('.sp-start').disabled = run.running || !state.ready;
+    $('.sp-start-video').disabled = run.running || !state.ready_video;
+    $('.sp-start-scope').disabled = run.running || !state.ready_scope;
     $('.sp-stop').hidden = !run.running;
     let text = '';
-    if (run.running) text = `running${run.step ? ` — ${run.step.replace('mode_video_', '')}` : ''}`;
+    const kind = run.only ? `${run.only} only, ` : '';
+    if (run.running) text = `${kind}running${run.step ? ` — ${run.step.replace('mode_video_', '')}` : ''}`;
     else if (run.stopped) text = 'stopped';
     else if (run.error) text = `failed: ${run.error}`;
     else if (run.ended) text = 'finished';
