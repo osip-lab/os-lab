@@ -121,7 +121,14 @@ else:
                                   na_over_fsr_interp=mode_spacing_over_fsr_interp,
                                   widths=lorentzian_widths)
     results_df = pd.DataFrame(rows)
-    print(results_df)
+    # Markdown (not tabulate's df.to_markdown(), which isn't in requirements.txt)
+    # so this can be pasted straight into Obsidian as a table.
+    print('| ' + ' | '.join(results_df.columns) + ' |')
+    print('|' + '|'.join(['---'] * len(results_df.columns)) + '|')
+    for _, row in results_df.iterrows():
+        print('| ' + ' | '.join(
+            '' if pd.isna(v) else (f'{v:.6g}' if isinstance(v, float) else str(v))
+            for v in row) + ' |')
     summary = pair_summary(rows)
 
     # Record the extraction next to the original data file (one line per run).

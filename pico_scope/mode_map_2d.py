@@ -108,34 +108,21 @@ from utilities.utils import (ask_long_arm_length,  # noqa: E402
 # scope npz is the trace). The keys need not be evenly spaced - the map keeps
 # their spacing.
 MEASUREMENTS = {
-    39: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\39CM\without EOM.psdata",
-    40: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\40CM\without EOM.psdata",
-    41: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\41CM\WITHOUT EOM.psdata",
-    42: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\42CM\WITHOUT EOM 2.psdata",
-    43: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\43CM\WITHOUT EOM 2.psdata",
-    44: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\44CM\WITHOUT EOM.psdata",
-    45: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\45CM\WITHOUT EOM 3.psdata",
-    46: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\46CM\WITHOUT EOM.psdata",
-    48: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\48CM\WITHOUT EOM.psdata",
-   # 49: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2022-09-22\49cm\without EOM.psdata",
-    50: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\50CM\WITHOUT EOM.psdata",
-    #51: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\51cm\without EOM.psdata",
-    52.5: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\52.5CM\WITHOUT EOM-0002.psdata",
-    #53: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\53cm\without EOM.psdata",
-    #54: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\54cm\without EOM 2.psdata",
-    55: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-28\55cm\without EOM.psdata",
-    #56: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\56cm\without EOM.psdata",
-    #57: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\57cm\without EOM.psdata",
-    # 58: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\58cm\without EOM.psdata",
-    # 59: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\59cm\without EOM 2.psdata",
-    # 60: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\60cm\without EOM.psdata",
-    # 61: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\61cm\without EOM 3.psdata",
-    # 62: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\62cm\without EOM 3.psdata",
-    # 63: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\63cm\without EOM 4.psdata",
-    # 64: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\64cm\without EOM 6.psdata",
-    # 65: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\65cm\without EOM 0.psdata",
-    # 66: r"C:\Users\OsipLab\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-09-16\66cm\without EOM 2.psdata",
+    35.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_171509_35.5-3-pos",
+    33.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_170452_33.5-3-pos",
+    32.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_165557_32.5-3-pos",
+    31.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_165156_31.5-3",
+    30.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_164733_30.5-3",
+    # 37.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_171932_37.5-3-pos",
 }
+# MEASUREMENTS = {
+#     35.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_172235_35.5-4-pos",
+#     33.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_172649_33.5-4-pos",
+#     32.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_173459_32.5-4-pos",
+#     31.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_173953_31.5-4-pos",
+#     30.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_174228_30.5-4-pos",
+#     # 37.5: r"C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox\Laser Phase Plate\Daily measurements and notes\2026-10-05\2026-10-05_171932_37.5-3-pos",
+# }
 Y_AXIS_LABEL = 'Long arm length'  # sometimes 'Short arm length'
 
 # --- the cavity being measured (edit this when the setup changes) ----------
@@ -672,22 +659,22 @@ def print_table(keys, rows, y_label=Y_AXIS_LABEL):
     # columns of nothing.
     show_cavity = any(np.isfinite(row['na']) or np.isfinite(row['short_arm_m'])
                       for row in rows)
-    cavity_header = f" | {'NA':>7} | {'arm [mm]':>9}" if show_cavity else ''
-    header = (f"{y_label:>18} | {'df [MHz]':>10} | {'<df> [MHz]':>10} | "
-              f"{'FWHM0 [MHz]':>11} | "
-              f"{'FWHM1 [MHz]':>11} | {'FSR [MHz]':>10} | {'MHz/s':>10}"
-              f"{cavity_header} | scan")
+    columns = [y_label, 'df [MHz]', '<df> [MHz]', 'FWHM0 [MHz]', 'FWHM1 [MHz]',
+              'FSR [MHz]', 'MHz/s']
+    if show_cavity:
+        columns += ['NA', 'arm [mm]']
+    columns += ['scan']
     print()
-    print(header)
-    print('-' * len(header))
+    print('| ' + ' | '.join(columns) + ' |')
+    print('|' + '|'.join(['---'] * len(columns)) + '|')
     for key, row in zip(keys, rows):
-        cavity = (f" | {row['na']:>7.4f} | {row['short_arm_m'] * 1e3:>9.4f}"
-                  if show_cavity else '')
-        print(f"{key:>18g} | {row['df_mhz']:>10.4f} | "
-              f"{row['df_mhz_mean']:>10.4f} | {row['fwhm_0_mhz']:>11.4f} | "
-              f"{row['fwhm_1_mhz']:>11.4f} | {row['fsr_mhz']:>10.2f} | "
-              f"{row['mhz_per_s']:>10.4g}{cavity} | "
-              f"{'down (flipped)' if row['flipped'] else 'up'}")
+        values = [f'{key:g}', f"{row['df_mhz']:.4f}", f"{row['df_mhz_mean']:.4f}",
+                 f"{row['fwhm_0_mhz']:.4f}", f"{row['fwhm_1_mhz']:.4f}",
+                 f"{row['fsr_mhz']:.2f}", f"{row['mhz_per_s']:.4g}"]
+        if show_cavity:
+            values += [f"{row['na']:.4f}", f"{row['short_arm_m'] * 1e3:.4f}"]
+        values += ['down (flipped)' if row['flipped'] else 'up']
+        print('| ' + ' | '.join(values) + ' |')
     print()
 
 
