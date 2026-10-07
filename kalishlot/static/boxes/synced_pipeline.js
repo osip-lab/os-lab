@@ -171,7 +171,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     const reset = document.createElement('button');
     reset.className = 'sp-reset';
     reset.textContent = '↺';
-    reset.title = 'back to the config file's value';
+    reset.title = "back to the config file's value";
     reset.onclick = (event) => {
       event.preventDefault();
       send('reset_param', { key: param.key }).catch(fail);
