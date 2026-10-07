@@ -334,13 +334,7 @@ switched on through kalishlot's command route (`loan_client.device_command`)
 just after the tail block starts, and back off afterwards if it was off; the
 adapter refuses to start when that is ticked and no generator box is open. A
 parameter with `needs=<key>` is greyed in the box while that one is blank. The
-viewer (`mode_video_sync_show.py`) draws it in a panel beside the spectrum, on
-the same y scale, with the generator's switch-on marked; it is not on the video's
-timebase and plays no part in the hover. The generator is the one read when the
-run started (asking kalishlot again queries the Rigol, ~2 s), and the switch-on
-command is sent from a thread, its sent/done times recorded in `scope_tail`.
-**Scope-only captures** (`*_scope.json`, no `*_session.json`) open in the same
-"show a capture..." button, as a plain trace with no video.
+viewer does not plot the tail yet.
 
 ## Step 4 — test without hardware first
 

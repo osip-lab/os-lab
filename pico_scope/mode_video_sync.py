@@ -886,64 +886,6 @@ def load_session_trace(session_path):
                       else '')
 
 
-def _scope_trace_from(folder, scope_meta, default_label=''):
-    """A ScopeTrace from a record's `scope` block and the .npz it names."""
-    data = np.load(Path(folder) / scope_meta['file'])
-    aux = data['aux'] if 'aux' in data.files else None
-    label = (scope_meta.get('aux') or {}).get('label', default_label)
-    return ScopeTrace(data['t'], data['signal'], 's', 'V', None, aux=aux,
-                      aux_unit='V', aux_label=label if aux is not None else '')
-
-
-def load_session_tail(session_path):
-    """The trailing scope capture of a Phase 2 capture, or None when it has
-    none (the case for every capture made without TRAILING_SCOPE_S).
-
-    Returns (ScopeTrace, meta): the trace starts at t = 0 at its own first
-    sample, and `meta` is the session's `scope_tail` block (`start_offset_s`
-    says where that is on the main trace's clock, `function_generator` what the
-    capture did to the generator). It never takes part in the alignment."""
-    session_path = Path(session_path)
-    if session_path.is_dir():
-        found = sorted(session_path.glob('*_session.json'))
-        if len(found) != 1:
-            return None
-        session_path = found[0]
-    session = json.loads(session_path.read_text(encoding='utf-8'))
-    meta = session.get('scope_tail')
-    if not meta or not (session_path.parent / meta['file']).exists():
-        return None
-    label = (session.get('scope') or {}).get('aux', {}).get('label', AUX_LABEL)
-    trace = _scope_trace_from(session_path.parent,
-                              {**meta, 'aux': {'label': label}})
-    return trace, meta
-
-
-def find_scope_record(path):
-    """The `*_scope.json` of a scope-only capture (the pipeline's "record scope
-    only"), given the folder or the file; None when `path` is not one - a video
-    capture has a `*_session.json` instead. Returns the path of the JSON."""
-    path = Path(path)
-    if path.is_file():
-        return path if path.name.endswith('_scope.json') else None
-    if not path.is_dir() or list(path.glob('*_session.json')):
-        return None
-    found = sorted(path.glob('*_scope.json'))
-    return found[0] if len(found) == 1 else None
-
-
-def load_scope_record(path):
-    """(record dict, ScopeTrace) of a scope-only capture - see
-    find_scope_record()."""
-    record_path = find_scope_record(path)
-    if record_path is None:
-        raise FileNotFoundError(f'{path} is not a scope-only capture: expected '
-                                f'exactly one *_scope.json and no *_session.json')
-    record = json.loads(record_path.read_text(encoding='utf-8'))
-    trace = _scope_trace_from(record_path.parent, record['scope'], AUX_LABEL)
-    return record, trace
-
-
 def refine_session(session_path, window_s=0.25, verbose=True):
     """Improve a Phase 2 capture's host-clock offset with the optical fit.
 
