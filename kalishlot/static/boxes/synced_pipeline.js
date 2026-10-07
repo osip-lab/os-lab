@@ -138,7 +138,73 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     return value === null || value === undefined ? '' : value;
   }
 
+  // A choice drawn as one row of joined buttons (the camera box's ROI control),
+  // for values people should not have to spell. `formats` lists, per camera
+  // type, which choices exist; a button the chosen camera lacks is hidden.
+  let segmentedCount = 0;
+  function buildSegmented(param, parent) {
+    const row = document.createElement('div');
+    row.className = 'sp-row';
+    const name = document.createElement('span');
+    name.textContent = param.label;
+    const group = document.createElement('span');
+    group.className = 'segmented';
+    group.setAttribute('role', 'radiogroup');
+    const radioName = `sp-seg-${++segmentedCount}`;
+    const labels = {};
+    for (const choice of param.choices) {
+      const label = document.createElement('label');
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = radioName;
+      radio.value = String(choice);
+      const text = document.createElement('span');
+      text.textContent = param.labels?.[choice] ?? String(choice);
+      label.append(radio, text);
+      group.appendChild(label);
+      labels[choice] = { label, radio };
+      radio.onchange = () => {
+        send('set_param', { key: param.key, value: choice })
+          .catch((error) => { fail(error); show(); });
+      };
+    }
+    const reset = document.createElement('button');
+    reset.className = 'sp-reset';
+    reset.textContent = '↺';
+    reset.title = 'back to the config file's value';
+    reset.onclick = (event) => {
+      event.preventDefault();
+      send('reset_param', { key: param.key }).catch(fail);
+    };
+    row.append(name, group, reset);
+    parent.appendChild(row);
+
+    const widget = {
+      row, param,
+      write(value, edited) {
+        const shown = display(param, value);
+        for (const [choice, { radio }] of Object.entries(labels)) {
+          radio.checked = choice === String(shown);
+        }
+        // the chosen camera's own formats (and always "deepest"); none known
+        // for the camera = show them all
+        const camera = state.dependencies.cameras.find((c) => c.device_id === state.camera_id)
+          ?? state.dependencies.cameras[0];
+        const offered = state.pixel_formats?.[camera?.type];
+        for (const [choice, { label }] of Object.entries(labels)) {
+          label.hidden = Boolean(offered) && choice !== '' &&
+            !offered.includes(choice) && choice !== String(shown);
+        }
+        row.classList.toggle('is-edited', edited);
+        reset.hidden = !edited;
+      },
+    };
+    widgets[param.key] = widget;
+    return widget;
+  }
+
   function buildParam(param, parent) {
+    if (param.segmented) return buildSegmented(param, parent);
     const row = document.createElement('label');
     row.className = 'sp-row';
     const name = document.createElement('span');

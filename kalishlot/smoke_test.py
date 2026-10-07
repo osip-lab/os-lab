@@ -628,6 +628,23 @@ def check_synced_pipeline():
         assert params['adopt']['exposure'] is False and params['adopt']['gain']
         assert 'sync' not in params['sections'], 'only what was edited is sent'
 
+        # the pixel format is picked from buttons: "deepest" is no value at all
+        adapter.command('set_param', {'key': 'capture.PIXEL_FORMAT',
+                                      'value': 'Mono8'})
+        assert adapter.run_params()['sections']['capture']['PIXEL_FORMAT'] == 'Mono8'
+        adapter.command('set_param', {'key': 'capture.PIXEL_FORMAT', 'value': ''})
+        assert adapter.edited['capture.PIXEL_FORMAT'] is None
+        assert adapter.run_params()['sections']['capture']['PIXEL_FORMAT'] is None
+        try:
+            adapter.command('set_param', {'key': 'capture.PIXEL_FORMAT',
+                                          'value': 'Mono9'})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('an unknown pixel format was accepted')
+        assert adapter.describe()['pixel_formats']['ximea_camera'] == ['Mono8', 'Mono10']
+        adapter.command('reset_param', {'key': 'capture.PIXEL_FORMAT'})
+
         # one instrument alone: the other is neither needed nor named
         video = adapter.run_params(only='video')['sections']['capture']
         assert video['DRIVE_SCOPE'] is False and video['SERIAL_NUMBER'] == 'SN1'

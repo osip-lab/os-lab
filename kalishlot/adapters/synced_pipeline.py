@@ -36,6 +36,10 @@ from pico_scope import run_config  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
 
 CAMERA_TYPES = {'ximea_camera': 'ximea', 'basler_camera': 'basler'}
+# The formats each camera type offers (their drivers' `formats`, which need the
+# camera to answer; the names a capture's PIXEL_FORMAT takes)
+PIXEL_FORMATS = {'ximea_camera': ['Mono8', 'Mono10'],
+                 'basler_camera': ['Mono8', 'Mono12p', 'Mono12']}
 SCOPE_TYPE = 'picoscope'
 FOLDER_PARAM = 'capture.OUTPUT_ROOT'
 SCOPE_CHANNELS = ('A', 'B', 'C', 'D')
@@ -63,8 +67,11 @@ _p('capture.FRAMES_FORMAT', 'choice', 'frames compression',
 _p('capture.H264_CRF', 'int', 'h264 quality (CRF: 0 = lossless, 51 = harshest)',
    min=0, max=51)
 _p('capture.BINNING', 'choice', 'binning', choices=[1, 2, 4])
-_p('capture.PIXEL_FORMAT', 'text', 'pixel format (blank = deepest)',
-   optional=True)
+# '' (the first button, "deepest") is None in the run: the camera's deepest.
+# A row of buttons, only the ones the chosen camera offers (PIXEL_FORMATS).
+_p('capture.PIXEL_FORMAT', 'choice', 'pixel format',
+   choices=['', 'Mono8', 'Mono10', 'Mono12', 'Mono12p'], optional=True,
+   segmented=True, labels={'': 'deepest'})
 _p('capture.LOCATE_FIRST', 'bool', 'locate the mode first (auto ROI)',
    auto_of='roi')
 _p('capture.STRICT_LEVELS', 'bool', 'refuse a clipped capture')
@@ -188,9 +195,11 @@ def coerce(param, value):
             return None
         return text
     if kind == 'choice':
+        if value is None and param.get('optional'):
+            value = ''
         for choice in param['choices']:
             if str(choice) == str(value):
-                return choice
+                return None if choice == '' and param.get('optional') else choice
         raise ValueError(f'{label}: {value!r} is not one of {param["choices"]}')
     if kind == 'intlist':
         items = value if isinstance(value, (list, tuple)) else \
@@ -386,6 +395,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
                          'preset_save', 'preset_load', 'preset_delete',
                          'start', 'stop', 'show_session'],
             'params': PARAMS,
+            'pixel_formats': PIXEL_FORMATS,
             'adopt_rows': [{'key': k, 'label': label}
                            for k, label in ADOPT_ROWS],
             'edited': dict(self.edited),
