@@ -61,6 +61,8 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     </div>
     <div class="toolbar sp-run">
       <button class="sp-start">run pipeline ▶</button>
+      <button class="sp-start-video" title="record the video with the settings above; no scope, no sync">record video only ●</button>
+      <button class="sp-start-scope" title="record the PicoScope with the settings above; no video, no sync">record scope only ●</button>
       <button class="sp-stop" hidden>stop ■</button>
       <span class="sp-run-state status-line"></span>
     </div>
@@ -68,7 +70,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     <div class="sp-message status-line"></div>
     <div class="sp-start-backdrop" hidden>
       <div class="sp-start-dialog">
-        <h2>before this capture</h2>
+        <h2 class="sp-start-title">before this capture</h2>
         <label class="sp-row"><span>long arm length</span>
           <input type="number" class="sp-start-long-arm" step="any" min="0"
                  placeholder="blank = not set">
@@ -284,7 +286,9 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       button.disabled = false;
       refreshSoon();
     };
-    $('.sp-start').onclick = () => openStartDialog();
+    $('.sp-start').onclick = () => openStartDialog(null);
+    $('.sp-start-video').onclick = () => openStartDialog('video');
+    $('.sp-start-scope').onclick = () => openStartDialog('scope');
     $('.sp-stop').onclick = () => send('stop', {}).catch(fail);
     buildStartDialog();
   }
@@ -295,6 +299,10 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   // by accident. The long arm, once set and blurred, also fills the folder
   // label - we usually want both the same - but editing the label afterwards
   // never feeds back into the long arm.
+  let startKind = null;     // null = the whole pipeline, else 'video' / 'scope'
+  const START_TITLE = { video: 'before this video recording',
+                        scope: 'before this scope recording' };
+
   function buildStartDialog() {
     const backdrop = $('.sp-start-backdrop');
     const longArm = $('.sp-start-long-arm');
@@ -316,7 +324,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     });
     const run = (longArmCm, label) => {
       error.textContent = '';
-      send('start', { long_arm_cm: longArmCm, folder_label: label })
+      send('start', { long_arm_cm: longArmCm, folder_label: label, only: startKind })
         .then(closeStartDialog)
         .catch((err) => { error.textContent = err.message; });
     };
@@ -326,7 +334,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     };
   }
 
-  function openStartDialog() {
+  function openStartDialog(kind) {
+    startKind = kind;
+    $('.sp-start-title').textContent = START_TITLE[kind] ?? 'before this capture';
+    $('.sp-start-confirm').textContent = {
+      video: 'record video ●', scope: 'record scope ●' }[kind] ?? 'start capture ▶';
     $('.sp-start-long-arm').value = '';
     $('.sp-start-folder-label').value = '';
     $('.sp-start-error').textContent = '';
@@ -383,9 +395,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     if (!camera.length) missing.push('a XIMEA or Basler camera');
     if (!state.dependencies.scopes.length) missing.push('a PicoScope');
     gate.textContent = missing.length
-      ? `open ${missing.join(' and ')} on the dashboard to use this box` : '';
-    body.disabled = !state.ready;
-    body.classList.toggle('is-disabled', !state.ready);
+      ? `open ${missing.join(' and ')} on the dashboard to ${
+        missing.length < 2 ? 'run the full pipeline' : 'use this box'}` : '';
+    const usable = state.ready || state.ready_video || state.ready_scope;
+    body.disabled = !usable;
+    body.classList.toggle('is-disabled', !usable);
 
     const select = $('.sp-camera-select');
     $('.sp-camera').hidden = camera.length < 2;
@@ -460,9 +474,12 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   function showRun() {
     const run = state.run;
     $('.sp-start').disabled = run.running || !state.ready;
+    $('.sp-start-video').disabled = run.running || !state.ready_video;
+    $('.sp-start-scope').disabled = run.running || !state.ready_scope;
     $('.sp-stop').hidden = !run.running;
     let text = '';
-    if (run.running) text = `running${run.step ? ` — ${run.step.replace('mode_video_', '')}` : ''}`;
+    const kind = run.only ? `${run.only} only, ` : '';
+    if (run.running) text = `${kind}running${run.step ? ` — ${run.step.replace('mode_video_', '')}` : ''}`;
     else if (run.stopped) text = 'stopped';
     else if (run.error) text = `failed: ${run.error}`;
     else if (run.ended) text = 'finished';

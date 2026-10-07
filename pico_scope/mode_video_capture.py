@@ -1061,8 +1061,11 @@ def adopt_kalishlot_settings(kalishlot, serial, make):
     adopt = run_config.adopt_flags()
     print('--- settings from kalishlot ---')
 
-    camera = kalishlot.get(f'{KALISHLOT_CAMERA_TYPES[make]}:{serial}')
-    if camera is None:
+    camera = kalishlot.get(f'{KALISHLOT_CAMERA_TYPES[make]}:{serial}') \
+        if make else None
+    if make is None:
+        pass                        # a scope-only run: no camera to adopt from
+    elif camera is None:
         print(f'  ! kalishlot holds no {make} {serial}; the camera settings '
               f"are the config's")
     else:
@@ -1494,9 +1497,11 @@ def capture(serial_number=None, output_root=None,
         print(f'\n  mask covers {int(mask.sum())} of {mask.size} pixels '
               f'({mask.mean():.2%})')
         print(f'  saved {session_path}')
-        print(f'\nNow stop and save the PicoScope recording as .psdata, then:')
-        print(f'  python pico_scope/mode_video_sync.py --session '
-              f'"{folder}" --scope "<that file>.psdata"')
+        if prompt:
+            print(f'\nNow stop and save the PicoScope recording as .psdata, '
+                  f'then:')
+            print(f'  python pico_scope/mode_video_sync.py --session '
+                  f'"{folder}" --scope "<that file>.psdata"')
         print(f'SESSION_PATH={session_path}')
         return session_path
     finally:
@@ -1531,6 +1536,40 @@ def auto_range_scope(scope, channel, coupling, probe_s=SCOPE_AUTORANGE_PROBE_S,
 
 
 # %% [Step 3b] Driving both instruments (Phase 2) -----------------------------
+def configure_scope_channels(scope):
+    """Set up the transmission channel (auto-ranged when SCOPE_RANGE_V is
+    None), the aux channel if any, switch the others off and the trigger off.
+    Returns (range_v as the hardware snapped it, aux channel or '', the aux
+    channel's configuration or None)."""
+    if SCOPE_RANGE_V is None:
+        print(f'  auto-ranging channel {SCOPE_CHANNEL} ...')
+        range_v = auto_range_scope(scope, SCOPE_CHANNEL, SCOPE_COUPLING)
+    else:
+        range_v = SCOPE_RANGE_V
+    channel_config = scope.configure_channel(
+        SCOPE_CHANNEL, enabled=True, coupling=SCOPE_COUPLING,
+        range_v=range_v)
+    range_v = channel_config['range_v']  # snapped to what the hardware offers
+    aux_channel = SCOPE_AUX_CHANNEL
+    if aux_channel == SCOPE_CHANNEL:
+        raise ValueError(
+            f'SCOPE_AUX_CHANNEL is {aux_channel!r}, the same channel as '
+            f'SCOPE_CHANNEL - the transmission and the temperature ramp '
+            f'are two different signals and need two channels')
+    aux_config = None
+    if aux_channel:
+        aux_config = scope.configure_channel(
+            aux_channel, enabled=True, coupling=SCOPE_AUX_COUPLING,
+            range_v=SCOPE_AUX_RANGE_V)
+        print(f'  channel {aux_channel}, +-{aux_config["range_v"]:g} V '
+              f'{SCOPE_AUX_COUPLING}, {SCOPE_AUX_LABEL}')
+    for name in ('A', 'B', 'C', 'D'):
+        if name not in (SCOPE_CHANNEL, aux_channel):
+            scope.configure_channel(name, enabled=False)
+    scope.configure_trigger(enabled=False)   # start immediately
+    return range_v, aux_channel, aux_config
+
+
 def capture_synchronized(serial_number=None, output_root=None,
                          locate=True, n_frames=None, scope_serial=None,
                          adjust_gain=True, require_level=True, make=None):
@@ -1599,32 +1638,7 @@ def capture_synchronized(serial_number=None, output_root=None,
 
         scope_opening.wait()           # raises here if the open failed
         print(f'\n--- scope {scope.variant} s/n {scope.serial} ---')
-        if SCOPE_RANGE_V is None:
-            print(f'  auto-ranging channel {SCOPE_CHANNEL} ...')
-            range_v = auto_range_scope(scope, SCOPE_CHANNEL, SCOPE_COUPLING)
-        else:
-            range_v = SCOPE_RANGE_V
-        channel_config = scope.configure_channel(
-            SCOPE_CHANNEL, enabled=True, coupling=SCOPE_COUPLING,
-            range_v=range_v)
-        range_v = channel_config['range_v']  # snapped to what the hardware offers
-        aux_channel = SCOPE_AUX_CHANNEL
-        if aux_channel == SCOPE_CHANNEL:
-            raise ValueError(
-                f'SCOPE_AUX_CHANNEL is {aux_channel!r}, the same channel as '
-                f'SCOPE_CHANNEL - the transmission and the temperature ramp '
-                f'are two different signals and need two channels')
-        aux_config = None
-        if aux_channel:
-            aux_config = scope.configure_channel(
-                aux_channel, enabled=True, coupling=SCOPE_AUX_COUPLING,
-                range_v=SCOPE_AUX_RANGE_V)
-            print(f'  channel {aux_channel}, +-{aux_config["range_v"]:g} V '
-                  f'{SCOPE_AUX_COUPLING}, {SCOPE_AUX_LABEL}')
-        for name in ('A', 'B', 'C', 'D'):
-            if name not in (SCOPE_CHANNEL, aux_channel):
-                scope.configure_channel(name, enabled=False)
-        scope.configure_trigger(enabled=False)   # start immediately
+        range_v, aux_channel, aux_config = configure_scope_channels(scope)
         duration = burst_s + 2 * SCOPE_PAD_S
         print(f'  channel {SCOPE_CHANNEL}, +-{range_v * 1e3:g} mV '
               f'{SCOPE_COUPLING}, {SCOPE_SAMPLE_INTERVAL_S * 1e6:g} us/sample')
@@ -1743,6 +1757,76 @@ def capture_synchronized(serial_number=None, output_root=None,
     print(f'  python pico_scope/mode_video_sync.py --session "{folder}" --refine')
     print(f'SESSION_PATH={session_path}')
     return session_path
+
+
+def capture_scope_only(output_root=None, scope_serial=None):
+    """Record the scope alone, for CAPTURE_DURATION_S, with no camera and so
+    nothing to sync: no padding either, which only exists to give the sync fit
+    room. Saved as <stamp>_scope.npz (t, signal and, if recorded, aux) with a
+    <stamp>_scope.json describing it - not *_session.json, which is what marks
+    a folder as a video capture to the viewer and to mode_video_sync."""
+    from pico_scope.ps4000a_scope import PicoScope4000A
+
+    scope = PicoScope4000A(scope_serial)
+    scope.open()
+    try:
+        print(f'\n--- scope {scope.variant} s/n {scope.serial} ---')
+        range_v, aux_channel, aux_config = configure_scope_channels(scope)
+        print(f'  channel {SCOPE_CHANNEL}, +-{range_v * 1e3:g} mV '
+              f'{SCOPE_COUPLING}, {SCOPE_SAMPLE_INTERVAL_S * 1e6:g} us/sample')
+        duration = CAPTURE_DURATION_S
+        print(f'  recording {duration:.3f} s ...')
+        scope.start_block(duration, SCOPE_SAMPLE_INTERVAL_S)
+        scope.wait_block(timeout_s=duration * 3 + 10)
+        t_scope, volts, block_info = scope.read_block()
+        scope_info = {'serial': scope.serial, 'variant': scope.variant}
+    finally:
+        scope.close()
+    print(f'  {block_info["n_collected"]} samples at '
+          f'{block_info["interval_s"] * 1e9:.0f} ns, overflow '
+          f'{block_info["overflow_channels"] or "none"}')
+
+    root = output_root if output_root is not None else (
+        prompt_for_output_root() if PROMPT_FOR_OUTPUT_ROOT else default_output_root())
+    stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+    folder = Path(root) / folder_name(stamp)
+    folder.mkdir(parents=True, exist_ok=True)
+    arrays = {'t': t_scope, 'signal': volts[SCOPE_CHANNEL]}
+    if aux_config is not None and aux_channel in volts:
+        arrays['aux'] = volts[aux_channel]
+    np.savez_compressed(folder / f'{stamp}_scope.npz', **arrays)
+    record = {
+        'created': datetime.now().isoformat(timespec='seconds'),
+        'long_arm_m': LONG_ARM_CM / 100 if LONG_ARM_CM is not None else None,
+        'scope': {
+            'file': f'{stamp}_scope.npz',
+            'channel': SCOPE_CHANNEL,
+            'range_v': range_v,
+            'coupling': SCOPE_COUPLING,
+            'sample_interval_s': block_info['interval_s'],
+            'n_samples': block_info['n_collected'],
+            'duration_s': duration,
+            'overflow_channels': block_info['overflow_channels'],
+            **scope_info,
+        },
+    }
+    if 'aux' in arrays:
+        record['scope']['aux'] = {
+            'channel': aux_channel, 'label': SCOPE_AUX_LABEL,
+            'range_v': aux_config['range_v'], 'coupling': SCOPE_AUX_COUPLING}
+    if KALISHLOT_FUNCTION_GENERATOR is not None:
+        record['function_generator'] = KALISHLOT_FUNCTION_GENERATOR
+    record_path = folder / f'{stamp}_scope.json'
+    record_path.write_text(json.dumps(record, indent=1, default=_json_default),
+                           encoding='utf-8')
+    extra = ({'function_generator': KALISHLOT_FUNCTION_GENERATOR}
+             if KALISHLOT_FUNCTION_GENERATOR is not None else None)
+    run_config.dump_into(folder,
+                         resolved=run_config.resolved_values('capture', globals()),
+                         extra=extra)
+    print(f'  saved {record_path}')
+    print(f'SESSION_PATH={record_path}')
+    return record_path
 
 
 # %% [Step 4] Self-test -------------------------------------------------------
@@ -2352,6 +2436,12 @@ def main():
                         help='drive the scope from here too, instead of '
                              'recording it by hand in PicoScope 7 (which must '
                              'then be closed - only one program can own it)')
+    parser.add_argument('--no-scope', action='store_true',
+                        help='do not drive the scope even if DRIVE_SCOPE says '
+                             'to: record the video alone')
+    parser.add_argument('--scope-only', action='store_true',
+                        help='record only the scope, for the capture '
+                             'duration, with no camera and no sync')
     parser.add_argument('--from-kalishlot', action='store_true',
                         help='take the ROI, exposure, gain, frame rate and the '
                              'scope settings from the kalishlot boxes, as its '
@@ -2380,11 +2470,18 @@ def main():
     if action == 'self-test':
         _self_test()
         return
+    if args.scope_only:
+        with borrow_from_kalishlot(
+                kalishlot_wants(drive_scope=True, camera=False),
+                borrower='mode_video_capture.py') as lent:
+            run_scope_only(lent)
+        return
     if action not in ('capture', 'levels', 'locate'):
         raise SystemExit(f'ACTION must be capture, levels, locate or '
                          f'self-test, not {ACTION!r}')
 
-    drive_scope = action == 'capture' and (DRIVE_SCOPE or args.scope)
+    drive_scope = (action == 'capture' and not args.no_scope
+                   and (DRIVE_SCOPE or args.scope))
     with borrow_from_kalishlot(
             kalishlot_wants(args.camera, args.serial, drive_scope),
             borrower='mode_video_capture.py') as lent:
@@ -2401,7 +2498,7 @@ def lent_camera(lent):
     return cameras[0] if len(cameras) == 1 else None
 
 
-def kalishlot_wants(make=None, serial=None, drive_scope=False):
+def kalishlot_wants(make=None, serial=None, drive_scope=False, camera=True):
     """Which of the devices a running kalishlot holds this run needs.
 
     The camera it will open - the one named, or any of a make it can drive
@@ -2419,9 +2516,17 @@ def kalishlot_wants(make=None, serial=None, drive_scope=False):
         if type_name == 'picoscope':
             return drive_scope
         address = device['device_id'].split(':', 1)[1]
-        return type_name in camera_types and (
+        return camera and type_name in camera_types and (
             not serial or address == str(serial))
     return wants
+
+
+def run_scope_only(lent=None):
+    global KALISHLOT_FUNCTION_GENERATOR
+    if from_kalishlot():
+        adopt_kalishlot_settings(lent, None, None)
+        KALISHLOT_FUNCTION_GENERATOR = read_kalishlot_function_generator()
+    capture_scope_only()
 
 
 def run_action(action, args, locate, strict_levels, drive_scope, lent=None):

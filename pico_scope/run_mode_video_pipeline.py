@@ -3,6 +3,7 @@
     python pico_scope/run_mode_video_pipeline.py
     python pico_scope/run_mode_video_pipeline.py --config my_experiment.py
     python pico_scope/run_mode_video_pipeline.py --from-kalishlot
+    python pico_scope/run_mode_video_pipeline.py --from-kalishlot --only video
 
 Runs, in order:
 
@@ -28,6 +29,10 @@ takes the ROI, exposure, gain, frame rate and scope settings from the kalishlot
 boxes, and only what kalishlot cannot set from the config. It reaches the
 capture the same way the config does, through the environment
 (mode_video_capture.FROM_KALISHLOT_ENV).
+
+--only video / --only scope run the capture step alone, recording just the
+camera (immediately, without waiting for Enter) or just the PicoScope, so that
+there is nothing to sync and no viewer to open.
 """
 
 import argparse
@@ -59,7 +64,7 @@ def step_environment(config_path, from_kalishlot=False):
     return environment
 
 
-def run_capture_step(step, environment):
+def run_capture_step(step, environment, extra_args=()):
     """Run mode_video_capture.py, relaying its output live and returning the
     session path it printed via the SESSION_PATH= marker (see its capture()/
     capture_synchronized()), or None if it never printed one.
@@ -70,7 +75,7 @@ def run_capture_step(step, environment):
     process exited.
     """
     process = subprocess.Popen(
-        [sys.executable, '-u', str(HERE / step)],
+        [sys.executable, '-u', str(HERE / step), *extra_args],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         env=environment)
     session_path = None
@@ -91,6 +96,10 @@ def main():
                         help='take every setting the kalishlot boxes have '
                              '(ROI, exposure, gain, frame rate, scope range '
                              'and rate) from them, the rest from the config')
+    parser.add_argument('--only', choices=['video', 'scope'], default=None,
+                        help='run the capture step alone, recording only the '
+                             'camera or only the PicoScope, with no sync and '
+                             'no viewer')
     args = parser.parse_args()
 
     # Resolved here, and created from the template here if it does not exist
@@ -104,11 +113,14 @@ def main():
     print(f'config: {config_path}')
     environment = step_environment(config_path, args.from_kalishlot)
 
+    capture_args = {'video': ['--no-prompt', '--no-scope'], 'scope': ['--scope-only']}
+    steps = STEPS[:1] if args.only else STEPS
     session_path = None
-    for step in STEPS:
+    for step in steps:
         print(f'\n=== {step} ===')
         if step == 'mode_video_capture.py':
-            returncode, session_path = run_capture_step(step, environment)
+            returncode, session_path = run_capture_step(
+                step, environment, capture_args.get(args.only, ()))
         else:
             if session_path is None:
                 sys.exit(f'{step}: no session path was captured from '
