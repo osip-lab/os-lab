@@ -55,6 +55,7 @@ spectrum scripts read either - see pico_scope/scope_trace.py.
 """
 
 import argparse
+import contextlib
 import importlib
 import json
 import os
@@ -786,6 +787,38 @@ class _start_in_background:
             raise self._error
 
 
+LONG_CAPTURE_S = 5.0    # recordings longer than this count their seconds
+
+
+@contextlib.contextmanager
+def progress_ticker(duration_s):
+    """Print "1/20", "2/20", ... once a second while a long recording runs, so
+    whoever waits knows how much is left (kalishlot shows the console in the
+    pipeline box). Nothing for a recording of LONG_CAPTURE_S or less. Counts
+    from entering the block, i.e. from when the recording has just started."""
+    if not duration_s or duration_s <= LONG_CAPTURE_S:
+        yield
+        return
+    import threading
+    total = int(-(-duration_s // 1))        # ceil
+    done = threading.Event()
+    start = time.time()
+
+    def tick():
+        for second in range(1, total + 1):
+            if done.wait(max(start + second - time.time(), 0)):
+                return
+            print(f'{second}/{total}', flush=True)
+
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join(1.0)
+
+
 def camera_class(make):
     """Import one make's device layer and return its camera class.
 
@@ -1488,7 +1521,8 @@ def capture(serial_number=None, output_root=None,
 
         print(f'recording {N_FRAMES} frames ...')
         tic = time.time()
-        frames, meta = cam.record_burst(N_FRAMES)
+        with progress_ticker(CAPTURE_DURATION_S):
+            frames, meta = cam.record_burst(N_FRAMES)
         wall = time.time() - tic
         timing = burst_timing(meta, expected_rate_hz=FRAME_RATE_HZ)
         print(f'  {frames.shape} {frames.dtype} in {wall:.2f} s')
@@ -1630,7 +1664,8 @@ def record_scope_tail(scope, duration_s):
                     fg['error'] = str(error)
                 fg['on_done_after_start_s'] = time.time() - block['host_start_s']
             sender = _start_in_background(switch_on)
-        scope.wait_block(timeout_s=duration_s * 3 + 10)
+        with progress_ticker(duration_s):
+            scope.wait_block(timeout_s=duration_s * 3 + 10)
         t, volts, info = scope.read_block()
     finally:
         if sender is not None:
@@ -1738,9 +1773,10 @@ def capture_synchronized(serial_number=None, output_root=None,
         host_scope_start = block['host_start_s']
         print(f'  recording; starting the burst ...')
         host_before_burst = time.time()
-        frames, meta = cam.record_burst(n_frames)
-        host_after_burst = time.time()
-        scope.wait_block(timeout_s=duration * 3 + 10)
+        with progress_ticker(duration):     # the whole scope block, pads included
+            frames, meta = cam.record_burst(n_frames)
+            host_after_burst = time.time()
+            scope.wait_block(timeout_s=duration * 3 + 10)
         t_scope, volts, block_info = scope.read_block()
         tail = None
         if TRAILING_SCOPE_S:
@@ -1888,7 +1924,8 @@ def capture_scope_only(output_root=None, scope_serial=None):
         duration = CAPTURE_DURATION_S
         print(f'  recording {duration:.3f} s ...')
         scope.start_block(duration, SCOPE_SAMPLE_INTERVAL_S)
-        scope.wait_block(timeout_s=duration * 3 + 10)
+        with progress_ticker(duration):
+            scope.wait_block(timeout_s=duration * 3 + 10)
         t_scope, volts, block_info = scope.read_block()
         scope_info = {'serial': scope.serial, 'variant': scope.variant}
     finally:
