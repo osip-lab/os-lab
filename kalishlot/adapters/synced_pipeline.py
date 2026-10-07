@@ -33,6 +33,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 from pico_scope import run_config  # noqa: E402
 
+from . import file_dialogs  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
 
 CAMERA_TYPES = {'ximea_camera': 'ximea', 'basler_camera': 'basler'}
@@ -170,6 +171,9 @@ PRESET_EXCLUDED = {FOLDER_PARAM}      # a preset is a recipe, not a place
 
 PIPELINE_SCRIPT = _REPO_ROOT / 'pico_scope' / 'run_mode_video_pipeline.py'
 SHOW_SCRIPT = _REPO_ROOT / 'pico_scope' / 'mode_video_sync_show.py'
+PLOT_SCOPE_SCRIPT = _REPO_ROOT / 'kalishlot' / 'plot_scope.py'
+PLOT_VIDEO_SCRIPT = _REPO_ROOT / 'kalishlot' / 'plot_video.py'
+VIDEO_SUFFIXES = ('.npy', '.avi', '.mkv', '.mp4')   # what plot_video reads
 SHOW_TAIL = 6                         # lines of a failed viewer's output kept
 SESSION_MARKER = 'SESSION_PATH='      # the capture prints where it saved
 LOG_KEEP = 600                        # lines kept for a box that attaches late
@@ -277,6 +281,42 @@ def check_folder(path):
     return True, f'{folder}{note}'
 
 
+def classify_capture(path):
+    """(kind, path to open) for something the user picked to show:
+
+      * a folder with one `*_session.json`, or that json itself   -> 'synced'
+        (the folder: the synced video + scope viewer)
+      * a `*.npz` - one scope recording, a synced capture's block, its
+        trailing capture or a stand-alone one                      -> 'scope'
+      * a `.npy` / `.avi` / `.mkv` / `.mp4` frames file            -> 'video'
+      * a folder with no session but one `*_scope.npz` (the "record scope only"
+        output)                                                    -> 'scope'
+
+    ValueError, saying what was expected, for anything else."""
+    path = Path(str(path)).expanduser()
+    if path.is_dir():
+        sessions = sorted(path.glob('*_session.json'))
+        if len(sessions) == 1:
+            return 'synced', path
+        scopes = sorted(path.glob('*_scope.npz')) if not sessions else []
+        if len(scopes) == 1:
+            return 'scope', scopes[0]
+        raise ValueError(
+            f'{path} is not a capture folder: expected exactly one '
+            f'*_session.json (or one *_scope.npz) in it, found '
+            f'{len(sessions) or len(scopes)}')
+    if path.is_file():
+        if path.name.endswith('_session.json'):
+            return 'synced', path.parent
+        if path.suffix.lower() == '.npz':
+            return 'scope', path
+        if path.suffix.lower() in VIDEO_SUFFIXES:
+            return 'video', path
+    raise ValueError(f'{path} is not a capture folder or file kalishlot can '
+                     f'show (a folder of a synced capture, a scope .npz, or a '
+                     f'{" / ".join(VIDEO_SUFFIXES)} file)')
+
+
 _dialog_lock = threading.Lock()
 
 
@@ -316,6 +356,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
     # purpose - describe() is called with the server's device lock held.
     registry = None
     pick_folder_fn = staticmethod(ask_directory)
+    pick_capture_fn = staticmethod(file_dialogs.ask_capture)
     # Set by server.py: () -> the environment a run starts with, and
     # (borrower) -> hands back whatever that borrower still had on loan.
     child_environment = staticmethod(lambda: dict(os.environ))
@@ -326,6 +367,10 @@ class SyncedPipelineAdapter(DeviceAdapter):
     show_command = staticmethod(
         lambda folder: [sys.executable, '-u', str(SHOW_SCRIPT),
                         '--session', folder])
+    scope_plot_command = staticmethod(
+        lambda path: [sys.executable, '-u', str(PLOT_SCOPE_SCRIPT), path])
+    video_plot_command = staticmethod(
+        lambda path: [sys.executable, '-u', str(PLOT_VIDEO_SCRIPT), path])
 
     @staticmethod
     def list_available():
@@ -520,19 +565,19 @@ class SyncedPipelineAdapter(DeviceAdapter):
     # ---- showing a past capture
     def _show_session(self, path=None):
         """Open a capture in the interactive viewer (mode_video_sync_show.py):
-        the folder window first, unless a path is given. The viewer is its own
+        the window asking for a folder or a file first, unless a path is given.
+        What opens depends on what it is (classify_capture): the synced viewer
+        for a folder of a synced capture, kalishlot/plot_scope.py for a scope
+        recording, kalishlot/plot_video.py for a frames file. Each is its own
         process with its own window on this PC, and needs no camera or scope,
         so it runs whether or not a pipeline run is going."""
         if path is None:
-            path = self.pick_folder_fn(self.show['folder'] or self._folder())
+            path = self.pick_capture_fn(self.show['folder'] or self._folder())
             if path is None:
                 return {'ok': True, 'path': None}      # the window was cancelled
-        folder = Path(str(path)).expanduser()
-        sessions = sorted(folder.glob('*_session.json')) if folder.is_dir() else []
-        if len(sessions) != 1:
-            raise ValueError(
-                f'{folder} is not a capture folder: expected exactly one '
-                f'*_session.json in it, found {len(sessions)}')
+        kind, folder = classify_capture(path)
+        launch = {'synced': self.show_command, 'scope': self.scope_plot_command,
+                  'video': self.video_plot_command}[kind]
         handle, params_path = tempfile.mkstemp(prefix='kalishlot_show_',
                                                suffix='.json')
         shown = {key.split('.', 1)[1]: value for key, value in self.edited.items()
@@ -544,7 +589,7 @@ class SyncedPipelineAdapter(DeviceAdapter):
         environment['PYTHONIOENCODING'] = 'utf-8'
         try:
             process = subprocess.Popen(
-                self.show_command(str(folder)), cwd=_REPO_ROOT, env=environment,
+                launch(str(folder)), cwd=_REPO_ROOT, env=environment,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding='utf-8',
                 errors='replace', bufsize=1)

@@ -976,6 +976,11 @@ if os.environ.get('STUB_FAIL'):
 """
     sp.SyncedPipelineAdapter.show_command = staticmethod(
         lambda folder: [sys.executable, '-u', '-c', viewer, '--session', folder])
+    # stand-ins for plot_scope.py / plot_video.py: say which one ran, on what
+    sp.SyncedPipelineAdapter.scope_plot_command = staticmethod(
+        lambda path: [sys.executable, '-u', '-c', 'import sys; print("scope", sys.argv[1])', path])
+    sp.SyncedPipelineAdapter.video_plot_command = staticmethod(
+        lambda path: [sys.executable, '-u', '-c', 'import sys; print("video", sys.argv[1])', path])
 
     with tempfile.TemporaryDirectory() as tmp:
         capture = Path(tmp) / '2026-10-05_112839'
@@ -993,11 +998,11 @@ if os.environ.get('STUB_FAIL'):
                 raise AssertionError(f'{bad} should have been refused')
 
         # no path: the folder window decides; cancelling starts nothing
-        sp.SyncedPipelineAdapter.pick_folder_fn = staticmethod(lambda start: None)
+        sp.SyncedPipelineAdapter.pick_capture_fn = staticmethod(lambda start: None)
         assert adapter.command('show_session', {})['path'] is None
         assert adapter.show['folder'] is None
 
-        sp.SyncedPipelineAdapter.pick_folder_fn = staticmethod(
+        sp.SyncedPipelineAdapter.pick_capture_fn = staticmethod(
             lambda start: str(capture))
         adapter.command('set_param', {'key': 'show.SHADE_ALPHA', 'value': 0.4})
         events = adapter.add_listener()
@@ -1016,6 +1021,34 @@ if os.environ.get('STUB_FAIL'):
         wait(lambda: adapter.show['error'], 'the failure to be reported')
         assert 'no alignment' in adapter.show['error'], adapter.show
         os.environ.pop('STUB_FAIL')
+
+        # what is shown depends on what was picked
+        (capture / 'x_scope.npz').write_bytes(b'')
+        (capture / 'x_frames.mkv').write_bytes(b'')
+        (capture / 'x_notes.txt').write_text('')
+        only = Path(tmp) / 'scope_only'
+        only.mkdir()
+        (only / 'y_scope.npz').write_bytes(b'')
+        (only / 'y_scope.json').write_text('{}')
+        assert sp.classify_capture(capture) == ('synced', capture)
+        assert sp.classify_capture(capture / '2026-10-05_112839_session.json')             == ('synced', capture)
+        assert sp.classify_capture(capture / 'x_scope.npz') == ('scope', capture / 'x_scope.npz')
+        assert sp.classify_capture(only) == ('scope', only / 'y_scope.npz')
+        for name in ('x_frames.mkv',):
+            assert sp.classify_capture(capture / name)[0] == 'video'
+        for bad in (capture / 'x_notes.txt', Path(tmp) / 'missing'):
+            try:
+                sp.classify_capture(bad)
+            except ValueError as error:
+                assert 'not a capture folder' in str(error)
+            else:
+                raise AssertionError(f'{bad} should have been refused')
+        for picked, word in ((capture / 'x_scope.npz', 'scope'),
+                             (capture / 'x_frames.mkv', 'video')):
+            adapter.command('show_session', {'path': str(picked)})
+            wait(lambda: not adapter.show['running'], 'the plot to end')
+            assert adapter.show['folder'] == str(picked), adapter.show
+            assert adapter.show['error'] is None, adapter.show
     print('synced-pipeline show ok (folder checked, viewer launched with the '
           'plot parameters, failures reported)')
 

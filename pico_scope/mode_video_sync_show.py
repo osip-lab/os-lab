@@ -141,7 +141,7 @@ FIT_POLL_MS = 80        # how often the GUI thread looks for a finished fit
 class ModeSpectrumViewer:
     """Spectrum on top, mode image below, tied together by the fitted offset.
 
-    The layout follows utilities/media_tools/plot_video.py (image axes plus a
+    The layout follows kalishlot/plot_video.py (image axes plus a
     full-width trace axes with an axvline marking what is displayed), and the
     hover is the blit template from
     utilities/media_tools/postprocessing_camera_video.py - restoring a cached

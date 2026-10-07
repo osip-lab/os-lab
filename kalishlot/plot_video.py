@@ -1,17 +1,23 @@
 """Inspect a video (or a single image) frame by frame.
 
-The path is taken from the clipboard. Controls:
+Part of kalishlot: the pipeline box's "show a capture" opens a capture's frames
+file (.mkv / .avi / .npy) here. The path is the first argument, or - run on its
+own with none - is taken from the clipboard. Controls:
     left / right : previous / next frame
     space        : add the current frame to the set used for the Gaussian fit
     w            : fit a 2D Gaussian to the average of the selected frames
     3 clicks     : fit a circle through three points on the image
     sliders      : frame index and display vmax; the text box sets the rebin factor
 
-Run from the repository root: python -m utilities.media_tools.plot_video
+    python kalishlot/plot_video.py <frames file>
 """
+import argparse
 import json
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import cv2
 import matplotlib
@@ -109,6 +115,12 @@ def load_frames(path):
     capture = load_capture_frames(path)
     if capture is not None:
         return capture
+
+    if str(path).lower().endswith('.npy'):
+        # a legacy capture's frames with no session record beside it
+        array = np.load(path)
+        if array.ndim in (2, 3):
+            return (array if array.ndim == 3 else array[None]), 1.0
 
     frames = []
     fps = 0.0
@@ -502,7 +514,12 @@ class VideoInspector:
 
 
 def main():
-    path = wait_for_path_from_clipboard(filetype='media')
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('path', nargs='?', default=None,
+                        help='the video / image / frames file; omitted: wait '
+                             'for a path on the clipboard')
+    args = parser.parse_args()
+    path = args.path or wait_for_path_from_clipboard(filetype='media')
     frames, fps = load_frames(path)
     VideoInspector(frames, fps)
     plt.show()

@@ -334,7 +334,17 @@ switched on through kalishlot's command route (`loan_client.device_command`)
 just after the tail block starts, and back off afterwards if it was off; the
 adapter refuses to start when that is ticked and no generator box is open. A
 parameter with `needs=<key>` is greyed in the box while that one is blank. The
-viewer does not plot the tail yet.
+synced viewer does not draw the tail; it is plotted with `plot_scope.py` (below).
+
+**Show a capture…** asks for a folder or a file (`file_dialogs.ask_capture`) and
+`classify_capture` in the adapter picks the tool: a folder with one
+`*_session.json` -> the synced viewer (`pico_scope/mode_video_sync_show.py`); a
+`.npz` (a synced capture's `_scope.npz`, its `_scope_tail.npz`, or a stand-alone
+scope-only capture) -> `kalishlot/plot_scope.py`, one y axis per channel with the
+sampling conditions (rate, samples, each channel's range and coupling) in the
+title, read from the session / scope json beside it; a `.mkv` / `.avi` / `.mp4` /
+`.npy` frames file -> `kalishlot/plot_video.py` (moved here from
+`utilities/media_tools`). Each runs as its own process on the lab PC.
 
 ## Step 4 — test without hardware first
 

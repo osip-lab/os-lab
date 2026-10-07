@@ -619,7 +619,7 @@ cancels. Say so in the docstring.
 
 Reuse, don't reinvent:
 
-- Layout and cursor idiom from `utilities/media_tools/plot_video.py:146-205`
+- Layout and cursor idiom from `kalishlot/plot_video.py:146-205`
   (`VideoInspector`: image axes + full-width trace axes + an `axvline` marking the
   displayed frame).
 - Hover mechanics from `utilities/media_tools/postprocessing_camera_video.py:310`

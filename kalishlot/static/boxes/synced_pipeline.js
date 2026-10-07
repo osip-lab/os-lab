@@ -56,7 +56,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       </div>
     </fieldset>
     <div class="toolbar sp-show-row">
-      <button class="sp-show" title="pick a capture folder; opens it in the interactive viewer (mode_video_sync_show.py) on the lab PC">show a capture…</button>
+      <button class="sp-show" title="pick a synced capture folder (opens the interactive viewer), a scope recording .npz (plots it) or a frames file .mkv/.avi/.npy (video inspector), on the lab PC">show a capture…</button>
       <span class="sp-show-state status-line"></span>
     </div>
     <div class="toolbar sp-run">
