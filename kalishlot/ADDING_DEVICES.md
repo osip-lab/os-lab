@@ -323,6 +323,19 @@ a stretched 8-bit H.264 at the capture's frame rate, so it plays in any media
 player in real time. The `.mkv` holds the raw sensor counts and looks black in
 one; full pipeline runs write no preview.
 
+**Trailing scope capture** (`capture.TRAILING_SCOPE_S`, blank = none; full
+pipeline only): after the main block is read, the capture records a second scope
+block of that length, saved as `<stamp>_scope_tail.npz` with a `scope_tail` entry
+in the session JSON (`start_offset_s` = tail start relative to the main trace's
+t = 0 by the host clocks, plus what was done to the generator). It is a separate
+file on purpose: `scope.npz` stays exactly video + pads, so the sync fit and the
+viewer are untouched. With `capture.TRAILING_SCOPE_AUX_FG` the Rigol's CH2 is
+switched on through kalishlot's command route (`loan_client.device_command`)
+just after the tail block starts, and back off afterwards if it was off; the
+adapter refuses to start when that is ticked and no generator box is open. A
+parameter with `needs=<key>` is greyed in the box while that one is blank. The
+viewer does not plot the tail yet.
+
 ## Step 4 — test without hardware first
 
 `adapters/dummy_camera.py` exists exactly for this: a synthetic device

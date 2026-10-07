@@ -82,6 +82,12 @@ _p('capture.SCOPE_AUX_CHANNEL', 'choice', 'scope: aux channel',
 _p('capture.SCOPE_AUX_LABEL', 'text', 'scope: aux label')
 _p('capture.SCOPE_PAD_S', 'float', 'scope: padding either side', unit='s',
    min=0.0)
+# blank = no tail; the checkbox only means something with a tail (`needs`)
+_p('capture.TRAILING_SCOPE_S', 'optfloat', 'Trailing scope capture', unit='s',
+   min=0.01, placeholder='None')
+_p('capture.TRAILING_SCOPE_AUX_FG', 'bool',
+   'Apply secondary FG channel to trailing capture',
+   needs='capture.TRAILING_SCOPE_S')
 _p('capture.MASK_THRESHOLD', 'float', 'mode mask threshold', min=0.0, max=1.0)
 # only while the matching adopt row is unticked
 _p('capture.FRAME_RATE_HZ', 'float', 'requested frame rate', unit='Hz',
@@ -374,6 +380,11 @@ class SyncedPipelineAdapter(DeviceAdapter):
             elif loan.get('type') == SCOPE_TYPE:
                 scopes.append(entry)
         return {'cameras': cameras, 'scopes': scopes}
+
+    def has_function_generator(self):
+        devices = self.registry()[0] if self.registry is not None else {}
+        return any(getattr(adapter, 'type_name', None) == 'rigol_dg'
+                   for adapter in dict(devices).values())
 
     def chosen_camera(self, dependencies=None):
         cameras = (dependencies or self.dependencies())['cameras']
@@ -715,6 +726,15 @@ class SyncedPipelineAdapter(DeviceAdapter):
         flat = {key: value for key, value in self.edited.items()
                 if key in PARAM_BY_KEY}
         flat.update(extra or {})
+        if only is None:        # only the full capture has a tail
+            configured = config_values()
+            effective = lambda key: flat.get(key, configured.get(key))
+            if effective('capture.TRAILING_SCOPE_S') and \
+                    effective('capture.TRAILING_SCOPE_AUX_FG') and \
+                    not self.has_function_generator():
+                raise ValueError('the trailing capture applies the secondary '
+                                 'FG channel: open the function generator '
+                                 'first (or untick it)')
         for row, overrides in AUTO_OVERRIDES.items():
             if not self.adopt[row]:
                 flat.update(overrides)

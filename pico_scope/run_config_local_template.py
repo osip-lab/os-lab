@@ -142,6 +142,13 @@ class capture:
                                     # this to the nearest range containing it
     SCOPE_AUX_COUPLING = 'DC'       # the level matters, not just the swing
 
+    # More scope data after the video, as a second file (*_scope_tail.npz).
+    # None = none. AUX_FG switches the function generator's channel
+    # TRAILING_FG_CHANNEL on for it (through kalishlot) and back afterwards.
+    TRAILING_SCOPE_S = None
+    TRAILING_SCOPE_AUX_FG = False
+    TRAILING_FG_CHANNEL = 2
+
     # --- what the capture is checked against -------------------------------
     MASK_THRESHOLD = 0.15     # fraction of the peak-to-peak that counts as lit
     FRAMES_FORMAT = 'h264'    # 'h264' (8-bit, lossy, ~200x smaller than raw) or

@@ -73,7 +73,8 @@ from pico_scope import run_config  # noqa: E402
 from pico_scope.frame_codec import FORMATS as FRAMES_FORMATS, save_frames, save_preview  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
-from kalishlot.loan_client import borrow_from_kalishlot, open_devices  # noqa: E402
+from kalishlot.loan_client import (borrow_from_kalishlot, device_command,  # noqa: E402
+                                   open_devices)
 
 # The camera makes this script can drive. Imported one at a time and only when
 # needed: a machine with just one SDK installed must still run, and importing
@@ -210,6 +211,15 @@ SCOPE_AUX_LABEL = 'Temperature modulation Voltage'
 SCOPE_AUX_RANGE_V = 5.0         # it swings about 5 Vpp; the scope snaps this
                                 # to the nearest range that still contains it
 SCOPE_AUX_COUPLING = 'DC'       # the level matters, not just the swing
+
+# More scope data after the video is over, as a second block saved beside the
+# first (<stamp>_scope_tail.npz) - the main trace and the sync are untouched.
+# None = no tail. With TRAILING_SCOPE_AUX_FG the function generator's channel
+# TRAILING_FG_CHANNEL is switched on (through kalishlot) for the tail and back
+# to what it was afterwards. Only the full video + scope capture has a tail.
+TRAILING_SCOPE_S = None
+TRAILING_SCOPE_AUX_FG = False
+TRAILING_FG_CHANNEL = 2
 
 # ps4000aRunBlock returns before the scope has actually begun sampling, so the
 # host-clock estimate of where frame 0 sits is systematically early. Part of
@@ -1580,6 +1590,51 @@ def configure_scope_channels(scope):
     return range_v, aux_channel, aux_config
 
 
+def record_scope_tail(scope, duration_s):
+    """Record `duration_s` more of the scope, right after the main block, with
+    the function generator's channel TRAILING_FG_CHANNEL on for it when
+    TRAILING_SCOPE_AUX_FG. Returns (t, volts, block_info, fg), `fg` being what
+    was done to the generator (None when nothing was).
+
+    The block starts first and the channel is switched on just after, so the
+    trace shows the moment it came on (`fg['on_after_start_s']`). The channel
+    goes back to the state it was found in, even if the recording fails."""
+    generator = fg = None
+    if TRAILING_SCOPE_AUX_FG:
+        generator = next((device for device in open_devices() or []
+                          if device.get('type') == 'rigol_dg'), None)
+        if generator is None:
+            print('  ! no function generator open in kalishlot: the tail is '
+                  'recorded without switching its channel on')
+    try:
+        block = scope.start_block(duration_s, SCOPE_SAMPLE_INTERVAL_S)
+        if generator is not None:
+            channels = generator.get('channels') or []
+            was_on = bool(channels[TRAILING_FG_CHANNEL - 1].get('on')) \
+                if len(channels) >= TRAILING_FG_CHANNEL else False
+            fg = {'device_id': generator['device_id'],
+                  'channel': TRAILING_FG_CHANNEL, 'was_on': was_on}
+            device_command(generator['device_id'], 'set_channel',
+                           {'channel': TRAILING_FG_CHANNEL, 'name': 'output',
+                            'value': True})
+            fg['on_after_start_s'] = time.time() - block['host_start_s']
+            print(f'  function generator CH{TRAILING_FG_CHANNEL} on, '
+                  f'{fg["on_after_start_s"] * 1e3:.0f} ms into the tail')
+        scope.wait_block(timeout_s=duration_s * 3 + 10)
+        t, volts, info = scope.read_block()
+    finally:
+        if fg is not None and not fg['was_on']:
+            try:
+                device_command(fg['device_id'], 'set_channel',
+                               {'channel': fg['channel'], 'name': 'output',
+                                'value': False})
+                print(f'  function generator CH{fg["channel"]} off again')
+            except Exception as error:
+                print(f'  ! could not switch CH{fg["channel"]} off again '
+                      f'({error}) - do it in the generator box')
+    return t, volts, info, fg
+
+
 def capture_synchronized(serial_number=None, output_root=None,
                          locate=True, n_frames=None, scope_serial=None,
                          adjust_gain=True, require_level=True, make=None):
@@ -1666,6 +1721,14 @@ def capture_synchronized(serial_number=None, output_root=None,
         host_after_burst = time.time()
         scope.wait_block(timeout_s=duration * 3 + 10)
         t_scope, volts, block_info = scope.read_block()
+        tail = None
+        if TRAILING_SCOPE_S:
+            print(f'\n--- trailing scope capture, {TRAILING_SCOPE_S:g} s ---')
+            try:
+                tail = record_scope_tail(scope, TRAILING_SCOPE_S)
+            except Exception as error:      # the video is worth more than it
+                print(f'  ! the trailing capture failed ({error}); '
+                      f'saving the video without it')
         # Read the camera's settings while it is still open - everything below
         # happens after the finally clause has closed it.
         camera_info = cam.describe()
@@ -1723,6 +1786,23 @@ def capture_synchronized(serial_number=None, output_root=None,
         arrays['aux'] = volts[aux_channel]
     np.savez_compressed(folder / f'{stamp}_scope.npz', **arrays)
     session = json.loads(session_path.read_text(encoding='utf-8'))
+    if tail is not None:
+        # t in the tail file starts at 0 at its own first sample; the main
+        # trace's t = 0 is `start_offset_s` earlier than that, by the host clock
+        tail_t, tail_volts, tail_info, tail_fg = tail
+        tail_arrays = {'t': tail_t, 'signal': tail_volts[SCOPE_CHANNEL]}
+        if 'aux' in arrays:
+            tail_arrays['aux'] = tail_volts[aux_channel]
+        np.savez_compressed(folder / f'{stamp}_scope_tail.npz', **tail_arrays)
+        session['scope_tail'] = {
+            'file': f'{stamp}_scope_tail.npz',
+            'start_offset_s': tail_info['host_start_s'] - host_scope_start,
+            'sample_interval_s': tail_info['interval_s'],
+            'n_samples': tail_info['n_collected'],
+            'duration_s': TRAILING_SCOPE_S,
+            'overflow_channels': tail_info['overflow_channels'],
+            'function_generator': tail_fg,
+        }
     session['scope'] = {
         'file': f'{stamp}_scope.npz',
         'channel': SCOPE_CHANNEL,

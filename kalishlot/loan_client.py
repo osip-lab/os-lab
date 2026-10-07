@@ -68,6 +68,13 @@ def open_devices(url=KALISHLOT_URL):
         return None
 
 
+def device_command(device_id, name, args=None, url=KALISHLOT_URL):
+    """Send one command to a device kalishlot holds (not one lent away); the
+    command's result, or KalishlotError."""
+    return _call(url, _device_path(device_id) + '/command', 'POST',
+                 {'name': name, 'args': args or {}})
+
+
 def lend(device_id, borrower, url=KALISHLOT_URL):
     _call(url, _device_path(device_id) + '/lend', 'POST', {'borrower': borrower})
 

@@ -128,6 +128,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         });
       }
       if (input.type === 'number') input.step = 'any';
+      if (param.placeholder) input.placeholder = param.placeholder;   // greyed hint when empty
       input.spellcheck = false;
     }
     return input;
@@ -238,6 +239,11 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
 
     const widget = {
       row, param,
+      // a parameter that means nothing unless another one is filled in
+      setEnabled(on) {
+        input.disabled = !on;
+        row.classList.toggle('is-disabled', !on);
+      },
       write(value, edited) {
         const shown = display(param, value);
         if (param.kind === 'bool') input.checked = Boolean(shown);
@@ -483,6 +489,13 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
 
     for (const [key, widget] of Object.entries(widgets)) {
       widget.write(valueOf(key), key in state.edited);
+    }
+    for (const widget of Object.values(widgets)) {
+      const needs = widget.param.needs;
+      if (needs && widget.setEnabled) {
+        const value = valueOf(needs);
+        widget.setEnabled(value !== null && value !== undefined && value !== '');
+      }
     }
     const folderNote = $('.sp-folder-note');
     const folder = valueOf('capture.OUTPUT_ROOT');
