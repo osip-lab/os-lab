@@ -115,12 +115,13 @@ import numpy as np  # noqa: E402
 from matplotlib.patches import Ellipse  # noqa: E402
 from matplotlib.widgets import CheckButtons  # noqa: E402
 
-from pico_scope.mode_video_sync import (ScopeTrace, fit_session,  # noqa: E402
-                                        frame_at_time, frame_brightness,
-                                        frame_start_times, frame_windows,
-                                        latest_session, load_session,
-                                        load_session_trace, nearest_frame,
-                                        release_frames)
+from pico_scope.mode_video_sync import (ScopeTrace, find_scope_record,  # noqa: E402
+                                        fit_session, frame_at_time,
+                                        frame_brightness, frame_start_times,
+                                        frame_windows, latest_session,
+                                        load_scope_record, load_session,
+                                        load_session_tail, load_session_trace,
+                                        nearest_frame, release_frames)
 
 # Only the threading comes from the device layer; the fitting itself is
 # utilities.utils.fit_gaussian_beam, which reports the beam along its own
@@ -150,8 +151,12 @@ class ModeSpectrumViewer:
     """
 
     def __init__(self, trace, frames, windows, brightness, title='',
-                 pixel_size_mm=None, camera_label=''):
+                 pixel_size_mm=None, camera_label='', tail=None):
         self.trace = trace
+        # (ScopeTrace, meta) of the trailing scope capture, drawn in a panel of
+        # its own beside the spectrum - never on the video's timebase, and never
+        # part of the hover. None: the figure is exactly what it was.
+        self.tail = tail
         self.frames = frames
         self.windows = np.asarray(windows)
         self.brightness = np.asarray(brightness)
@@ -179,8 +184,10 @@ class ModeSpectrumViewer:
     # ------------------------------------------------------------- layout
     def _build_figure(self, title):
         self.fig = plt.figure(figsize=(15, 9))
-        self.ax_trace = self.fig.add_axes([0.07, 0.70, 0.88, 0.23])
-        self.ax_bright = self.fig.add_axes([0.07, 0.55, 0.88, 0.12],
+        # with a tail the spectrum gives up its right-hand quarter to it
+        width = 0.58 if self.tail is not None else 0.88
+        self.ax_trace = self.fig.add_axes([0.07, 0.70, width, 0.23])
+        self.ax_bright = self.fig.add_axes([0.07, 0.55, width, 0.12],
                                            sharex=self.ax_trace)
         self.ax_image = self.fig.add_axes([0.30, 0.06, 0.42, 0.44])
 
@@ -201,8 +208,8 @@ class ModeSpectrumViewer:
                                   alpha=SHADE_ALPHA, lw=0)
 
         centres = self.windows.mean(axis=1) * 1e3
-        width = np.median(np.diff(centres)) * 0.85 if centres.size > 1 else 1.0
-        self.ax_bright.bar(centres, self.brightness, width=width,
+        bar_width = np.median(np.diff(centres)) * 0.85 if centres.size > 1 else 1.0
+        self.ax_bright.bar(centres, self.brightness, width=bar_width,
                            color='tab:orange')
         self.ax_bright.set_ylabel('frame\nbrightness', fontsize=9)
         self.ax_bright.set_xlabel('time in the scope record [ms]')
@@ -232,7 +239,58 @@ class ModeSpectrumViewer:
         self.shared_clim = (0, max(int(np.asarray(self.frames).max()), 1))
         self.image.set_clim(*self.shared_clim)
 
+        self._build_tail()
         self._build_fit_controls()
+
+    def _build_tail(self):
+        """The trailing scope capture: the transmission (on the spectrum's own
+        y scale, so the two compare) and the second channel, with a mark where
+        the function generator's channel came on when the capture knows it."""
+        self.ax_tail = None
+        if self.tail is None:
+            return
+        trace, meta = self.tail
+        self.ax_tail = self.fig.add_axes([0.78, 0.70, 0.15, 0.23],
+                                         sharey=self.ax_trace)
+        self.ax_tail.plot(trace.t * 1e3, trace.signal * 1e3, lw=0.8,
+                          color='tab:blue')
+        self.ax_tail.tick_params(labelleft=False)
+        self.ax_tail.set_xlabel('trailing capture [ms from its start]',
+                                fontsize=9)
+        gap = meta.get('start_offset_s')
+        note = '' if gap is None else f' (starts {gap * 1e3:.0f} ms after t = 0)'
+        self.ax_tail.set_title('trailing scope capture' + note, fontsize=8)
+        if trace.has_aux:
+            twin = self.ax_tail.twinx()
+            twin.plot(trace.t * 1e3, trace.aux, lw=0.8, color='tab:green',
+                      alpha=0.75)
+            twin.set_ylabel('[V]', fontsize=9, color='tab:green')
+            twin.tick_params(axis='y', labelsize=8, colors='tab:green')
+        fg = meta.get('function_generator') or {}
+        # The output changes between the command being sent and it returning
+        # (the instrument is slow to answer): a band when they differ.
+        sent, done = fg.get('on_sent_after_start_s'), fg.get('on_done_after_start_s')
+        if sent is None:
+            sent = done = fg.get('on_after_start_s')   # an older capture: one time
+        end = float(trace.t[-1]) if trace.t.size else 0.0
+        if sent is not None and not fg.get('error') and sent > end:
+            # an older capture, whose switch-on command was slow enough to
+            # land after the recording ended: say so rather than stretch the axis
+            self.ax_tail.text(0.5, 0.55, f'FG CH{fg.get("channel", "?")} came on\n'
+                              f'{(sent - end) * 1e3:.0f} ms after this ended',
+                              transform=self.ax_tail.transAxes, ha='center',
+                              fontsize=7, color='crimson',
+                              bbox=dict(fc='white', ec='none', alpha=0.8))
+        elif sent is not None and not fg.get('error'):
+            label = f'FG CH{fg.get("channel", "?")} on'
+            if done is not None and done > sent:
+                self.ax_tail.axvspan(sent * 1e3, done * 1e3, color='crimson',
+                                     alpha=0.2, lw=0, label=label)
+            else:
+                self.ax_tail.axvline(sent * 1e3, color='crimson', lw=1.2,
+                                     label=label)
+            self.ax_tail.legend(loc='upper left', fontsize=7, framealpha=0.7)
+        self.ax_tail.set_xlim(trace.t[0] * 1e3, end * 1e3)
 
     def _build_aux(self, inside, transmission):
         """The second channel, on its own y axis, when the record has one.
@@ -577,16 +635,53 @@ def load_synced_trace(session_path, scope_path=None):
            mark_target_path)
 
 
+class ScopeOnlyViewer:
+    """A scope-only capture ("record scope only"): the transmission and, when
+    recorded, the second channel on its own axis - no video, so no frames, no
+    hover and nothing to fit. The window's toolbar zooms and pans."""
+
+    def __init__(self, trace, title=''):
+        self.trace = trace
+        self.fig, self.ax_trace = plt.subplots(figsize=(13, 5))
+        transmission, = self.ax_trace.plot(
+            trace.t, trace.signal * 1e3, lw=0.8, color='tab:blue',
+            label='Channel D (transmission)')
+        self.ax_trace.set_ylabel('Channel D [mV]')
+        self.ax_trace.set_xlabel('time in the scope record [s]')
+        self.ax_trace.set_title(title, fontsize=10)
+        self.ax_aux = None
+        if trace.has_aux:
+            self.ax_aux = self.ax_trace.twinx()
+            label = trace.aux_label or 'aux channel'
+            ramp, = self.ax_aux.plot(trace.t, trace.aux, lw=0.8,
+                                     color='tab:green', alpha=0.75, label=label)
+            self.ax_aux.set_ylabel(f'{label} [V]', fontsize=9, color='tab:green')
+            self.ax_aux.tick_params(axis='y', labelsize=8, colors='tab:green')
+            self.ax_trace.legend(handles=[transmission, ramp], loc='upper right',
+                                 fontsize=8, framealpha=0.7)
+        self.fig.tight_layout()
+
+    def close_fit(self):
+        pass
+
+
 def viewer_from_session(session_path, scope_path=None):
     """Build a viewer from a capture - see load_synced_trace() for how it is
-    aligned."""
+    aligned. A folder of a scope-only capture gets a ScopeOnlyViewer."""
     session_path = Path(session_path)
+    if scope_path is None and find_scope_record(session_path) is not None:
+        record, trace = load_scope_record(session_path)
+        folder = session_path if session_path.is_dir() else session_path.parent
+        return ScopeOnlyViewer(trace, f'{folder.name} - scope only, '
+                                      f'{trace.duration:.3g} s')
     trace, frames, windows, brightness, session, source, _ = load_synced_trace(
         session_path, scope_path)
     title = f'{session_path.name} - {source}'
     return ModeSpectrumViewer(trace, frames, windows, brightness, title,
                               pixel_size_mm=session_pixel_size_mm(session),
-                              camera_label=camera_label(session))
+                              camera_label=camera_label(session),
+                              tail=None if scope_path is not None
+                              else load_session_tail(session_path))
 
 
 def session_pixel_size_mm(session):
@@ -844,6 +939,50 @@ def _self_test():
           'restores the one shared scale')
 
     plt.close(viewer.fig)
+
+    # --- the trailing capture and scope-only captures --------------------
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        t = np.arange(2000) * 1e-4
+        np.savez(folder / 'x_scope.npz', t=t, signal=np.sin(t * 50) * 0.01,
+                 aux=t * 5)
+        scope_block = {'file': 'x_scope.npz', 'aux': {'label': 'ramp'}}
+        # a scope-only capture: *_scope.json and no session file
+        (folder / 'x_scope.json').write_text(json.dumps({'scope': scope_block}))
+        assert find_scope_record(folder) == folder / 'x_scope.json'
+        only = viewer_from_session(folder)
+        assert isinstance(only, ScopeOnlyViewer) and only.ax_aux is not None
+        assert only.ax_trace.get_lines()[0].get_xdata()[-1] == t[-1]
+        plt.close(only.fig)
+        assert load_session_tail(folder) is None
+        # a video capture is not one, and has no tail until it records one
+        (folder / 'x_session.json').write_text(json.dumps({'scope': scope_block}))
+        assert find_scope_record(folder) is None
+        assert load_session_tail(folder) is None
+        np.savez(folder / 'x_tail.npz', t=t[:500], signal=t[:500], aux=t[:500])
+        (folder / 'x_session.json').write_text(json.dumps({
+            'scope': scope_block,
+            'scope_tail': {'file': 'x_tail.npz', 'start_offset_s': 2.0,
+                           'function_generator': {
+                               'channel': 2, 'on_sent_after_start_s': 0.01,
+                               'on_done_after_start_s': 0.03}}}))
+        tail_trace, tail_meta = load_session_tail(folder)
+        assert tail_trace.t.size == 500 and tail_trace.has_aux
+        assert tail_meta['start_offset_s'] == 2.0
+    tail_viewer = ModeSpectrumViewer(trace, frames, windows, brightness, 'tail',
+                                     tail=(tail_trace, tail_meta))
+    assert tail_viewer.ax_tail is not None
+    assert viewer.ax_tail is None, 'no tail, no panel'
+    assert tail_viewer.ax_tail.get_ylim() == tail_viewer.ax_trace.get_ylim()
+    for probe in (3, 61):         # the tail changes no frame the viewer maps to
+        assert tail_viewer.frame_for_time(windows[probe].mean()) == probe
+    tail_viewer.close_fit()
+    plt.close(tail_viewer.fig)
+    print('  a trailing capture gets a panel of its own, and a scope-only '
+          'capture opens as a trace with no video')
+
     # the run-button configuration has to name something this file can do
     assert ACTION in ('show', 'self-test'), ACTION
     print('self-test passed')
@@ -894,7 +1033,8 @@ def main():
     viewer = viewer_from_session(session, args.scope)
     plt.show()
     viewer.close_fit()
-    release_frames(viewer.frames)
+    if hasattr(viewer, 'frames'):
+        release_frames(viewer.frames)
 
 
 if __name__ == '__main__':

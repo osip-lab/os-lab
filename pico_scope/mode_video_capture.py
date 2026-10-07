@@ -1596,13 +1596,19 @@ def record_scope_tail(scope, duration_s):
     TRAILING_SCOPE_AUX_FG. Returns (t, volts, block_info, fg), `fg` being what
     was done to the generator (None when nothing was).
 
-    The block starts first and the channel is switched on just after, so the
-    trace shows the moment it came on (`fg['on_after_start_s']`). The channel
-    goes back to the state it was found in, even if the recording fails."""
-    generator = fg = None
+    The generator is the one read when the run started: asking kalishlot again
+    now would make it query the instrument, which took ~2 s here - a gap before
+    the tail, and the same again for the switch-on command, which then landed
+    after a 1 s tail had ended. So the command is sent from a thread just
+    after the block starts and the times it was sent and completed are
+    recorded (`on_sent_after_start_s`, `on_done_after_start_s`); the output
+    changes somewhere between them. The channel goes back to the state it was
+    found in, even if the recording fails."""
+    generator = fg = sender = None
     if TRAILING_SCOPE_AUX_FG:
-        generator = next((device for device in open_devices() or []
-                          if device.get('type') == 'rigol_dg'), None)
+        generator = KALISHLOT_FUNCTION_GENERATOR or next(
+            (device for device in open_devices() or []
+             if device.get('type') == 'rigol_dg'), None)
         if generator is None:
             print('  ! no function generator open in kalishlot: the tail is '
                   'recorded without switching its channel on')
@@ -1610,28 +1616,43 @@ def record_scope_tail(scope, duration_s):
         block = scope.start_block(duration_s, SCOPE_SAMPLE_INTERVAL_S)
         if generator is not None:
             channels = generator.get('channels') or []
-            was_on = bool(channels[TRAILING_FG_CHANNEL - 1].get('on')) \
-                if len(channels) >= TRAILING_FG_CHANNEL else False
+            was_on = bool(channels[TRAILING_FG_CHANNEL - 1].get('on'))                 if len(channels) >= TRAILING_FG_CHANNEL else False
             fg = {'device_id': generator['device_id'],
                   'channel': TRAILING_FG_CHANNEL, 'was_on': was_on}
-            device_command(generator['device_id'], 'set_channel',
-                           {'channel': TRAILING_FG_CHANNEL, 'name': 'output',
-                            'value': True})
-            fg['on_after_start_s'] = time.time() - block['host_start_s']
-            print(f'  function generator CH{TRAILING_FG_CHANNEL} on, '
-                  f'{fg["on_after_start_s"] * 1e3:.0f} ms into the tail')
+
+            def switch_on():
+                fg['on_sent_after_start_s'] = time.time() - block['host_start_s']
+                try:
+                    device_command(generator['device_id'], 'set_channel',
+                                   {'channel': TRAILING_FG_CHANNEL,
+                                    'name': 'output', 'value': True})
+                except Exception as error:
+                    fg['error'] = str(error)
+                fg['on_done_after_start_s'] = time.time() - block['host_start_s']
+            sender = _start_in_background(switch_on)
         scope.wait_block(timeout_s=duration_s * 3 + 10)
         t, volts, info = scope.read_block()
     finally:
-        if fg is not None and not fg['was_on']:
-            try:
-                device_command(fg['device_id'], 'set_channel',
-                               {'channel': fg['channel'], 'name': 'output',
-                                'value': False})
-                print(f'  function generator CH{fg["channel"]} off again')
-            except Exception as error:
-                print(f'  ! could not switch CH{fg["channel"]} off again '
-                      f'({error}) - do it in the generator box')
+        if sender is not None:
+            sender.wait(raise_error=False)
+        if fg is not None:
+            if fg.get('error'):
+                print(f'  ! could not switch CH{fg["channel"]} on: {fg["error"]}')
+            else:
+                print(f'  function generator CH{fg["channel"]} on: command sent '
+                      f'{fg.get("on_sent_after_start_s", float("nan")) * 1e3:.0f}'
+                      f' ms into the tail, done at '
+                      f'{fg.get("on_done_after_start_s", float("nan")) * 1e3:.0f}'
+                      f' ms')
+            if not fg['was_on']:
+                try:
+                    device_command(fg['device_id'], 'set_channel',
+                                   {'channel': fg['channel'], 'name': 'output',
+                                    'value': False})
+                    print(f'  function generator CH{fg["channel"]} off again')
+                except Exception as error:
+                    print(f'  ! could not switch CH{fg["channel"]} off again '
+                          f'({error}) - do it in the generator box')
     return t, volts, info, fg
 
 

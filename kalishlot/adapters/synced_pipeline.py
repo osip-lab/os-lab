@@ -529,10 +529,13 @@ class SyncedPipelineAdapter(DeviceAdapter):
                 return {'ok': True, 'path': None}      # the window was cancelled
         folder = Path(str(path)).expanduser()
         sessions = sorted(folder.glob('*_session.json')) if folder.is_dir() else []
-        if len(sessions) != 1:
+        # a scope-only capture has no session file, only <stamp>_scope.json
+        scopes = [] if sessions or not folder.is_dir()             else sorted(folder.glob('*_scope.json'))
+        if len(sessions) + len(scopes) != 1:
             raise ValueError(
                 f'{folder} is not a capture folder: expected exactly one '
-                f'*_session.json in it, found {len(sessions)}')
+                f'*_session.json (or, for a scope-only capture, one '
+                f'*_scope.json) in it, found {len(sessions) + len(scopes)}')
         handle, params_path = tempfile.mkstemp(prefix='kalishlot_show_',
                                                suffix='.json')
         shown = {key.split('.', 1)[1]: value for key, value in self.edited.items()
