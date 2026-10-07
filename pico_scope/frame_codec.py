@@ -109,6 +109,38 @@ def save_frames(stem_path, frames, fmt='h264', fps=30.0, crf=H264_CRF):
     return path, {'format': fmt, 'scale': scale}
 
 
+PREVIEW_PERCENTILE = 99.9        # of all pixels in the clip, mapped to white
+
+
+def save_preview(path, frames, fps, percentile=PREVIEW_PERCENTILE):
+    """Write a playable 8-bit H.264 .mp4 of `frames`, for watching only.
+
+    The stack is stored at the camera's own depth (10-12 bit in a 16-bit
+    container), which a media player shows as nearly black, so the preview is
+    stretched: one scale for the whole clip, `percentile` of its pixels to
+    white, so the brightness changes between frames survive and one hot pixel
+    does not darken everything. `fps` is the playback rate - the capture's
+    frame rate, so it plays in real time. Not for analysis: it is lossy and
+    rescaled; the frames file is the data. Returns the path.
+    """
+    frames = np.ascontiguousarray(frames)
+    if frames.ndim != 3:
+        raise ValueError(f'expected frames shaped (n, h, w), got {frames.shape}')
+    n, h, w = frames.shape
+    sample = frames.reshape(-1)[::max(1, frames.size // 2_000_000)]
+    top = float(np.percentile(sample, percentile)) if sample.size else 0.0
+    top = max(top, 1.0)
+    frames8 = np.clip(np.rint(frames.astype(np.float32) * (255.0 / top)),
+                      0, 255).astype(np.uint8)
+    path = Path(path)
+    _run(['-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', f'{w}x{h}',
+          '-framerate', f'{fps:g}', '-i', 'pipe:0',
+          '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+          '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', str(path)],
+         frames8.tobytes(), f'write {path.name}')
+    return path
+
+
 def load_frames(path, shape, dtype, scale=1.0):
     """Read a stack written by `save_frames`, or a legacy .npy.
 

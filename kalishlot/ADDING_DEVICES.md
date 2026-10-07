@@ -318,6 +318,10 @@ camera, `--scope-only` (`capture_scope_only`, saved as `*_scope.npz` +
 `*_scope.json`, deliberately not `*_session.json`) for the PicoScope. Each
 needs only its own instrument (`ready_video` / `ready_scope`), and takes the
 box's settings, the folder and the start pop-up exactly like a full run.
+The video-only run also writes `<stamp>_preview.mp4` (`frame_codec.save_preview`):
+a stretched 8-bit H.264 at the capture's frame rate, so it plays in any media
+player in real time. The `.mkv` holds the raw sensor counts and looks black in
+one; full pipeline runs write no preview.
 
 ## Step 4 — test without hardware first
 

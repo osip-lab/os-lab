@@ -70,7 +70,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from camera_core import burst_timing  # noqa: E402
 from pico_scope import run_config  # noqa: E402
-from pico_scope.frame_codec import FORMATS as FRAMES_FORMATS, save_frames  # noqa: E402
+from pico_scope.frame_codec import FORMATS as FRAMES_FORMATS, save_frames, save_preview  # noqa: E402
 from pico_scope.mode_video_sync import (SESSION_ROOT,  # noqa: E402
                                         frame_brightness, varying_pixel_mask)
 from kalishlot.loan_client import borrow_from_kalishlot, open_devices  # noqa: E402
@@ -1448,8 +1448,12 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
 
 
 def capture(serial_number=None, output_root=None,
-            locate=True, prompt=True, make=None):
-    """Locate the mode, configure, wait for the scope, record, save."""
+            locate=True, prompt=True, make=None, preview=False):
+    """Locate the mode, configure, wait for the scope, record, save.
+
+    `preview` also writes <stamp>_preview.mp4 beside the frames: a stretched
+    8-bit copy at the capture's own frame rate, for watching in a media player
+    (the frames file is raw sensor counts, which a player shows as black)."""
     camera_cls, serial_number, make = resolve_camera(make, serial_number)
     resolve_manual_roi(serial_number, make)
     cam = camera_cls(serial_number)
@@ -1497,6 +1501,12 @@ def capture(serial_number=None, output_root=None,
         print(f'\n  mask covers {int(mask.sum())} of {mask.size} pixels '
               f'({mask.mean():.2%})')
         print(f'  saved {session_path}')
+        if preview:
+            period = timing['period_s_median']
+            preview_path = save_preview(
+                folder / f'{stamp}_preview.mp4', frames,
+                1 / period if period else checks['resulting_hz'])
+            print(f'  saved {preview_path} (stretched, plays in real time)')
         if prompt:
             print(f'\nNow stop and save the PicoScope recording as .psdata, '
                   f'then:')
@@ -2579,7 +2589,8 @@ def run_action(action, args, locate, strict_levels, drive_scope, lent=None):
                              require_level=strict_levels,
                              adjust_gain=not gain_from_kalishlot())
     else:
-        capture(serial, locate=locate, make=make, prompt=not args.no_prompt)
+        capture(serial, locate=locate, make=make, prompt=not args.no_prompt,
+                preview=args.no_scope)
 
 if __name__ == '__main__':
     main()
