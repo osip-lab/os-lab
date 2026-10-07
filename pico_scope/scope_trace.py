@@ -78,6 +78,16 @@ def session_signal_column(path):
     return f"Channel {_scope_block(path)[1]['channel']}"
 
 
+def session_long_arm_m(path):
+    """The long arm [m] the capture's start-of-capture pop-up recorded, or None
+    when `path` is no capture or none was typed (so the caller asks instead)."""
+    json_path = session_json(path)
+    if json_path is None:
+        return None
+    value = json.loads(json_path.read_text(encoding='utf-8')).get('long_arm_m')
+    return float(value) if value is not None else None
+
+
 def signal_column_for(data_path, default):
     """The column a trace of `data_path` is marked on: the recorded channel
     for a capture, `default` (the script's SIGNAL_COLUMN) for anything else."""

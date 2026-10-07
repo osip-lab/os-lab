@@ -22,7 +22,8 @@ from pico_scope.mode_marking import mark_pairs, positions_and_widths
 from pico_scope.mode_marks_cache import (ask_use_cached_marks, complete_pairs,
                                          load_cached_marks, make_record,
                                          save_marks, trace_csv_path)
-from pico_scope.scope_trace import load_trace, signal_column_for
+from pico_scope.scope_trace import (load_trace, session_long_arm_m,
+                                    signal_column_for)
 
 # --- the cavity being measured (edit this when the setup changes) ----------
 # Element names come from the cavity-design catalog; list them in optical order.
@@ -61,7 +62,8 @@ signal_column = signal_column_for(input_path, SIGNAL_COLUMN)
 # spacing is the FSR). See mode_marking for the keys the window understands.
 #
 # The long arm changes between measurements, so it is asked for rather than
-# configured - but only for a file being marked now: a file that was marked
+# configured - unless the capture's session json already holds the one typed
+# in the start-of-capture pop-up. Only for a file being marked now: a file that was marked
 # before was measured with the long arm its sidecar holds, and typing it again
 # could only disagree with the marks. It feeds both the FSR and the NA
 # simulation, so it is settled before either is built.
@@ -79,7 +81,11 @@ else:
     marks = complete_pairs(raw_marks)
     if len(marks) != len(raw_marks):
         print(f"Ignoring {len(raw_marks) - len(marks)} incomplete pair(s).")
-    long_arm_length = ask_long_arm_length()  # [m], prompted in cm
+    long_arm_length = session_long_arm_m(input_path)  # [m], typed at capture time
+    if long_arm_length is None:
+        long_arm_length = ask_long_arm_length()  # [m], prompted in cm
+    else:
+        print(f"Long arm length: {long_arm_length * 100:.4g} cm (from the capture session)")
     if marks:
         # next to the data, for this script's next run and for the 2D map
         save_marks(input_path, make_record(input_path, csv_path, marks,

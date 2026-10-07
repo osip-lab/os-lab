@@ -72,7 +72,8 @@ from matplotlib.widgets import SpanSelector
 from utilities.utils import (append_numerical_result_line, ask_long_arm_length,
                              wait_for_path_from_clipboard)
 from pico_scope.mode_marks_cache import trace_csv_path
-from pico_scope.scope_trace import load_trace, signal_column_for
+from pico_scope.scope_trace import (load_trace, session_long_arm_m,
+                                    signal_column_for)
 # All the math (models, fit, scaling, NA mapping) lives in mode_analysis so
 # the kalishlot web GUI runs the identical computation on the live stream.
 from pico_scope.mode_analysis import (DEFAULT_SIDEBAND_FREQ_MHZ,
@@ -165,7 +166,11 @@ def ask_sideband_freq(default_mhz):
 analysis_mode = ask_analysis_mode()
 print(f"Analysis mode: {analysis_mode}")
 
-long_arm_length = ask_long_arm_length()  # [m], prompted in cm
+long_arm_length = session_long_arm_m(input_path)  # [m], typed at capture time
+if long_arm_length is None:
+    long_arm_length = ask_long_arm_length()  # [m], prompted in cm
+else:
+    print(f"Long arm length: {long_arm_length * 100:.4g} cm (from the capture session)")
 
 f_sb_mhz = ask_sideband_freq(DEFAULT_SIDEBAND_FREQ_MHZ)
 print(f"Using sideband frequency f_sb = {f_sb_mhz} MHz (per side).")

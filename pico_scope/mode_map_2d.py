@@ -97,7 +97,8 @@ from pico_scope.mode_marks_cache import (ask_use_cached_marks,  # noqa: E402
                                          trace_csv_path)
 from pico_scope import scope_trace  # noqa: E402
 from pico_scope.scope_trace import (is_capture_session,  # noqa: E402
-                                    session_scope_file, signal_column_for)
+                                    session_long_arm_m, session_scope_file,
+                                    signal_column_for)
 from utilities.utils import (ask_long_arm_length,  # noqa: E402
                              choose_buffer_csv, psdata_buffer_csvs)
 
@@ -286,7 +287,11 @@ def analyse_file(key, data_path, remark=False, accept_all=None):
             "waveform buffer, or to skip the file.")
 
     # asked only now, so that skipping a file costs no answer
-    long_arm = ask_long_arm_length()
+    long_arm = session_long_arm_m(data_path)  # typed at capture time, if at all
+    if long_arm is None:
+        long_arm = ask_long_arm_length()
+    else:
+        print(f"  long arm {long_arm * 100:.4g} cm (from the capture session)")
 
     record = make_record(data_path, csv_path, marks, long_arm,
                          signal_column=signal_column, key=key)
