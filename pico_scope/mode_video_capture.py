@@ -253,6 +253,12 @@ H264_CRF = 18
 # gives 2026-10-05_112839_no_EOM. The files inside keep the bare timestamp.
 FOLDER_SUFFIX = ''
 
+# The cavity's long arm [cm] for this capture, set from the kalishlot box's
+# start-of-capture pop-up. Recorded in the session (as long_arm_m) for the
+# analysis scripts to read instead of asking again; it is never itself used by
+# the capture. None = not given.
+LONG_ARM_CM = None
+
 # A clipped peak is the one thing that reliably breaks the alignment fit: the
 # camera stops tracking the photodiode exactly where the signal is strongest.
 # Measured earlier on this setup, 1% of samples clipped is survivable and 5%
@@ -1367,6 +1373,11 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
 
     session = {
         'created': datetime.now().isoformat(timespec='seconds'),
+        # [m], from the kalishlot box's start-of-capture pop-up; None when it
+        # was skipped. Lets the analysis scripts (extract_df_and_fsr_from_
+        # scope_csv.py, mode_map_2d.py) take the cavity's long arm from here
+        # instead of prompting for it again.
+        'long_arm_m': LONG_ARM_CM / 100 if LONG_ARM_CM is not None else None,
         'sync': {
             'method': 'optical',
             'description': 'frame brightness fitted against the scope trace; '

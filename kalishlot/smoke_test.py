@@ -634,22 +634,19 @@ def check_synced_pipeline():
         restored = sp.SyncedPipelineAdapter('main')
         restored.restore_settings(snapshot)
         assert restored.edited == adapter.edited and restored.adopt == adapter.adopt
-        assert restored.long_arm_cm is None and adapter.describe()['long_arm_cm'] is None
 
-        # the long arm: optional, saved with the settings, never sent to a run
-        adapter.command('set_long_arm', {'value': '34.4'})
-        assert adapter.describe()['long_arm_cm'] == 34.4
-        restored.restore_settings(adapter.settings_snapshot())
-        assert restored.long_arm_cm == 34.4
-        assert 'long_arm_cm' not in json.dumps(adapter.run_params())
-        for bad in ('abc', '-1'):
-            try:
-                adapter.command('set_long_arm', {'value': bad})
-                raise AssertionError('a bad long arm was accepted')
-            except ValueError:
-                pass
-        adapter.command('set_long_arm', {'value': ''})
-        assert adapter.long_arm_cm is None
+        # the long arm and the folder label: asked fresh at start, not stored
+        # on the box - a bad or blank value is simply not sent to the run
+        assert 'LONG_ARM_CM' not in json.dumps(adapter.run_params())
+        params = adapter.run_params({'capture.LONG_ARM_CM': 34.4,
+                                     'capture.FOLDER_SUFFIX': 'no_EOM'})
+        assert params['sections']['capture']['LONG_ARM_CM'] == 34.4
+        assert params['sections']['capture']['FOLDER_SUFFIX'] == 'no_EOM'
+        try:
+            sp.coerce(sp.LONG_ARM_FIELD, '-1')
+            raise AssertionError('a negative long arm was accepted')
+        except ValueError:
+            pass
 
         # presets keep the recipe, never the place
         adapter.command('preset_save', {'name': 'slow'})
@@ -731,6 +728,8 @@ import json, os, sys
 p = json.load(open(os.environ['MODE_VIDEO_PARAMS']))
 print('=== mode_video_capture.py ===')
 print('duration', p['sections']['capture']['CAPTURE_DURATION_S'])
+print('long_arm', p['sections']['capture'].get('LONG_ARM_CM'))
+print('suffix', repr(p['sections']['capture'].get('FOLDER_SUFFIX')))
 print('SESSION_PATH=C:/somewhere/session')
 print('=== mode_video_sync.py ===')
 sys.exit(int(os.environ.get('STUB_EXIT', '0')))
@@ -750,13 +749,25 @@ time.sleep(60)
 
         sp.SyncedPipelineAdapter.pipeline_command = staticmethod(
             lambda: [sys.executable, '-u', '-c', quick])
-        adapter.command('start', {})
+        # the start-of-capture pop-up's fields reach this one run only
+        adapter.command('start', {'long_arm_cm': '34.4', 'folder_label': 'no_EOM'})
         wait(lambda: not adapter.run['running'], 'the quick run to end')
         run = adapter.run
         assert run['returncode'] == 0 and run['error'] is None, run
         assert run['session'] == 'C:/somewhere/session', run
         assert run['step'] == 'mode_video_sync', run
-        assert 'duration 3.0' in adapter.describe()['log'], adapter.describe()['log']
+        log = adapter.describe()['log']
+        assert 'duration 3.0' in log, log
+        assert 'long_arm 34.4' in log, log
+        assert "suffix 'no_EOM'" in log, log
+
+        # skipped (no args): nothing is sent, so the run and the next capture's
+        # pop-up both start with a clean slate
+        adapter.command('start', {})
+        wait(lambda: not adapter.run['running'], 'the unlabelled run to end')
+        log = adapter.describe()['log']
+        assert 'long_arm None' in log, log
+        assert "suffix ''" in log, log
         seen = []
         while not events.empty():
             seen.append(events.get_nowait())

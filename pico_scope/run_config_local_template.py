@@ -146,7 +146,16 @@ class capture:
     MASK_THRESHOLD = 0.15     # fraction of the peak-to-peak that counts as lit
     FRAMES_FORMAT = 'h264'    # 'h264' (8-bit, lossy, ~200x smaller than raw) or
                               # 'lossless' (FFV1, bit-exact, ~3x smaller)
+    # H.264 quality (FRAMES_FORMAT 'h264' only): 0 is lossless, 51 the harshest.
+    # 18 is visually transparent; lower is bigger, and past ~10 gains nothing,
+    # since the 8-bit step dominates. Recorded in the session as frames_crf.
+    H264_CRF = 18
     FOLDER_SUFFIX = ''        # text after the timestamp in the session folder's name
+    # The cavity's long arm [cm] for this capture, set from the kalishlot box's
+    # start-of-capture pop-up. Recorded in the session (as long_arm_m) for the
+    # analysis scripts to read instead of asking again; it is never itself used
+    # by the capture. None = not given.
+    LONG_ARM_CM = None
     # A clipped peak is the one thing that reliably breaks the alignment fit:
     # the camera stops tracking the photodiode exactly where the signal is
     # strongest. Measured on this setup, 1% of samples clipped is survivable

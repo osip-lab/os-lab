@@ -92,3 +92,24 @@ Remove-Item -Recurse -Force .\Python-Driver-for-Thorlabs-power-meter\GlobalLogge
 ```
 
 **You are welcome to add here any instructions of usage to any part of the code for other people to use as well.**
+
+## TODO for whoever picks this back up (kalishlot synced-pipeline start pop-up)
+The synced video+scope pipeline box (`kalishlot/static/boxes/synced_pipeline.js`,
+`kalishlot/adapters/synced_pipeline.py`) had its standing "long arm length" and
+"text after the timestamp" rows replaced with a pop-up shown when "run
+pipeline" is clicked, asking for both fresh each time (skip = neither is
+saved). The long arm is now a real run parameter (`capture.LONG_ARM_CM`,
+`pico_scope/run_config.py` / `run_config_local_template.py` /
+`mode_video_capture.py`) and is written into `<stem>_session.json` as
+`long_arm_m`.
+
+This was written and smoke-tested (`pico_scope/run_config.py`,
+`kalishlot/smoke_test.py::check_synced_pipeline`) without the kalishlot
+hardware (XIMEA/Basler camera, PicoScope) attached - this dev machine does not
+have it. It still needs, on the lab PC:
+* a real capture through the box, with the pop-up filled in and with it
+  skipped, checking the resulting `*_session.json` has the right `long_arm_m`
+  and the folder name has (or lacks) the typed label;
+* a check that `kalishlot/smoke_test.py` still passes there - this machine
+  could not even import it (`ModuleNotFoundError: No module named
+  'websockets'`), so it has not run end to end since this change.

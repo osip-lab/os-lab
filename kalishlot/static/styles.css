@@ -681,6 +681,39 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
   50% { box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 9px rgba(224, 85, 85, 0.16); }
 }
 
+/* ------------------------------------------ synced pipeline: start pop-up */
+.sp-start-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 15, 0.6);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.15s ease;
+}
+.sp-start-dialog {
+  min-width: 360px;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  animation: rise-in 0.18s ease;
+}
+.sp-start-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sp-start-dialog .sp-row { margin-bottom: 10px; }
+.sp-start-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; }
+.sp-start-error { min-height: 14px; margin-top: 8px; }
+
 /* ---------------------------------------------------------------- motion */
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes rise-in { from { opacity: 0; transform: translateY(6px) scale(0.985); } }

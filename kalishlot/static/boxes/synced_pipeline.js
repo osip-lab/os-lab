@@ -43,11 +43,6 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
         </label>
         <div class="sp-folder-note status-line"></div>
       </div>
-      <label class="sp-row sp-long-arm"><span>long arm length</span>
-        <input type="number" class="sp-long-arm-input" step="any" min="0"
-               placeholder="blank = not set">
-        <span class="unit">cm</span>
-      </label>
       <div class="sp-adopt"></div>
       <div class="sp-main"></div>
       <details class="sp-advanced"><summary>advanced capture</summary><div></div></details>
@@ -70,7 +65,27 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       <span class="sp-run-state status-line"></span>
     </div>
     <pre class="sp-log"></pre>
-    <div class="sp-message status-line"></div>`;
+    <div class="sp-message status-line"></div>
+    <div class="sp-start-backdrop" hidden>
+      <div class="sp-start-dialog">
+        <h2>before this capture</h2>
+        <label class="sp-row"><span>long arm length</span>
+          <input type="number" class="sp-start-long-arm" step="any" min="0"
+                 placeholder="blank = not set">
+          <span class="unit">cm</span>
+        </label>
+        <label class="sp-row"><span>folder label</span>
+          <input type="text" class="sp-start-folder-label" spellcheck="false"
+                 placeholder="blank = no name added">
+        </label>
+        <div class="sp-start-actions">
+          <button class="sp-start-skip"
+                  title="start with no long arm saved and no name added">skip</button>
+          <button class="sp-start-confirm">start capture ▶</button>
+        </div>
+        <div class="sp-start-error status-line sp-bad"></div>
+      </div>
+    </div>`;
 
   const $ = (selector) => container.querySelector(selector);
   const gate = $('.sp-gate');
@@ -239,15 +254,6 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       const target = param.auto_of && adoptRows[param.auto_of];
       if (target) target.auto.appendChild(widgets[param.key].row);
     }
-    const longArm = $('.sp-long-arm-input');
-    const commitLongArm = () => {
-      if (longArm.value === longArm.dataset.committed) return;
-      send('set_long_arm', { value: longArm.value })
-        .then(() => { longArm.dataset.committed = longArm.value; })
-        .catch((error) => { fail(error); show(); });
-    };
-    longArm.addEventListener('keydown', (event) => { if (event.key === 'Enter') commitLongArm(); });
-    longArm.addEventListener('blur', commitLongArm);
     $('.sp-camera-select').onchange = (event) =>
       send('choose_camera', { device_id: event.target.value }).catch(fail);
 
@@ -280,8 +286,59 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       button.disabled = false;
       refreshSoon();
     };
-    $('.sp-start').onclick = () => send('start', {}).catch(fail);
+    $('.sp-start').onclick = () => openStartDialog();
     $('.sp-stop').onclick = () => send('stop', {}).catch(fail);
+    buildStartDialog();
+  }
+
+  // -------------------------------------------------- start-of-capture pop-up
+  // Not standing box state (the old long-arm row was): asked fresh every time
+  // a capture starts, so a value left over from the last run is never reused
+  // by accident. The long arm, once set and blurred, also fills the folder
+  // label - we usually want both the same - but editing the label afterwards
+  // never feeds back into the long arm.
+  function buildStartDialog() {
+    const backdrop = $('.sp-start-backdrop');
+    const longArm = $('.sp-start-long-arm');
+    const folderLabel = $('.sp-start-folder-label');
+    const error = $('.sp-start-error');
+
+    folderLabel.addEventListener('input', () => {
+      const clean = folderLabel.value.replace(FORBIDDEN_NAME_CHARS, '');
+      if (clean !== folderLabel.value) folderLabel.value = clean;
+    });
+    longArm.addEventListener('blur', () => {
+      if (longArm.value !== '') folderLabel.value = longArm.value;
+    });
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) closeStartDialog();
+    });
+    backdrop.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeStartDialog();
+    });
+    const run = (longArmCm, label) => {
+      error.textContent = '';
+      send('start', { long_arm_cm: longArmCm, folder_label: label })
+        .then(closeStartDialog)
+        .catch((err) => { error.textContent = err.message; });
+    };
+    $('.sp-start-skip').onclick = (event) => { event.preventDefault(); run('', ''); };
+    $('.sp-start-confirm').onclick = (event) => {
+      event.preventDefault();
+      run(longArm.value, folderLabel.value);
+    };
+  }
+
+  function openStartDialog() {
+    $('.sp-start-long-arm').value = '';
+    $('.sp-start-folder-label').value = '';
+    $('.sp-start-error').textContent = '';
+    $('.sp-start-backdrop').hidden = false;
+    $('.sp-start-long-arm').focus();
+  }
+
+  function closeStartDialog() {
+    $('.sp-start-backdrop').hidden = true;
   }
 
   // ------------------------------------------------------------ box values
@@ -349,11 +406,6 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
 
     for (const [key, widget] of Object.entries(widgets)) {
       widget.write(valueOf(key), key in state.edited);
-    }
-    const longArm = $('.sp-long-arm-input');
-    if (document.activeElement !== longArm) {
-      longArm.value = state.long_arm_cm ?? '';
-      longArm.dataset.committed = longArm.value;
     }
     const folderNote = $('.sp-folder-note');
     const folder = valueOf('capture.OUTPUT_ROOT');
