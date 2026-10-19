@@ -1073,6 +1073,14 @@ def check_picoscope_restore():
     print('picoscope restores its saved channels (D only, off A) ok')
 
 
+def check_motion_axes():
+    """Motorized-axes adapter on the simulated axes: ramped moves, refused
+    moves (range, freeze, busy, E-stop), background move events, close holds.
+    The body lives in test_motion_axes.py so it also runs without websockets."""
+    from test_motion_axes import run
+    run()
+
+
 def check_camera_markers():
     """set_markers stores a validated list, broadcasts it, survives the
     settings snapshot (device_state.json), and refuses a malformed marker
@@ -1389,6 +1397,7 @@ def main():
         check_synced_pipeline_show()
         check_camera_restore_order()
         check_camera_markers()
+        check_motion_axes()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))
         asyncio.run(check_idle_watchdog(available[0]['address']))

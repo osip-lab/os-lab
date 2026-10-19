@@ -1,7 +1,8 @@
 # Mechanical control: design record
 
-Status: **plan only** (written 2026-10-19 on the laptop, no hardware connected). Nothing here is
-implemented yet. Read this before starting the work in the lab, and update the "Decisions" and
+Status (2026-10-19, laptop, no hardware connected): the laptop phases 1-5 are implemented and tested
+on recorded data and on a simulator; see **Implementation status** at the end. Nothing has touched real
+hardware yet. Read this before starting the work in the lab, and update the "Decisions" and
 "Open questions" sections as things get settled.
 
 ## Goal
@@ -53,7 +54,7 @@ Safety by construction, as proposed. Specifics:
   - absolute soft range: reject outside it;
   - max single step: larger legal moves are auto-ramped;
   - max slew rate (V/s, um/s, deg/s);
-  - settle time after a move, before any measurement;
+  - settle time after a move, before any measurement (see "Measure only between moves" below);
   - optional travel budget per session;
   - `frozen` flag: reject any move. **This is where "ban a DoF" lives**, so the optimizer cannot
     bypass it.
@@ -82,6 +83,20 @@ design: it must be sample-efficient and noise-aware.
 
 To decide in the lab: can the scan be narrowed and sped up during optimization, so it covers only the
 0th + 1st order region? The fixed turnaround dead time makes very short sweeps wasteful.
+
+### Measure only between moves (vibrations)
+Motor motion shakes the setup, so a spectrum recorded while (or just after) a motor moves looks messy
+and must not be used. Rules for the alignment loop:
+- Never capture while any axis is moving. A move is "done" only when the driver reports it finished
+  (closed-loop: in position; open-loop: last step sent and acknowledged).
+- Then wait a per-axis **vibration settle delay** before the capture starts. Start with a conservative
+  value (e.g. 0.5-1 s) and measure it in the lab: repeat captures at increasing delays after a move
+  and take the delay after which the metrics stop changing beyond their noise floor.
+- The settle delay belongs to the axis config (different mounts ring differently), and the loop takes
+  the maximum over the axes that just moved.
+- Optionally check for residual vibration in the data itself (peak jitter / extra peaks relative to a
+  reference capture) and re-capture if it is present.
+- This adds to the evaluation cost (see above), so it is one more reason to keep evaluations few.
 
 ### 2.c Scan nonlinearity after turnarounds (proposed design)
 - Split each capture into monotonic sweeps using the extrema of the aux channel (the ramp, Channel B
@@ -226,6 +241,104 @@ Fits the existing patterns.
 - Which candidates are open-loop (PiezoMike on the E-872? Standa with or without encoder?) and which
   SDKs they need.
 - Can the scan be narrowed and sped up during optimization? What is the real turnaround dead time?
+  (Recorded data: the frequency turnaround lags the drive by ~0.5-0.9 s; guard set to 1.0 s.)
+- **Which side family is the first order?** Every 2026-10-12 session shows two side families of
+  comparable strength at s ~ +0.31 and s ~ -0.31 (s = signed FSR fraction, see `alignment/spectrum.py`).
+  The camera favours +0.31 (HG10/donut template overlap 0.73-0.76 vs 0.54-0.66). The hand marks pick
+  +0.31 in two sessions but -0.30 in 113244. On 44.5 cm (2026-10-11) the strongest family is -0.14 in one
+  session and +0.13 in the next, four minutes apart, same scan direction. Confirm by eye in the lab, then
+  set `MetricsConfig.first_order_s`.
+- Is the Rigol CH1 envelope right (|offset| + amplitude/2 <= 2.5 V, see Implementation status)?
+- Where should the simulator physics live long term: os-lab `simulation/cavity_physics.py` (now) or
+  the cavity-design repo?
 - Is there a reference photodiode for laser-power normalization?
 - Camera plane (near field or far field), and exposure time vs mode transit time.
 - The composite objective and its thresholds; acceptable run time; the "signal lost" policy.
+
+## Implementation status (2026-10-19, laptop)
+
+Everything below runs without hardware.
+
+### Tests to run
+```
+python alignment/sweeps.py             # sweep segmentation self-test
+python alignment/spectrum.py           # peaks, FSR, families, splitting, saturation, reassignment
+python alignment/camera.py             # Gaussian score, first-order templates, purity
+python -m alignment.metrics            # whole-capture metrics
+python alignment/validate_marks.py     # real sessions vs hand marks (edit ROOTS at the top)
+python -m motion.test_safety           # 14 safety-rule tests
+python rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrument
+python -m simulation.cavity_physics    # physics (cavity_design + analytic stand-in)
+python -m simulation.setup             # simulated scope + camera + metrics
+python kalishlot/test_motion_axes.py   # kalishlot adapter (also hooked into smoke_test.py)
+python alignment/test_loop.py          # loop: recovers, frozen, settle, abort, signal lost, 1D scan
+python alignment/run_alignment_sim.py  # demo run on the cavity_design physics (edit the globals)
+```
+
+### What exists
+- **`alignment/`** (pure numpy/scipy):
+  - `sweeps.py`: turnarounds from the aux ramp (zig-zag with hysteresis), sweeps with direction,
+    1.0 s guard after each turnaround.
+  - `spectrum.py`: 0th-order peaks (tallest per FSR; Lorentzian fit with an adaptive window; saturated
+    samples excluded and flagged), FSR from a periodicity test, local FSR per peak, scan-nonlinearity
+    flag, side families as signed offsets s, first-order peak and splitting (one vs two Lorentzians),
+    reassignment of misidentified 0th orders (see Lessons).
+  - `camera.py`: scale-free Gaussian overlap and ellipticity (refined fit on a crop: the live fit's
+    tolerances are too loose for astigmatism), HG10/LG01 template overlap for first orders, exposure
+    purity from the scope.
+  - `metrics.py`: `evaluate_capture` / `evaluate_session` give metrics with value, spread, n, valid and
+    reason, per scan direction (never pooled): intensity, gaussian_overlap, ellipticity, centroid_x/y,
+    first_order_s, split_linewidths (separation / component FWHM), split_fsr.
+  - `loop.py`: `AlignmentLoop` (tiers, noise floor, noise-aware coordinate search plus a gradient step
+    along a linear combination, min step = 3 x repeatability sigma, outlier confirmation, periodic
+    re-measure of the incumbent, verified final return, abort to best/start, JSON-lines log),
+    `Objective` (metric, direction, constraints), `scan_axis` (1D scan, one-sided approach).
+- **`motion/`**: `Axis` interface; `SafeAxis` (reject out of range, auto-ramp, slew, settle, vibration
+  settle via `ready_at`, freeze in config / at run time, E-stop latch, unknown-position refusal,
+  anti-backlash approach, travel budget, move log); `VirtualAxis` (all components checked before any
+  moves); `SimulatedAxis` (backlash, random landing error, drift, readback modes); `axes_config.py`
+  (3 simulated axes, tiers, a template for a real axis).
+- **`simulation/`**: `cavity_physics.py` (cavity_design: coupling = |overlap|^2, per-axis Gouy phase gives
+  s_x and s_y, ellipticity, beam tilt; ~50 ms per evaluation; NaN = no stable mode = signal lost; plus an
+  analytic stand-in); `setup.py` (scan through a thermal low-pass, which reproduces the turnaround stall;
+  HG_nm at n*s_x + m*s_y as in `Cavity.plot_spectrum` but per axis; saturation; camera frames that
+  integrate each mode over the exposure; vibration jitter when capturing too soon after a move).
+- **kalishlot**: `adapters/motion_axes.py` (a box per driver group; blocking `wait` moves for scripts)
+  and `static/boxes/motion_axes.js` (jog box: E-STOP, jog +/-, go-to, freeze, declare position, lamps),
+  registered in `server.py` and `app.js`. **Not tried in a browser**: the server's dependencies
+  (uvicorn, websockets) are not installed on the laptop. Only the adapter test and a JS syntax check ran.
+- **Rigol**: the CH1 cap moved into the device layer (`rigol_fg/rigol_dg.py`, `SAFETY_LIMITS`):
+  amplitude <= 5 Vpp **and** |offset| + amplitude/2 <= 2.5 V, refused with ValueError for every caller.
+  The box still clamps to the allowed envelope. **Behaviour change:** a non-zero offset combined with a
+  large amplitude is now refused or clamped; the old cap ignored the offset.
+
+### Findings from the recorded sessions (2026-10-11/12/15)
+- All 10 hand-marked 0th orders are detected; unsaturated heights match the marks within a few %.
+- Time per FSR: ~0.42 s on up-sweeps, ~0.52 s on down-sweeps, drifting by up to +-25% within one sweep
+  right after the guard. Every quantity therefore uses a local FSR.
+- 113244 is saturated (2 V range): its intensity is invalid by design, since fitted heights of clipped
+  peaks are extrapolations.
+- 0th-order frames: Gaussian overlap ~0.97 on 2026-10-12, 0.72-0.85 on the low-finesse 2026-10-11.
+- Analysis cost: ~3 s per capture with camera metrics, ~0.2 s scope-only.
+
+### Lessons from the simulator
+- **Mode misidentification is the main failure mode.** When misaligned, the first order can be taller
+  than the 0th order. "Tallest peak = 0th order" then makes the loop maximize the wrong mode and walk
+  away; it did so in the first test. The fix in place: with a known first-order offset
+  (`MetricsConfig.first_order_s`), a pick whose +s neighbour is weak (< 20% of it) while a taller peak
+  sits at -s is reassigned to that peak. Limit: when the 0th order is at the noise level the scope alone
+  cannot tell; then the camera guard (`min_fundamental_overlap`, off by default) or a better start is
+  needed.
+- A fit inconsistent with its own samples once became the incumbent. Such fits are now rejected, and
+  large improvements are re-measured before they are accepted.
+- With backlash, the best *commanded* position differs from the true one by ~backlash/2. Trusting the
+  metric (re-measure, verify) handles it.
+
+### Not done yet
+- **M-LOOP backend**: not written. M-LOOP is not installed here and pulls heavy dependencies; the
+  stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
+- **Lab measurement function** for the loop: an in-memory `capture_synchronized` (no video written per
+  evaluation) wrapped as `measure()`; today `capture_synchronized` takes an output folder.
+- **Aligner box** in kalishlot (a virtual adapter launching the loop in a child process via loan_client).
+- Real drivers (Standa, PI E-872, MDT693B port, Kinesis) and per-axis characterization in the lab:
+  `scan_axis` up and down for hysteresis, repeats for repeatability, delays for the vibration settle.

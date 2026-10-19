@@ -14,6 +14,7 @@ Notes:
 """
 
 import threading
+from dataclasses import dataclass
 
 import pyvisa
 
@@ -26,20 +27,39 @@ WAVEFORMS = {'sine': 'SIN', 'square': 'SQU', 'ramp': 'RAMP',
 _TOKEN_TO_NAME = {token: name for name, token in WAVEFORMS.items()}
 
 
+@dataclass(frozen=True)
+class ChannelLimits:
+    """Safety envelope of one output channel. None = no limit."""
+    max_amplitude_vpp: float | None = None
+    max_peak_v: float | None = None     # |offset| + amplitude / 2
+
+
+# Lab safety limits, enforced here in the device layer so that every caller
+# (kalishlot, scripts, the alignment loop) is bound by them. CH1 drives the
+# laser temperature scan: beyond a 5 Vpp swing (+-2.5 V around zero) the laser
+# is cooled so much that humidity condenses on it. Requests outside the
+# envelope raise ValueError and are never sent to the instrument.
+SAFETY_LIMITS = {1: ChannelLimits(max_amplitude_vpp=5.0, max_peak_v=2.5)}
+
+
 class RigolDG:
     """One Rigol DG800-series generator, addressed by its VISA resource string.
 
     All VISA I/O is serialized behind a lock, so the instance may be used
     from several threads (e.g. parallel web request handlers).
+
+    `limits` maps channel -> ChannelLimits and defaults to the lab's
+    SAFETY_LIMITS; amplitude and offset setters refuse anything outside them.
     """
 
     CHANNELS = (1, 2)
 
-    def __init__(self, resource):
+    def __init__(self, resource, limits=None):
         self.resource = str(resource)
         self.identity = ''
         self._inst = None
         self._lock = threading.Lock()
+        self.limits = dict(SAFETY_LIMITS if limits is None else limits)
 
     # ---------------------------------------------------------------- device
     @staticmethod
@@ -122,12 +142,53 @@ class RigolDG:
         self._write(f':SOUR{channel}:FREQ {float(hertz):.6f}')
         return float(self._query(f':SOUR{channel}:FREQ?'))
 
+    # ---------------------------------------------------------------- safety
+    def check_envelope(self, channel, amplitude_vpp, offset_v):
+        """Raise ValueError if (amplitude, offset) is outside the channel's limits."""
+        lim = self.limits.get(int(channel))
+        if lim is None:
+            return
+        amplitude_vpp, offset_v = float(amplitude_vpp), float(offset_v)
+        if lim.max_amplitude_vpp is not None and amplitude_vpp > lim.max_amplitude_vpp + 1e-9:
+            raise ValueError(f'CH{channel}: amplitude {amplitude_vpp:g} Vpp exceeds the '
+                             f'safety limit {lim.max_amplitude_vpp:g} Vpp')
+        peak = abs(offset_v) + amplitude_vpp / 2
+        if lim.max_peak_v is not None and peak > lim.max_peak_v + 1e-9:
+            raise ValueError(f'CH{channel}: |offset| + amplitude/2 = {peak:g} V exceeds the '
+                             f'safety limit {lim.max_peak_v:g} V')
+
+    def max_amplitude(self, channel, offset_v=None):
+        """Largest amplitude [Vpp] allowed at the given (default: current) offset."""
+        lim = self.limits.get(int(channel))
+        if lim is None:
+            return float('inf')
+        out = lim.max_amplitude_vpp if lim.max_amplitude_vpp is not None else float('inf')
+        if lim.max_peak_v is not None:
+            if offset_v is None:
+                offset_v = float(self._query(f':SOUR{channel}:VOLT:OFFS?'))
+            out = min(out, max(2 * (lim.max_peak_v - abs(float(offset_v))), 0.0))
+        return out
+
+    def max_offset(self, channel, amplitude_vpp=None):
+        """Largest |offset| [V] allowed at the given (default: current) amplitude."""
+        lim = self.limits.get(int(channel))
+        if lim is None or lim.max_peak_v is None:
+            return float('inf')
+        if amplitude_vpp is None:
+            amplitude_vpp = float(self._query(f':SOUR{channel}:VOLT?'))
+        return max(lim.max_peak_v - float(amplitude_vpp) / 2, 0.0)
+
+    # -------------------------------------------------------------- setters
     def set_amplitude(self, channel, vpp):
+        if int(channel) in self.limits:
+            self.check_envelope(channel, vpp, float(self._query(f':SOUR{channel}:VOLT:OFFS?')))
         self._write(f':SOUR{channel}:VOLT:UNIT VPP')
         self._write(f':SOUR{channel}:VOLT {float(vpp):.4f}')
         return float(self._query(f':SOUR{channel}:VOLT?'))
 
     def set_offset(self, channel, volts):
+        if int(channel) in self.limits:
+            self.check_envelope(channel, float(self._query(f':SOUR{channel}:VOLT?')), volts)
         self._write(f':SOUR{channel}:VOLT:OFFS {float(volts):.4f}')
         return float(self._query(f':SOUR{channel}:VOLT:OFFS?'))
 

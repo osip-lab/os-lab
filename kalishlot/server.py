@@ -42,12 +42,14 @@ from pydantic import BaseModel
 
 from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
+from adapters.motion_axes import MotionAxesAdapter
 from adapters.picoscope import PicoScopeAdapter
 from adapters.rigol_dg import RigolDGAdapter
 from adapters.synced_pipeline import SyncedPipelineAdapter
 
 _ADAPTERS = [DummyCameraAdapter, BaslerCameraAdapter,
-             RigolDGAdapter, PicoScopeAdapter, SyncedPipelineAdapter]
+             RigolDGAdapter, PicoScopeAdapter, SyncedPipelineAdapter,
+             MotionAxesAdapter]
 
 # XIMEA is optional where the others are not: its Python package is not on
 # PyPI and has to be copied out of the XIMEA Software Package by hand (see

@@ -20,10 +20,10 @@ SETTERS = {'output': RigolDG.set_output,
            'offset': RigolDG.set_offset,
            'waveform': RigolDG.set_waveform}
 
-# Lab safety cap, channel -> max amplitude in Vpp. CH1 drives the laser
-# temperature scan: above ~5 Vpp the laser is cooled so much that humidity
-# condenses on it. Requests beyond the cap are clamped, never forwarded.
-AMPLITUDE_LIMIT_VPP = {1: 5.0}
+# The lab safety limits (CH1: 5 Vpp, |offset| + amplitude/2 <= 2.5 V) live in
+# the device layer (rigol_dg.SAFETY_LIMITS), which refuses anything outside
+# them. The box stays forgiving: it clamps a request to the allowed envelope
+# before forwarding it, and the clamped value comes back in the channel event.
 
 
 class RigolDGAdapter(DeviceAdapter):
@@ -82,8 +82,12 @@ class RigolDGAdapter(DeviceAdapter):
             if setter is None:
                 raise ValueError(f"unknown channel setting {args['name']!r}")
             value = args['value']
-            if args['name'] == 'amplitude' and channel in AMPLITUDE_LIMIT_VPP:
-                value = min(float(value), AMPLITUDE_LIMIT_VPP[channel])
+            if channel in self.generator.limits:
+                if args['name'] == 'amplitude':
+                    value = min(float(value), self.generator.max_amplitude(channel))
+                elif args['name'] == 'offset':
+                    cap = self.generator.max_offset(channel)
+                    value = max(-cap, min(float(value), cap))
             setter(self.generator, channel, value)
             # broadcast the state the instrument actually accepted
             self._emit_channel(channel)
