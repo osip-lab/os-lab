@@ -48,16 +48,17 @@ AXES = {
     # (vertical) tilt. The controller's Z output is not used.
     # PLACEHOLDER limits (2026-10-19): range kept to half the 150 V the piezos take until the
     # tilt per volt is measured; approach off until hysteresis is characterized; settle and
-    # repeatability still to be measured.
+    # repeatability still to be measured. No settle delays: piezos do not shake the setup
+    # (lab, 2026-10-19), unlike motors.
     'large_mirror_phi': {
         'driver': 'thorlabs_mdt693b', 'address': 'COM4', 'options': {'channel': 'x'},
-        'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.05,
-                             vibration_settle_s=1.0),
+        'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.0,
+                             vibration_settle_s=0.0),
     },
     'large_mirror_theta': {
         'driver': 'thorlabs_mdt693b', 'address': 'COM4', 'options': {'channel': 'y'},
-        'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.05,
-                             vibration_settle_s=1.0),
+        'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.0,
+                             vibration_settle_s=0.0),
     },
 }
 

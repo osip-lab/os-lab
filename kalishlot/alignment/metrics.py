@@ -35,6 +35,9 @@ from alignment import camera, spectrum, sweeps
 
 _REPO = Path(__file__).resolve().parents[2]
 FAMILY_CAMERA_MARGIN = 0.08     # camera overrides the strongest family only by this much
+SAME_MODE_MIN_RATIO = 0.8       # a 0th-order pick whose frame overlaps the best pick's Gaussian
+                                # less than this x that pick's own overlap is another mode
+                                # (2026-10-19 live: impostors 0.48, true 0th orders 0.96)
 
 
 @dataclass
@@ -126,12 +129,50 @@ def _metric(name, values, min_n, reason_if_empty):
     return Metric(name, med, spread, n, True)
 
 
+def _same_mode_impostors(rows, frames, mask, cfg):
+    """0th-order picks whose camera frame is not the same spatial mode as the
+    most Gaussian pick of the sweep: {t: likeness}.
+
+    Every 0th order of one capture is the same mode, so a pick that looks
+    different is a higher order taken for a 0th order. Seen live 2026-10-19:
+    a strong first order (0.85x the 0th's height) made the FSR estimate come
+    out at half its value, and "tallest per FSR" then alternated between the
+    two modes (likeness 0.48 vs 0.96 for true 0th orders)."""
+    scored = [r for r in rows if r.get('frame_usable') and r['gauss']['valid']]
+    if len(scored) < 2:
+        return {}
+    ref_row = max(scored, key=lambda r: r['gauss']['overlap'])
+    ref = camera.GaussianScore(**ref_row['gauss'])
+    out = {}
+    for r in scored:
+        if r is ref_row:
+            continue
+        like = camera.fundamental_likeness(_masked(frames[r['frame']], mask, cfg), ref)
+        r['same_mode_likeness'] = like
+        if np.isfinite(like) and like < SAME_MODE_MIN_RATIO * ref.overlap:
+            out[r['t']] = like
+    return out
+
+
 def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
     m = sw.mask(t)
     tt, yy = t[m], y[m]
     have_camera = frames is not None and windows is not None
     fundamentals, fsr = spectrum.find_fundamentals(tt, yy, cfg.fsr_time_s, cfg.saturation_v)
     rec = {'sweep': sw.to_dict(), 'fsr_time_s': fsr, 'fundamentals': [], 'first_orders': []}
+    if have_camera and fundamentals:
+        # Camera check that the picks are one mode; if some are not, pick again
+        # with the FSR implied by the true ones (impostors halve the estimate).
+        rows = [{'t': f.t, **_frame_score(t, y, f.t, f.gamma, frames, windows, mask, cfg)}
+                for f in fundamentals]
+        impostors = _same_mode_impostors(rows, frames, mask, cfg)
+        if impostors:
+            rec['impostors'] = {f'{k:.4f}': v for k, v in impostors.items()}
+            kept = sorted(f.t for f in fundamentals if f.t not in impostors)
+            if len(kept) >= 2:
+                fsr = float(np.median(np.diff(kept)))
+                fundamentals, _ = spectrum.find_fundamentals(tt, yy, fsr, cfg.saturation_v)
+                rec['fsr_time_s'], rec['fsr_from'] = fsr, 'camera-checked 0th orders'
     if cfg.first_order_s is not None and fundamentals:
         fundamentals, rec['reassigned'] = spectrum.reassign_by_first_order(
             tt, yy, fundamentals, sw.direction, cfg.first_order_s, saturation_v=cfg.saturation_v)
@@ -152,6 +193,11 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
                 row['usable'], row['why'] = False, 'frame not Gaussian (higher order?)'
         rec['fundamentals'].append(row)
         by_t[f.t] = row
+    if have_camera:
+        # whatever the re-pick could not fix (too few true 0th orders) is
+        # at least kept out of the metrics
+        for t_imp in _same_mode_impostors(rec['fundamentals'], frames, mask, cfg):
+            by_t[t_imp]['usable'], by_t[t_imp]['why'] = False, 'not the same mode as the 0th order'
 
     offsets = spectrum.side_offsets(tt, yy, fundamentals, sw.direction)
     if cfg.first_order_s is None and cfg.first_order_sign:

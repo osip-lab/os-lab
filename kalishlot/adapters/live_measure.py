@@ -13,6 +13,7 @@ the same measurement in-process.
 Commands (args):
     measure {duration_s=3.0, with_frames=True, camera=None, scope=None}
         camera / scope: a device_id; None = the only open one of that kind.
+        save: a .npz path to also write the raw capture to (offline debugging).
         Returns {'metrics': {name: Metric dict}, 'by_direction', 'direction',
                  'sync', 'n_frames', 'n_samples', 'saturated', 'timing_s'}.
     reset_sync {}   forget the kept camera-to-scope correction
@@ -24,6 +25,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # kalishlot/: alignment package
 from alignment.live_capture import LiveCapture  # noqa: E402
@@ -97,12 +100,12 @@ class LiveMeasureAdapter(DeviceAdapter):
             try:
                 return self._measure(float(args.get('duration_s', 3.0)),
                                      bool(args.get('with_frames', True)),
-                                     args.get('scope'), args.get('camera'))
+                                     args.get('scope'), args.get('camera'), args.get('save'))
             finally:
                 self._lock.release()
         raise ValueError(f'unknown command {name!r}')
 
-    def _measure(self, duration_s, with_frames, scope_id, camera_id):
+    def _measure(self, duration_s, with_frames, scope_id, camera_id, save=None):
         scope_id, scope_adapter, camera_id, camera = self._devices(scope_id, camera_id)
         scope = scope_adapter.scope
         if not scope.is_streaming:
@@ -123,6 +126,12 @@ class LiveMeasureAdapter(DeviceAdapter):
             saturation_v=0.995 * scope.channels[SIGNAL_CHANNEL]['range_v'],
             sensor_geometry={'offset_x': roi['x'], 'offset_y': roi['y'],
                              'binning_x': 1, 'binning_y': 1} if with_frames else None)
+        if save:
+            # raw capture for offline work (np.load(...)); arrays as evaluate_capture takes them
+            Path(save).parent.mkdir(parents=True, exist_ok=True)
+            np.savez(save, t=data.t, signal=data.signal, aux=data.aux, frames=data.frames,
+                     windows=data.windows, roi=np.array([roi['x'], roi['y']]),
+                     saturation_v=cfg.saturation_v)
         res = evaluate_capture(*data.evaluate_args(), cfg=cfg)
         result = {
             'metrics': {k: m.to_dict() for k, m in res.metrics.items()},
