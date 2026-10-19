@@ -62,6 +62,11 @@ class MetricsConfig:
                                           # Gaussian less is not used (it may be a higher order). Off by
                                           # default: low-finesse sessions (2026-10-11) show real 0th orders
                                           # at 0.72-0.85, high-finesse ones (2026-10-12) at ~0.97.
+    same_mode_check: bool = True          # reject 0th-order picks whose frame does not look like the most
+                                          # Gaussian pick (and re-pick). Assumes a Gaussian-like 0th order:
+                                          # turn off, with min_fundamental_overlap=None, where the paraxial
+                                          # approximation fails and the 0th order is no longer Gaussian;
+                                          # the 0th order is then the tallest peak per FSR (intensity only)
     recover_first_order_s: float | None = None  # |s| of the first order, learned from recent captures.
                                           # With min_fundamental_overlap set, a 0th-order pick whose frame
                                           # fails it is retried at -s (by the sign rule the true 0th order
@@ -170,7 +175,7 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
     fundamentals, fsr = spectrum.find_fundamentals(tt, yy, cfg.fsr_time_s, cfg.saturation_v)
     rec = {'sweep': sw.to_dict(), 'fsr_time_s': fsr, 'fundamentals': [], 'first_orders': []}
     cache = {}                          # frame index -> GaussianScore (each frame fitted once)
-    if have_camera and fundamentals:
+    if have_camera and fundamentals and cfg.same_mode_check:
         # Camera check that the picks are one mode; if some are not, pick again
         # with the FSR implied by the true ones (impostors halve the estimate).
         rows = [{'t': f.t, **_frame_score(t, y, f.t, f.gamma, frames, windows, mask, cfg, cache)}
@@ -206,7 +211,7 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
     if have_camera and cfg.min_fundamental_overlap is not None and cfg.recover_first_order_s:
         rec['recovered'] = _recover_wrong_mode(t, y, tt, yy, sw, fundamentals, rec, by_t,
                                                frames, windows, mask, cfg, cache)
-    if have_camera:
+    if have_camera and cfg.same_mode_check:
         # whatever the re-pick could not fix (too few true 0th orders) is
         # at least kept out of the metrics
         for t_imp in _same_mode_impostors(rec['fundamentals'], frames, mask, cfg):

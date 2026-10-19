@@ -15,12 +15,18 @@ Commands (args):
         camera / scope: a device_id; None = the only open one of that kind.
         save: a .npz path to also write the raw capture to (offline debugging).
         profile: True = also return where the metrics' time went ('profile_s').
+        shape_guard: override the device setting for this measurement (see configure).
         fast: True (default) = alignment-loop metrics (MetricsConfig.fast: fitted
               on a rebinned ROI around the spot, ~1 s); False = the full metrics
               incl. first-order camera templates (~10 s).
         Returns {'metrics': {name: Metric dict}, 'by_direction', 'direction',
                  'sync', 'n_frames', 'n_samples', 'saturated', 'timing_s'}.
     reset_sync {}   forget the kept camera-to-scope correction
+    configure {shape_guard=None, min_overlap=None}   persistent settings (kept across restarts):
+        shape_guard: True (default) = a 0th-order pick must look like a Gaussian (overlap >=
+            min_overlap) and like the other picks; failures are recovered at -s or invalid.
+            False = pick the 0th order by intensity alone (tallest per FSR), for setups where
+            the paraxial approximation fails and the 0th order is not Gaussian.
 Events: {'type': 'measurement', ...the measure result}
 """
 
@@ -62,6 +68,8 @@ class LiveMeasureAdapter(DeviceAdapter):
         self._captures = {}         # (scope id, camera id) -> LiveCapture (keeps its sync)
         self._last = None
         self._first_order_s = []     # |s| of the first order in recent valid captures
+        self.shape_guard = True
+        self.min_overlap = MIN_FUNDAMENTAL_OVERLAP
 
     def open(self):
         pass
@@ -71,7 +79,18 @@ class LiveMeasureAdapter(DeviceAdapter):
 
     def describe(self):
         return {'type': self.type_name, 'label': self.display_name,
-                'commands': ['measure', 'reset_sync'], 'last': self._last}
+                'commands': ['measure', 'reset_sync', 'configure'],
+                'shape_guard': self.shape_guard, 'min_overlap': self.min_overlap,
+                'last': self._last}
+
+    def settings_snapshot(self):
+        return {'shape_guard': self.shape_guard, 'min_overlap': self.min_overlap}
+
+    def restore_settings(self, snapshot):
+        if isinstance(snapshot.get('shape_guard'), bool):
+            self.shape_guard = snapshot['shape_guard']
+        if isinstance(snapshot.get('min_overlap'), (int, float)):
+            self.min_overlap = float(snapshot['min_overlap'])
 
     # ------------------------------------------------------------ devices
     def _pick(self, wanted, test, what):
@@ -101,6 +120,15 @@ class LiveMeasureAdapter(DeviceAdapter):
             for live in self._captures.values():
                 live.reset_sync()
             return {'ok': True}
+        if name == 'configure':
+            if args.get('shape_guard') is not None:
+                self.shape_guard = bool(args['shape_guard'])
+            if args.get('min_overlap') is not None:
+                value = float(args['min_overlap'])
+                if not 0 < value < 1:
+                    raise ValueError('min_overlap must be between 0 and 1')
+                self.min_overlap = value
+            return {'ok': True, 'shape_guard': self.shape_guard, 'min_overlap': self.min_overlap}
         if name == 'measure':
             if not self._lock.acquire(blocking=False):
                 raise ValueError('a measurement is already running')
@@ -108,13 +136,15 @@ class LiveMeasureAdapter(DeviceAdapter):
                 return self._measure(float(args.get('duration_s', 3.0)),
                                      bool(args.get('with_frames', True)),
                                      args.get('scope'), args.get('camera'), args.get('save'),
-                                     bool(args.get('fast', True)), bool(args.get('profile', False)))
+                                     bool(args.get('fast', True)), bool(args.get('profile', False)),
+                                     args.get('shape_guard'))
             finally:
                 self._lock.release()
         raise ValueError(f'unknown command {name!r}')
 
     def _measure(self, duration_s, with_frames, scope_id, camera_id, save=None, fast=True,
-                 profile=False):
+                 profile=False, shape_guard=None):
+        guard = self.shape_guard if shape_guard is None else bool(shape_guard)
         scope_id, scope_adapter, camera_id, camera = self._devices(scope_id, camera_id)
         scope = scope_adapter.scope
         if not scope.is_streaming:
@@ -133,9 +163,10 @@ class LiveMeasureAdapter(DeviceAdapter):
         roi = data.roi or {'x': 0, 'y': 0}
         cfg = MetricsConfig(
             saturation_v=0.995 * scope.channels[SIGNAL_CHANNEL]['range_v'], fast=fast,
-            min_fundamental_overlap=MIN_FUNDAMENTAL_OVERLAP,
+            min_fundamental_overlap=self.min_overlap if guard else None,
+            same_mode_check=guard,
             recover_first_order_s=(float(np.median(self._first_order_s))
-                                   if self._first_order_s else None),
+                                   if guard and self._first_order_s else None),
             sensor_geometry={'offset_x': roi['x'], 'offset_y': roi['y'],
                              'binning_x': 1, 'binning_y': 1} if with_frames else None)
         if save:
@@ -162,7 +193,8 @@ class LiveMeasureAdapter(DeviceAdapter):
                                                           'not the same mode as the 0th order')
                                              for r in rows),
                   'recovered': sum(sw.get('recovered', 0) for sw in res.sweeps),
-                  'first_order_s_used': cfg.recover_first_order_s}
+                  'first_order_s_used': cfg.recover_first_order_s,
+                  'shape_guard': guard}
         result = {
             'metrics': {k: m.to_dict() for k, m in res.metrics.items()},
             'by_direction': {str(d): {k: m.to_dict() for k, m in ms.items()}
