@@ -305,7 +305,15 @@ Fits the existing patterns.
   falling -> *before* (`sweeps.scan_direction`, `sweeps.first_order_time_sign`). In `s` terms the first
   order has s > 0 in both directions, i.e. the +0.31 family, as the camera favoured. Live captures
   that day picked -0.36 on up-sweeps (against the rule) and +0.31 on down-sweeps (with it).
-  Proposed: set `first_order_s = +0.31`.
+  **Implemented as a sign, not a value:** `MetricsConfig.first_order_sign = +1` (default) keeps only
+  side families with s > 0. The magnitude of s still comes from the data in every sweep, since it
+  changes with the long-arm length. s is a fraction of the local FSR, so the scan rate does not enter.
+  Nothing in the lab path hard-codes a value (0.3 appears only in synthetic self-tests and in the
+  analytic simulator stand-in).
+  **Check against the hand marks (2026-10-11/12):** 9 of 12 first-order marks have s > 0. The 3 that
+  do not: 110007 (44.5 cm, both marks s = -0.14) and 113244 (33.5 cm, saturated, s = -0.29/-0.31).
+  Either those marks are mislabelled or the rule has exceptions. Check them by eye before trusting the
+  rule for mode identification in a loop.
 - Is the Rigol CH1 envelope right (|offset| + amplitude/2 <= 2.5 V, see Implementation status)?
 - Where should the simulator physics live long term: os-lab `simulation/cavity_physics.py` (now) or
   the cavity-design repo?
@@ -458,7 +466,8 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     bursts (~60 ms spread); the min-latency estimate ignores that.
   - The ramp that day: 0.05 Hz, 1.5 Vpp (aux -0.76..+0.76 V, 0.151 V/s). `scan_direction` matched
     every segment of a 25 s capture.
-- **Synced captures from the streams (proposal, not built):** kalishlot's "Start Capture" could use
+- **Synced captures from the streams (proposal, not built; full handover in `LIVE_CAPTURE.md`):**
+  kalishlot's "Start Capture" could use
   the same mechanism: arm the recorder, cut the scope span, fit the sync, and write the session in the
   existing format, without borrowing the devices. Differences from today's capture:
   - the streams run at the boxes' settings: scope at its streaming rate (20 kHz now; the capture uses

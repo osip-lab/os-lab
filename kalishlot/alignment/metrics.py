@@ -47,6 +47,11 @@ class MetricsConfig:
     first_order_s: float | None = None    # known first-order offset (signed FSR fraction). Picks the
                                           # first-order family AND corrects 0th-order picks that are
                                           # really first orders (misaligned cavity); None = strongest family
+    first_order_sign: int | None = sweeps.FIRST_ORDER_AFTER_ON_RISING
+                                          # sign of s the first-order family must have when first_order_s
+                                          # is None. Lab rule 2026-10-19 (aux rising -> first order after
+                                          # the 0th, falling -> before) = +1 at any cavity length. None =
+                                          # either sign (the strongest family, camera tie-break)
     min_samples: int = 2                  # fewer valid samples -> metric invalid
     min_purity: float = 0.15              # frame must get >= this share of its light from the target peak
     use_mask: bool = True                 # replace pixels outside the session mask by background
@@ -149,6 +154,8 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
         by_t[f.t] = row
 
     offsets = spectrum.side_offsets(tt, yy, fundamentals, sw.direction)
+    if cfg.first_order_s is None and cfg.first_order_sign:
+        offsets = [o for o in offsets if o[1] * cfg.first_order_sign > 0]
     candidates = spectrum.family_candidates(offsets)
     rec['family_candidates'] = candidates
     if cfg.first_order_s is not None:
