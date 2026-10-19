@@ -22,8 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from alignment.metrics import MetricsConfig, evaluate_session  # noqa: E402
 
-DAILY = Path(r'C:\Users\michaeka\Weizmann Institute Dropbox\Michael Kali\Labs Dropbox'
-             r'\Laser Phase Plate\Daily measurements and notes')
+from local_config import PATH_DROPBOX  # noqa: E402  (per-computer paths live there)
+
+DAILY = Path(PATH_DROPBOX) / 'Laser Phase Plate' / 'Daily measurements and notes'
 ROOTS = [DAILY / '2026-10-11', DAILY / '2026-10-12', DAILY / '2026-10-15']
 WITH_FRAMES = True
 SAVE_JSON = False

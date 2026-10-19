@@ -273,6 +273,7 @@ python -m simulation.setup             # simulated scope + camera + metrics
 python kalishlot/test_motion_axes.py   # kalishlot adapter (also hooked into smoke_test.py)
 python alignment/test_loop.py          # loop: recovers, frozen, settle, abort, signal lost, 1D scan
 python alignment/run_alignment_sim.py  # demo run on the cavity_design physics (edit the globals)
+python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with a hidden misalignment
 ```
 
 ### What exists
@@ -293,6 +294,10 @@ python alignment/run_alignment_sim.py  # demo run on the cavity_design physics (
     along a linear combination, min step = 3 x repeatability sigma, outlier confirmation, periodic
     re-measure of the incumbent, verified final return, abort to best/start, JSON-lines log),
     `Objective` (metric, direction, constraints), `scan_axis` (1D scan, one-sided approach).
+- Axis names follow cavity_design (optical axis = x): simulated axes `sim_mirror_phi` (end mirror,
+  xy-plane tilt), `sim_mirror_theta` (xz-plane tilt), `sim_lens_x` (lens along the optical axis).
+  Paths to the cavity-design project and to Dropbox come from `local_config.py`
+  (`PATH_CAVITY_DESIGN_PROJECT`, `PATH_DROPBOX`), so the scripts run on any lab computer.
 - **`motion/`**: `Axis` interface; `SafeAxis` (reject out of range, auto-ramp, slew, settle, vibration
   settle via `ready_at`, freeze in config / at run time, E-stop latch, unknown-position refusal,
   anti-backlash approach, travel budget, move log); `VirtualAxis` (all components checked before any
@@ -331,6 +336,12 @@ python alignment/run_alignment_sim.py  # demo run on the cavity_design physics (
   needed.
 - A fit inconsistent with its own samples once became the incumbent. Such fits are now rejected, and
   large improvements are re-measured before they are accepted.
+- Visualization (`alignment/visualize_alignment_sim.py`): the true aligned point is offset by a hidden
+  misalignment only the simulator knows; the loop sees only synthetic scope captures. With +25/-18 urad
+  and 60 um hidden, hidden coupling went 0.931 -> 0.9997 in 80 evaluations. `Cavity.plot` raises at its
+  last step (mirror origin/image markers, "Central line is not well defined") for the example cavity;
+  the script catches it and keeps the modes. The xz plane cannot be plotted (aspheric surfaces are
+  xy-only in cavity_design).
 - With backlash, the best *commanded* position differs from the true one by ~backlash/2. Trusting the
   metric (re-measure, verify) handles it.
 

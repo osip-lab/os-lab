@@ -25,7 +25,7 @@ def setup_case(misalign, seed=1):
 
 
 def test_recovers_coupling():
-    clock, axes, setup = setup_case({'sim_mirror_tilt_x': 7.0, 'sim_mirror_tilt_y': -5.0})
+    clock, axes, setup = setup_case({'sim_mirror_phi': 7.0, 'sim_mirror_theta': -5.0})
     before = setup.mode_state().coupling
     loop = AlignmentLoop(axes, make_measure(setup, clock), Objective('intensity'), tiers=TIERS,
                          max_evaluations=120, **QUIET)
@@ -36,15 +36,15 @@ def test_recovers_coupling():
 
 
 def test_frozen_axis_never_moves():
-    clock, axes, setup = setup_case({'sim_mirror_tilt_x': 6.0, 'sim_mirror_tilt_y': 4.0})
-    axes['sim_mirror_tilt_y'].set_frozen(True, who='test')
-    moves = axes['sim_mirror_tilt_y']._raw.moves
+    clock, axes, setup = setup_case({'sim_mirror_phi': 6.0, 'sim_mirror_theta': 4.0})
+    axes['sim_mirror_theta'].set_frozen(True, who='test')
+    moves = axes['sim_mirror_theta']._raw.moves
     AlignmentLoop(axes, make_measure(setup, clock), tiers=TIERS, max_evaluations=60, **QUIET).run()
-    assert axes['sim_mirror_tilt_y']._raw.moves == moves
+    assert axes['sim_mirror_theta']._raw.moves == moves
 
 
 def test_measures_only_after_settling():
-    clock, axes, setup = setup_case({'sim_mirror_tilt_x': 5.0})
+    clock, axes, setup = setup_case({'sim_mirror_phi': 5.0})
     inner = make_measure(setup, clock)
 
     def measure():
@@ -58,7 +58,7 @@ def test_measures_only_after_settling():
 
 
 def test_abort_returns_to_best():
-    clock, axes, setup = setup_case({'sim_mirror_tilt_x': 6.0})
+    clock, axes, setup = setup_case({'sim_mirror_phi': 6.0})
     inner = make_measure(setup, clock)
     holder = {}
 
@@ -76,7 +76,7 @@ def test_abort_returns_to_best():
 
 
 def test_signal_lost_at_start():
-    clock, axes, setup = setup_case({'sim_mirror_tilt_x': 30.0})     # beyond the stable range
+    clock, axes, setup = setup_case({'sim_mirror_phi': 30.0})     # beyond the stable range
     start = {n: a.commanded for n, a in axes.items()}
     loop = AlignmentLoop(axes, make_measure(setup, clock), tiers=TIERS, **QUIET)
     try:
@@ -89,8 +89,8 @@ def test_signal_lost_at_start():
 
 
 def test_scan_axis_finds_peak():
-    clock, axes, setup = setup_case({'sim_mirror_tilt_x': 4.0})
-    ax = axes['sim_mirror_tilt_x']
+    clock, axes, setup = setup_case({'sim_mirror_phi': 4.0})
+    ax = axes['sim_mirror_phi']
     rows = scan_axis(ax, [33.5 + k for k in range(9)], make_measure(setup, clock))
     best = max(rows, key=lambda r: r['score'] or -1)
     assert abs(best['target'] - 37.5) <= 1.0, [(r['target'], r['score']) for r in rows]

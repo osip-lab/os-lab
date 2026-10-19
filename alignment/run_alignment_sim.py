@@ -21,10 +21,10 @@ from motion.simulated import SimulatedAxis  # noqa: E402
 from simulation.cavity_physics import make_physics  # noqa: E402
 from simulation.setup import SimulatedSetup  # noqa: E402
 
-MISALIGN = {'sim_mirror_tilt_x': +12.0, 'sim_mirror_tilt_y': -9.0, 'sim_lens_z': 0.0}
+MISALIGN = {'sim_mirror_phi': +12.0, 'sim_mirror_theta': -9.0, 'sim_lens_x': 0.0}
 OBJECTIVE = Objective('intensity', maximize=True)
 WITH_FRAMES = False          # camera metrics cost ~3 s of analysis per capture
-FROZEN = []                  # e.g. ['sim_lens_z'] to keep it fixed
+FROZEN = []                  # e.g. ['sim_lens_x'] to keep it fixed
 USE_CAVITY_DESIGN = True
 MAX_EVALUATIONS = 120
 SEED = 3

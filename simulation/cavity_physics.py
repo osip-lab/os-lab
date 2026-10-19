@@ -12,13 +12,21 @@ element perturbations it builds the perturbed cavity and returns:
                (s = -2 * sum(phi_axis) / 2pi, mod 1). Their difference is the
                astigmatic first-order splitting.
 - ellipticity  w_min / w_max of the perturbed mode at its waist.
-- tilt_x/_y    beam direction change in units of the mode's divergence (NA):
+- tilt_y/_z    beam direction change in units of the mode's divergence (NA):
                the camera sees this as a centroid shift in beam widths.
 - valid        False when the perturbed cavity has no stable mode (NaN): the
                light then does not resonate at all.
 
 `AnalyticPhysics` is a dependency-free stand-in (quadratic coupling loss,
 linear astigmatism) for tests and for machines without cavity-design.
+
+Axes follow cavity_design: the optical axis is x. A mirror's `phi` tilt turns
+it in the xy plane (the beam is deflected along y), `theta` in the xz plane
+(along z); an element's `x` moves it along the optical axis. tilt_y / tilt_z
+are therefore the transverse beam-angle components; the camera's columns are
+lab y and its rows lab z. s_x / s_y belong to the perturbed mode's two
+transverse principal axes (cavity_design's per-axis Gouy phase), i.e. the
+HG10 and HG01 families, whatever their orientation.
 
 This module has no os-lab dependencies beyond the bridge, so the cavity-design
 project can import it as well (see kalishlot/MECHANICAL_CONTROL.md).
@@ -39,8 +47,8 @@ class ModeState:
     s_x: float
     s_y: float
     ellipticity: float = 1.0
-    tilt_x: float = 0.0
     tilt_y: float = 0.0
+    tilt_z: float = 0.0
     valid: bool = True
 
     @property
@@ -89,11 +97,11 @@ def example_cavity():
 # cavity is near the stability edge: ~10 urad of end-mirror tilt or ~10 um of
 # lens travel already costs a few percent of coupling, and ~3x that loses the mode.
 EXAMPLE_DOFS = {
-    'sim_mirror_tilt_x': DoF(3, 'phi', 1e-6),      # 1 V -> 1 urad (37.5 V = aligned)
-    'sim_mirror_tilt_y': DoF(3, 'theta', 1e-6),
-    'sim_lens_z': DoF(1, 'x', 1e-7),               # 1 um of stage -> 0.1 um of lens (lever)
+    'sim_mirror_phi': DoF(3, 'phi', 1e-6),      # end mirror, xy-plane tilt: 1 V -> 1 urad (37.5 V = aligned)
+    'sim_mirror_theta': DoF(3, 'theta', 1e-6),  # end mirror, xz-plane tilt
+    'sim_lens_x': DoF(1, 'x', 1e-7),            # lens along the optical axis: 1 um of stage -> 0.1 um
 }
-EXAMPLE_ALIGNED = {'sim_mirror_tilt_x': 37.5, 'sim_mirror_tilt_y': 37.5, 'sim_lens_z': 0.0}
+EXAMPLE_ALIGNED = {'sim_mirror_phi': 37.5, 'sim_mirror_theta': 37.5, 'sim_lens_x': 0.0}
 
 
 def _gouy_s(cavity):
@@ -124,8 +132,7 @@ class CavityPhysics:
 
     def evaluate(self, positions):
         """positions: {axis name: position in axis units}. Missing axes = aligned."""
-        offsets = {n: float(positions.get(n, self.aligned.get(n, 0.0))) - self.aligned.get(n, 0.0)
-                   for n in self.dofs}
+        offsets = self._offsets(positions)
         key = tuple(round(offsets[n], self._decimals) for n in sorted(offsets))
         if key not in self._cache:
             if len(self._cache) > 20000:
@@ -133,11 +140,28 @@ class CavityPhysics:
             self._cache[key] = self._evaluate(offsets)
         return self._cache[key]
 
+    def _offsets(self, positions):
+        return {n: float(positions.get(n, self.aligned.get(n, 0.0))) - self.aligned.get(n, 0.0)
+                for n in self.dofs}
+
+    def _pointers(self, offsets):
+        cd = self._cd
+        return [cd.PerturbationPointer(element_index=d.element_index, parameter_name=d.parameter,
+                                       perturbation_value=offsets[n] * d.si_per_unit)
+                for n, d in self.dofs.items() if offsets[n] != 0]
+
+    def perturbed_cavity(self, positions):
+        """The cavity_design Cavity for these motor positions (the reference when aligned),
+        e.g. for Cavity.plot or plot_2_cavity_perturbation_overlap."""
+        pointers = self._pointers(self._offsets(positions))
+        if not pointers:
+            return self.reference
+        with np.errstate(all='ignore'):
+            return self._cd.perturb_cavity(self.reference, pointers)
+
     def _evaluate(self, offsets):
         cd = self._cd
-        pointers = [cd.PerturbationPointer(element_index=d.element_index, parameter_name=d.parameter,
-                                           perturbation_value=offsets[n] * d.si_per_unit)
-                    for n, d in self.dofs.items() if offsets[n] != 0]
+        pointers = self._pointers(offsets)
         if not pointers:
             return ModeState(1.0, float(self._s0[0]), float(self._s0[1]), 1.0, 0.0, 0.0, True)
         with np.errstate(all='ignore'):
@@ -155,7 +179,7 @@ class CavityPhysics:
         dk = k - self._k0
         return ModeState(coupling=float(abs(ov) ** 2), s_x=float(s[0]), s_y=float(s[1]),
                          ellipticity=float(w0.min() / w0.max()),
-                         tilt_x=float(dk[1] / self._na), tilt_y=float(dk[2] / self._na),
+                         tilt_y=float(dk[1] / self._na), tilt_z=float(dk[2] / self._na),
                          valid=True)
 
 
@@ -166,12 +190,12 @@ class AnalyticPhysics:
     def __init__(self, aligned=None, scales=None, s0=0.3, split_per_unit=None,
                  tilt_per_unit=None, lost_beyond=3.0):
         self.aligned = dict(EXAMPLE_ALIGNED if aligned is None else aligned)
-        self.scales = dict({'sim_mirror_tilt_x': 8.0, 'sim_mirror_tilt_y': 8.0, 'sim_lens_z': 60.0}
+        self.scales = dict({'sim_mirror_phi': 8.0, 'sim_mirror_theta': 8.0, 'sim_lens_x': 60.0}
                            if scales is None else scales)
         self.s0 = s0
-        self.split_per_unit = dict({'sim_mirror_tilt_x': 4e-4, 'sim_mirror_tilt_y': -4e-4}
+        self.split_per_unit = dict({'sim_mirror_phi': 4e-4, 'sim_mirror_theta': -4e-4}
                                    if split_per_unit is None else split_per_unit)
-        self.tilt_per_unit = dict({'sim_mirror_tilt_x': (0.03, 0.0), 'sim_mirror_tilt_y': (0.0, 0.03)}
+        self.tilt_per_unit = dict({'sim_mirror_phi': (0.03, 0.0), 'sim_mirror_theta': (0.0, 0.03)}
                                   if tilt_per_unit is None else tilt_per_unit)
         self.lost_beyond = lost_beyond
 
@@ -202,9 +226,9 @@ def _self_test():
     a = AnalyticPhysics()
     st = a.evaluate(EXAMPLE_ALIGNED)
     assert st.valid and abs(st.coupling - 1) < 1e-12 and abs(st.split) < 1e-12
-    off = a.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_tilt_x': 37.5 + 8})
+    off = a.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 8})
     assert off.valid and abs(off.coupling - np.exp(-1)) < 1e-9 and off.split > 0
-    assert not a.evaluate({**EXAMPLE_ALIGNED, 'sim_lens_z': 1000}).valid
+    assert not a.evaluate({**EXAMPLE_ALIGNED, 'sim_lens_x': 1000}).valid
     try:
         p = CavityPhysics()
     except Exception as e:
@@ -212,11 +236,11 @@ def _self_test():
     else:
         z = p.evaluate(EXAMPLE_ALIGNED)
         assert z.valid and abs(z.coupling - 1) < 1e-9, z
-        t = p.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_tilt_x': 37.5 + 10})
+        t = p.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 10})
         assert t.valid and 0.95 < t.coupling < 0.995 and abs(t.split) > 1e-4, t
-        assert not p.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_tilt_x': 37.5 + 100}).valid
+        assert not p.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 100}).valid
         print(f'CavityPhysics: aligned s = {z.s_x:.4f}; 10 urad tilt -> coupling {t.coupling:.4f}, '
-              f'split {t.split:+.5f} FSR, tilt {t.tilt_x:+.3f} NA')
+              f'split {t.split:+.5f} FSR, tilt {t.tilt_y:+.3f} NA')
     print('cavity_physics self-test OK')
 
 

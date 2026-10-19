@@ -39,27 +39,27 @@ def run():
     adapter.open()
     d = adapter.describe()
     names = [a['name'] for a in d['axes']]
-    assert 'sim_mirror_tilt_x' in names and all(a['position_known'] for a in d['axes']), d
-    tilt = next(a for a in d['axes'] if a['name'] == 'sim_mirror_tilt_x')
+    assert 'sim_mirror_phi' in names and all(a['position_known'] for a in d['axes']), d
+    tilt = next(a for a in d['axes'] if a['name'] == 'sim_mirror_phi')
     start = tilt['position']
 
-    r = adapter.command('move_by', {'axis': 'sim_mirror_tilt_x', 'delta': 0.5, 'wait': True})
+    r = adapter.command('move_by', {'axis': 'sim_mirror_phi', 'delta': 0.5, 'wait': True})
     assert abs(r['result']['commanded'] - (start + 0.5)) < 1e-9, r
 
     # out of range, unknown axis, frozen: HTTP 400 (ValueError), nothing moves
-    _refused(adapter, 'move_to', {'axis': 'sim_mirror_tilt_x', 'target': 1e6})
+    _refused(adapter, 'move_to', {'axis': 'sim_mirror_phi', 'target': 1e6})
     _refused(adapter, 'move_to', {'axis': 'nope', 'target': 1})
-    adapter.command('freeze', {'axis': 'sim_mirror_tilt_x', 'frozen': True})
-    _refused(adapter, 'move_by', {'axis': 'sim_mirror_tilt_x', 'delta': 0.1})
-    adapter.command('freeze', {'axis': 'sim_mirror_tilt_x', 'frozen': False})
+    adapter.command('freeze', {'axis': 'sim_mirror_phi', 'frozen': True})
+    _refused(adapter, 'move_by', {'axis': 'sim_mirror_phi', 'delta': 0.1})
+    adapter.command('freeze', {'axis': 'sim_mirror_phi', 'frozen': False})
 
     # background move: returns at once, emits axis events, ends at the target
     _drain(listener)
-    r = adapter.command('move_by', {'axis': 'sim_mirror_tilt_x', 'delta': 2.0})
+    r = adapter.command('move_by', {'axis': 'sim_mirror_phi', 'delta': 2.0})
     assert r.get('started'), r
-    _refused(adapter, 'move_by', {'axis': 'sim_mirror_tilt_x', 'delta': 0.1})   # busy
+    _refused(adapter, 'move_by', {'axis': 'sim_mirror_phi', 'delta': 0.1})   # busy
     deadline = time.time() + 5
-    while adapter._moving('sim_mirror_tilt_x') and time.time() < deadline:
+    while adapter._moving('sim_mirror_phi') and time.time() < deadline:
         time.sleep(0.02)
     states = [e['state'] for e in _drain(listener) if e['type'] == 'axis']
     assert states and states[0]['moving'] and not states[-1]['moving'], states
@@ -67,9 +67,9 @@ def run():
 
     # E-stop holds and refuses until reset
     adapter.command('estop', {})
-    _refused(adapter, 'move_by', {'axis': 'sim_mirror_tilt_x', 'delta': -0.1})
+    _refused(adapter, 'move_by', {'axis': 'sim_mirror_phi', 'delta': -0.1})
     adapter.command('reset_estop', {})
-    adapter.command('move_to', {'axis': 'sim_mirror_tilt_x', 'target': start, 'wait': True})
+    adapter.command('move_to', {'axis': 'sim_mirror_phi', 'target': start, 'wait': True})
 
     raw = {n: a._raw for n, a in adapter.axes.items()}
     moves_before = {n: r.moves for n, r in raw.items()}

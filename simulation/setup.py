@@ -87,7 +87,7 @@ def mode_amplitudes(state, sc):
     orders >= 2 get plot_spectrum-style dummy amplitudes, decaying as
     exp(-higher_order_decay * order) from the first-order floor."""
     lost = 1.0 - state.coupling
-    tx2, ty2 = state.tilt_x ** 2, state.tilt_y ** 2
+    tx2, ty2 = state.tilt_y ** 2, state.tilt_z ** 2
     share_x = tx2 / (tx2 + ty2) if (tx2 + ty2) > 1e-24 else 0.5
     amps = {(0, 0): sc.peak_v * state.coupling,
             (1, 0): sc.first_order_floor + sc.peak_v * sc.first_order_gain * lost * share_x,
@@ -187,6 +187,7 @@ class SimulatedSetup:
         if with_frames:
             out.update(self._frames(t, modes, state, duration))
         self.captures += 1
+        self.last_capture = out           # for visualizations that replay what was measured
         return out
 
     def _frames(self, t, modes, state, duration):
@@ -197,8 +198,8 @@ class SimulatedSetup:
         yy, xx = np.indices(cam.shape, dtype=float)
         e = state.ellipticity if state.valid and np.isfinite(state.ellipticity) else 1.0
         sx, sy = cam.sigma_px / np.sqrt(e), cam.sigma_px * np.sqrt(e)
-        cx = cam.centre_px[0] + cam.px_per_tilt * (state.tilt_x if state.valid else 0)
-        cy = cam.centre_px[1] + cam.px_per_tilt * (state.tilt_y if state.valid else 0)
+        cx = cam.centre_px[0] + cam.px_per_tilt * (state.tilt_y if state.valid else 0)
+        cy = cam.centre_px[1] + cam.px_per_tilt * (state.tilt_z if state.valid else 0)
         u, v = (xx - cx) / sx, (yy - cy) / sy
         gauss = np.exp(-(u ** 2 + v ** 2) / 2)
         from numpy.polynomial.hermite import hermval
@@ -238,12 +239,12 @@ def _self_test():
 
     clock = Clock()
     from motion.simulated import SimulatedAxis
-    axes = {'sim_mirror_tilt_x': SimulatedAxis('sim_mirror_tilt_x', start=37.5, now=clock.now),
-            'sim_mirror_tilt_y': SimulatedAxis('sim_mirror_tilt_y', start=37.5, now=clock.now),
-            'sim_lens_z': SimulatedAxis('sim_lens_z', units='um', start=0.0, now=clock.now)}
+    axes = {'sim_mirror_phi': SimulatedAxis('sim_mirror_phi', start=37.5, now=clock.now),
+            'sim_mirror_theta': SimulatedAxis('sim_mirror_theta', start=37.5, now=clock.now),
+            'sim_lens_x': SimulatedAxis('sim_lens_x', units='um', start=0.0, now=clock.now)}
     for a in axes.values():
         a.open()
-    physics = AnalyticPhysics(split_per_unit={'sim_mirror_tilt_x': 2e-3, 'sim_mirror_tilt_y': 0.0})
+    physics = AnalyticPhysics(split_per_unit={'sim_mirror_phi': 2e-3, 'sim_mirror_theta': 0.0})
     setup = SimulatedSetup(axes, physics=physics, now=clock.now)
     cfg = MetricsConfig(saturation_v=0.995 * setup.scan.range_v)
 
@@ -254,15 +255,15 @@ def _self_test():
     assert aligned_I is not None and abs(aligned_I - 1.6) < 0.1, m.metrics['intensity']
     assert m.value('gaussian_overlap') > 0.95, m.metrics['gaussian_overlap']
 
-    axes['sim_mirror_tilt_x'].move_to(37.5 + 6)      # split 0.012 FSR (~3 linewidths)
-    axes['sim_mirror_tilt_y'].move_to(37.5 + 5)      # both first-order modes get light
+    axes['sim_mirror_phi'].move_to(37.5 + 6)      # split 0.012 FSR (~3 linewidths)
+    axes['sim_mirror_theta'].move_to(37.5 + 5)      # both first-order modes get light
     clock.t += 30                                    # well after the move: settled
     m2 = evaluate_capture(**{k: v for k, v in setup.capture().items()
                              if k in ('t', 'signal', 'aux', 'frames', 'windows', 'mask')}, cfg=cfg)
     assert m2.value('intensity') < aligned_I * 0.8, (m2.metrics['intensity'], aligned_I)
     assert m2.value('split_fsr') is not None and m2.value('split_fsr') > 0, m2.metrics['split_fsr']
 
-    axes['sim_mirror_tilt_x'].move_to(37.5)          # capture right after a move: vibrating
+    axes['sim_mirror_phi'].move_to(37.5)          # capture right after a move: vibrating
     cap3 = setup.capture()
     assert cap3['vibrating']
     print(f'setup self-test OK (aligned I={aligned_I:.3f} V, misaligned I={m2.value("intensity"):.3f} V,'
