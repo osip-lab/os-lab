@@ -31,6 +31,16 @@ Core pieces:
   `playground.ipynb` cell under "# Set ups exploration - small perturbation given a setup params - two
   dynamical widgets". Lockstep rule applies: pull both repos together.
 - **Metric 2.b.3** (0th/1st-order intensity ratio) is **deferred**; rarely used for alignment.
+- **Continuous capture for the loop (2026-10-19).** Scope and camera keep streaming as in kalishlot;
+  an evaluation cuts its data out of the streams instead of a grab-configure-record-sync cycle
+  (`alignment/live_capture.py`, see Implementation status). The camera records only on demand,
+  capped in seconds and bytes. The scope ring buffer always holds the last ~70 s. A partial sweep
+  is enough for most feedback.
+- **The aligner runs inside the kalishlot server** (a virtual adapter reading the adapters' streams
+  directly), not as a child process borrowing devices through `loan_client`, so the devices never
+  stop streaming.
+- **Scope rate:** 20 kHz is enough (the lab's manual measurements use it); streaming allows 100 kHz.
+- **Camera for alignment:** the XIMEA (s/n QXNAA2506000).
 - **Optical metrics are developed offline first**, on recorded synced sessions in Dropbox:
   `Labs Dropbox/Laser Phase Plate/Daily measurements and notes/2026-10-11`, `2026-10-12`, `2026-10-15`.
   Many sessions have hand-made `*_scope.modemarks.json` files (pairs of 0th/1st-order Lorentzian fits:
@@ -312,6 +322,7 @@ python -m alignment.metrics            # whole-capture metrics
 python alignment/validate_marks.py     # real sessions vs hand marks (edit ROOTS at the top)
 python -m motion.test_safety           # 14 safety-rule tests
 python -m motion.test_mdt693b          # MDT693B driver against a fake instrument
+python alignment/test_live_capture.py  # camera recorder + live capture sync (fakes, no hardware)
 python ../rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrument
 python -m simulation.cavity_physics    # physics (cavity_design + analytic stand-in)
 python -m simulation.setup             # simulated scope + camera + metrics
@@ -416,11 +427,40 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
 - **Limits are placeholders** (`axes_config.py`): 0-75 V, 0.5 V steps, 5 V/s, approach off. Next:
   connect the piezos, measure tilt per volt on the camera, then hysteresis, repeatability and settle time.
 
+### Lab, 2026-10-19: live capture from the running streams
+- **What was added:**
+  - XIMEA `get_frame()` leaves the frame's timing in `last_frame_meta` (block id, camera timestamp,
+    host time). `get_frame()` itself is unchanged.
+  - `PicoScope4000A.sample_at_host_time()` gives a coarse host clock from (host time, samples written)
+    at every driver callback.
+  - `CameraAdapterBase.start_recording()/stop_recording()` keep every frame between the calls: blinks
+    included, the stream never paused, capped (default 10 s / 1 GB). Recording stops early if the ROI
+    changes.
+  - `alignment/live_capture.py: LiveCapture.capture(duration_s)` returns arrays ready for
+    `evaluate_capture`.
+- **Sync:** the host clocks place frame 0 to a few ms. The first capture fits the exact offset
+  optically over +-0.1 s and keeps the correction; later captures search +-15 ms around it. The
+  correction is dropped when the scope stream restarts or the ROI or exposure changes.
+- **Measured** (XIMEA ROI 720x546, 8.8 ms exposure, 113 fps; scope B + D at 20 kHz):
+  - 2 s recording: 227 frames, no dropped frames, host-vs-camera latency spread 1.6 ms.
+  - Three 3 s captures: correction +1.6, +1.3, +1.1 ms (about 0.15 frame), fit depth 41-58 (locked).
+    Each capture costs 3.7 s of wall time.
+  - Metrics valid: intensity 0.62-0.65 V, Gaussian overlap 0.98, ellipticity 0.83-0.84, centre
+    stable to ~1 px.
+- **Open:**
+  - `evaluate_capture` took 3-11 s per capture (camera metrics), now longer than the capture itself.
+    Speed it up, e.g. score only the frames around the 0th-order peaks.
+  - One of the three captures scattered (overlap 0.93 +- 0.07, centre y +- 61 px, n=4). Not yet
+    understood; maybe a sweep segment near a turnaround.
+  - `first_order_s` came out -0.36 on up-sweeps and +0.31 on down-sweeps. Data for the "which side
+    family" open question.
+
 ### Not done yet
 - **M-LOOP backend**: not written. M-LOOP is not installed here and pulls heavy dependencies; the
   stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
-- **Lab measurement function** for the loop: an in-memory `capture_synchronized` (no video written per
-  evaluation) wrapped as `measure()`; today `capture_synchronized` takes an output folder.
-- **Aligner box** in kalishlot (a virtual adapter launching the loop in a child process via loan_client).
+- **Lab measurement function** for the loop: wrap `LiveCapture` as `measure()` (wait for the axes'
+  `ready_at`, capture, evaluate).
+- **Aligner box** in kalishlot: a virtual adapter running the loop in the server process, on the
+  scope and XIMEA adapters' streams and the motion adapter's axes.
 - Real drivers (Standa, PI E-872, Kinesis) and per-axis characterization in the lab (MDT693B included):
   `scan_axis` up and down for hysteresis, repeats for repeatability, delays for the vibration settle.

@@ -115,6 +115,8 @@ class XimeaCamera:
         self._binning = 1
         self._streaming = False
         self._image = None
+        # timing of the frame get_frame() returned last (see get_frame)
+        self.last_frame_meta = None
 
     # ---------------------------------------------------------------- device
     @staticmethod
@@ -559,10 +561,21 @@ class XimeaCamera:
         self._streaming = True
 
     def get_frame(self):
-        """Latest frame while streaming."""
+        """Latest frame while streaming.
+
+        Also leaves that frame's timing in `last_frame_meta` (the same keys as
+        a record_burst meta row), for consumers that need to place streamed
+        frames in time. Read it in the thread that called get_frame, before
+        the next call.
+        """
         for attempt in range(self.GRAB_RETRIES):
             try:
                 self._cam.get_image(self._image, timeout=self.GRAB_TIMEOUT_MS)
+                self.last_frame_meta = {
+                    'block_id': int(self._image.acq_nframe),
+                    'camera_timestamp_ns': self._stamp_ns(self._image),
+                    'host_time_s': time.time(),
+                }
                 return self._frame_from(self._image)
             except xiapi.Xi_error:
                 if attempt == self.GRAB_RETRIES - 1:

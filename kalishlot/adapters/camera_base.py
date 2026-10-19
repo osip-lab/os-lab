@@ -29,9 +29,21 @@ circle and everything else the box draws are in pixels of the current frame,
 not of the whole sensor. describe() carries the ROI's position on the sensor
 ('roi') and the uncropped size ('sensor_full') for the readouts that want
 absolute coordinates.
+
+On-demand recording
+-------------------
+start_recording() / stop_recording() keep every streamed frame, with its
+timing, between the two calls, without pausing the stream or touching a
+setting. Off by default, so the live view never accumulates memory; capped in
+seconds and bytes while on. For in-process consumers (the alignment loop's
+live capture), not for the browser.
 """
 
+import threading
 import time
+from dataclasses import dataclass, field
+
+import numpy as np
 
 from .base import DeviceAdapter
 from .camera_fit import CameraFitMixin
@@ -44,6 +56,23 @@ CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
                    'levels_on', 'levels_off', 'set_markers',
                    'save_markers', 'load_markers']
 
+RECORD_MAX_S = 10.0
+RECORD_MAX_BYTES = 1.0e9
+
+
+@dataclass
+class Recording:
+    """Frames kept between start_recording() and stop_recording()."""
+    frames: list = field(default_factory=list)   # 2-D arrays, current-frame pixels
+    meta: list = field(default_factory=list)     # per frame: _frame_meta() row
+    roi: dict | None = None         # where the frames sit on the sensor (None = whole)
+    started_s: float = 0.0          # host time.time()
+    stopped_s: float = 0.0
+    truncated: str = ''             # why recording stopped early ('' = it did not)
+    nbytes: int = 0
+
+    def stack(self):
+        return np.stack(self.frames) if self.frames else np.empty((0, 0, 0))
 
 class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
                         DeviceAdapter):
@@ -97,6 +126,9 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
         self._snap_requested = False
         # None, or {'x', 'y', 'width', 'height'} in UNCROPPED sensor pixels
         self._roi = None
+        self._recording = None          # a Recording while recording
+        self._record_limits = (RECORD_MAX_S, RECORD_MAX_BYTES)
+        self._record_lock = threading.Lock()
 
     # ------------------------------------------------------ hardware hooks
     def _open(self):
@@ -125,6 +157,11 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
 
     def _label(self):
         return f'{self.display_name} — {self.address}'
+
+    def _frame_meta(self):
+        """Timing of the frame being stored, called from the producing thread.
+        Override where the camera stamps frames (see XimeaAdapter)."""
+        return {'host_time_s': time.time()}
 
     # ROI hooks — only for HAS_HARDWARE_ROI subclasses (see StreamerROIMixin).
     # Both apply asynchronously (the SDK is owned by the streaming thread) and
@@ -163,6 +200,8 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
             step = self.DISPLAY_DOWNSAMPLE
             display = display[y // step:(y + height) // step,
                               x // step:(x + width) // step]
+        if self._recording is not None:
+            self._record_frame(frame)
         # the intensity chart measures every frame - it watches the light
         # itself, blinks included; the trigger only decides what is shown
         self._store_levels_frame(frame)
@@ -171,6 +210,46 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
             return   # below the trigger: the view holds the last bright frame
         self._store_display_frame(display)
         self._store_fit_frame(frame)
+
+    # ------------------------------------------------------------ recording
+    def start_recording(self, max_s=RECORD_MAX_S, max_bytes=RECORD_MAX_BYTES):
+        """Keep every frame from now on (blinks and dark frames included,
+        regardless of the display trigger), until stop_recording() or a cap."""
+        with self._record_lock:
+            self._recording = Recording(roi=self._roi, started_s=time.time())
+            self._record_limits = (float(max_s), float(max_bytes))
+
+    def stop_recording(self):
+        """Stop and return the Recording (None if none was running)."""
+        with self._record_lock:
+            rec, self._recording = self._recording, None
+        if rec is not None and not rec.stopped_s:
+            rec.stopped_s = time.time()
+        return rec
+
+    @property
+    def recording(self):
+        return self._recording is not None
+
+    def _record_frame(self, frame):
+        meta = self._frame_meta()
+        with self._record_lock:
+            rec = self._recording
+            if rec is None or rec.truncated:
+                return
+            if rec.roi != self._roi:            # geometry changed under the recording
+                rec.truncated = 'roi changed'
+            elif meta['host_time_s'] - rec.started_s > self._record_limits[0]:
+                rec.truncated = f'{self._record_limits[0]:g} s cap'
+            elif rec.nbytes + frame.nbytes > self._record_limits[1]:
+                rec.truncated = f'{self._record_limits[1] / 1e6:.0f} MB cap'
+            if rec.truncated:
+                rec.stopped_s = time.time()
+                return
+            # a software-ROI crop is a view into the driver's frame: copy it
+            rec.frames.append(np.array(frame, copy=True) if frame.base is not None else frame)
+            rec.meta.append(meta)
+            rec.nbytes += frame.nbytes
 
     # ------------------------------------------------------------------ ROI
     def _set_roi(self, x, y, width, height):

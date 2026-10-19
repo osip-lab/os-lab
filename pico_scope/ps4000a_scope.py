@@ -19,6 +19,7 @@ requires stopping and restarting the driver's streaming.
 Only one program can own the scope: close PicoScope 7 before using this.
 """
 
+import collections
 import ctypes
 import queue
 import threading
@@ -43,6 +44,10 @@ DRIVER_BUFFER_SAMPLES = 65536  # per channel, handed to the driver
 RING_CAPACITY_SECONDS = 70  # keep a bit more than the largest view window
 RING_CAPACITY_MAX = 8_000_000  # samples per channel (16 MB of int16)
 POLL_INTERVAL_S = 0.01
+# driver callbacks kept for the host clock (~100 per s): the last ~10 s, short
+# enough that the drift of the scope's clock against the host's stays well
+# under a millisecond
+CLOCK_PAIRS = 1000
 
 # Block mode. Directions are the PS4000A_THRESHOLD_DIRECTION enum; 'NONE' with
 # a non-zero auto-trigger is how a block is made to start immediately, which is
@@ -139,6 +144,9 @@ class PicoScope4000A:
         # bumped whenever streaming (re)starts: the rings are new then, and
         # absolute sample indices from before mean nothing
         self.stream_generation = 0
+        # (host time.time(), samples written) at every driver callback: the
+        # coarse host clock of the stream, see sample_at_host_time()
+        self._clock = collections.deque(maxlen=CLOCK_PAIRS)
 
     # ---------------------------------------------------------------- device
     @staticmethod
@@ -285,6 +293,7 @@ class PicoScope4000A:
         capacity = min(int(self.sample_rate_hz * RING_CAPACITY_SECONDS),
                        RING_CAPACITY_MAX)
         self.stream_generation += 1
+        self._clock.clear()
         self._rings = {}
         self._driver_buffers = {}
         for index, name in enabled:
@@ -317,6 +326,9 @@ class PicoScope4000A:
             for name, buffer in self._driver_buffers.items():
                 self._rings[name].append(
                     buffer[start_index:start_index + n_samples])
+            if n_samples and self._rings:
+                self._clock.append((time.time(), min(
+                    ring.written for ring in self._rings.values())))
 
         callback = ps.StreamingReadyType(on_data)
         while not self._stopping.is_set():
@@ -573,6 +585,24 @@ class PicoScope4000A:
         when the channel is not streaming."""
         ring = self._rings.get(name)
         return None if ring is None else ring.written
+
+    def sample_at_host_time(self, host_time_s):
+        """Absolute sample index (float) acquired at host `time.time()` t, or
+        None before the first data arrive.
+
+        Coarse: every driver callback records (host time, samples written),
+        and the data of the newest sample reach the host some latency after it
+        was taken, never before. So the stream's start in host time is at most
+        min(host - written / rate) over the recent callbacks. Good to the
+        poll interval plus USB jitter (~10-20 ms); a synchronized capture
+        refines it on the data (pico_scope/mode_video_sync.fit_time_offset).
+        """
+        pairs = list(self._clock)
+        if not pairs:
+            return None
+        rate = self.sample_rate_hz
+        start = min(host - written / rate for host, written in pairs)
+        return (host_time_s - start) * rate
 
     def read_span(self, name, start, stop):
         """Streamed samples start..stop-1 (absolute indices) of a channel, or

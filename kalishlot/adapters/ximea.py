@@ -19,6 +19,7 @@ ceiling and pushes both to the box.
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -200,6 +201,11 @@ class XimeaCameraAdapter(StreamerROIMixin, CameraAdapterBase):
                    'value': self._settings['framerate']})
 
     # ---------------------------------------------- streaming-thread callbacks
+    def _frame_meta(self):
+        meta = dict(self.camera.last_frame_meta or {'host_time_s': time.time()})
+        meta['exposure_us'] = self._settings.get('exposure')
+        return meta
+
     def _on_frame(self, frame):
         small = frame[::self.DISPLAY_DOWNSAMPLE, ::self.DISPLAY_DOWNSAMPLE]
         self._store_camera_frame(frame,
