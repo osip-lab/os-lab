@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
+from adapters.live_measure import LiveMeasureAdapter
 from adapters.motion_axes import MotionAxesAdapter
 from adapters.picoscope import PicoScopeAdapter
 from adapters.rigol_dg import RigolDGAdapter
@@ -49,7 +50,7 @@ from adapters.synced_pipeline import SyncedPipelineAdapter
 
 _ADAPTERS = [DummyCameraAdapter, BaslerCameraAdapter,
              RigolDGAdapter, PicoScopeAdapter, SyncedPipelineAdapter,
-             MotionAxesAdapter]
+             MotionAxesAdapter, LiveMeasureAdapter]
 
 # XIMEA is optional where the others are not: its Python package is not on
 # PyPI and has to be copied out of the XIMEA Software Package by hand (see
@@ -559,6 +560,8 @@ loans = {}
 # the synced-pipeline box gates itself on which cameras and scope exist, lent
 # ones included; it reads these without the lock (describe() runs under it)
 SyncedPipelineAdapter.registry = staticmethod(lambda: (devices, loans))
+# the live measurement reads the open scope and camera boxes' streams
+LiveMeasureAdapter.registry = staticmethod(lambda: (devices, loans))
 
 
 class LendRequest(BaseModel):
