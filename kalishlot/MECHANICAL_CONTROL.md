@@ -149,6 +149,7 @@ The proposed approach is sound. Additions:
   optimizer must see "invalid", not a zero.
 - **A composite objective needs defining.** For example: maximize intensity subject to
   gaussianity >= threshold and splitting <= limit, rather than a weighted sum.
+- **Mode position as a target** (put the mode on a camera marker): see 3.d.
 
 ## 3. Smart control
 
@@ -191,6 +192,46 @@ A reasonable **later** backend, not the first one.
 - Plan: a small pluggable ask/tell optimizer interface. First backends: 1D scan, and coordinate search
   with anti-backlash approach and noise-aware acceptance. Then M-LOOP's GP learner per stage,
   restricted to the active set and a tight trust region.
+
+### 3.d Target objective: put the mode on a camera marker
+In the lab the knobs of one element are often turned until the centre of the 0th-order Gaussian fit
+sits on a kalishlot camera marker left earlier (a past configuration). This is an objective with a
+goal rather than an optimum, next to maximizing intensity, minimizing splitting, etc.
+- **Objective** `alignment/targets.py: MarkerTarget(x, y, tolerance_px)`; `from_markers(path, label)`
+  reads the marker by label (or id) from a saved marker file or from kalishlot's `device_state.json`.
+  Score = minus the distance from the measured centre to the marker. The axes it may use are the loop's
+  tiers (freeze the rest), e.g. only the two tilts of one mirror.
+- **Units.** Markers are in uncropped, unbinned sensor pixels; capture frames are a binned ROI. The
+  metrics add `sensor_x/_y` = the fit centre converted with the session's `camera` block
+  (`offset_x/_y` in binned px, `binning_x/_y`): sensor = b * (offset + index) + (b - 1)/2.
+  kalishlot's XIMEA runs unbinned, so its markers are true sensor pixels. *Open:* check this for the
+  Basler if it is ever used binned in kalishlot.
+- **Noise (the fit lands somewhere slightly different in every blink).**
+  - One evaluation = the median centre over all usable 0th-order blinks of a capture (~10 per 5.6 s),
+    not one fit.
+  - The loop only accepts a move that beats the incumbent by more than the measured noise floor of the
+    distance, so it does not chase jitter.
+  - "Reached" = the **mean** centre of the hit plus `confirm_repeats` (default 2) more captures in
+    place is within `tolerance_px`. One lucky capture does not end the run. The loop then stops where
+    it stands; no verification move is needed.
+  - A tolerance tighter than the noise, or than what one minimum motor step (3 sigma repeatability)
+    moves the spot, cannot be confirmed. The run then ends on budget or stall with
+    `summary['target_reached'] = False`. Pick the tolerance from the jitter seen in the noise floor.
+- **Guard the resonance.** Walking the mode costs coupling (the input beam does not follow), so pass a
+  constraint such as `('intensity', '>=', x)`. Without the 0th order there is no position.
+- **The marker itself is noisy.** A marker placed from one live fit carries that fit's jitter. Place
+  it from an averaged fit when the tolerance is tight.
+- **Search: Jacobian steering, then coordinate search.** The centre moves almost linearly with the
+  knobs, so each stage first probes every axis, growing the probe step until the centre moves by more
+  than 3x its noise. It then moves straight at the marker by least squares (minimum-norm when there are
+  more axes than 2), within a trust region of 8x the probe, refining the Jacobian after every move
+  (Broyden). It falls back to the coordinate search if a move fails three times.
+  - Why: the coordinate search alone failed on the cavity_design simulator. One 1 V step moved the
+    spot ~0.8 px, about the per-capture noise, so steps were rejected as noise and shrank until it gave
+    up (13.6 px -> 14.1 px).
+  - With steering: 13.6 -> 2.2 px (true distance) in 13 evaluations, confirmed over 3 captures, coupling 0.978.
+  - Hysteresis and landing error make each move approximate; the Broyden update and the confirmation
+    absorb that.
 
 ### Also needed
 - Abort that returns (ramped) to the start point or the best point.
@@ -271,7 +312,8 @@ python rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrumen
 python -m simulation.cavity_physics    # physics (cavity_design + analytic stand-in)
 python -m simulation.setup             # simulated scope + camera + metrics
 python kalishlot/test_motion_axes.py   # kalishlot adapter (also hooked into smoke_test.py)
-python alignment/test_loop.py          # loop: recovers, frozen, settle, abort, signal lost, 1D scan
+python alignment/test_loop.py          # loop: recovers, frozen, settle, abort, signal lost, 1D scan,
+                                       # marker target, marker lookup + sensor units
 python alignment/run_alignment_sim.py  # demo run on the cavity_design physics (edit the globals)
 python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with a hidden misalignment
 ```
@@ -294,6 +336,10 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     along a linear combination, min step = 3 x repeatability sigma, outlier confirmation, periodic
     re-measure of the incumbent, verified final return, abort to best/start, JSON-lines log),
     `Objective` (metric, direction, constraints), `scan_axis` (1D scan, one-sided approach).
+    Target objectives stop the loop once `reached()` is confirmed in place.
+  - `targets.py`: `MarkerTarget` (section 3.d), marker lookup from a marker file or `device_state.json`.
+  - `metrics.py` also gives `sensor_x/_y` (centre in the markers' units) when the sensor geometry is
+    known; `evaluate_session` takes it from the session's `camera` block.
 - Axis names follow cavity_design (optical axis = x): simulated axes `sim_mirror_phi` (end mirror,
   xy-plane tilt), `sim_mirror_theta` (xz-plane tilt), `sim_lens_x` (lens along the optical axis).
   Paths to the cavity-design project and to Dropbox come from `local_config.py`
@@ -307,7 +353,10 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   s_x and s_y, ellipticity, beam tilt; ~50 ms per evaluation; NaN = no stable mode = signal lost; plus an
   analytic stand-in); `setup.py` (scan through a thermal low-pass, which reproduces the turnaround stall;
   HG_nm at n*s_x + m*s_y as in `Cavity.plot_spectrum` but per axis; saturation; camera frames that
-  integrate each mode over the exposure; vibration jitter when capturing too soon after a move).
+  integrate each mode over the exposure; vibration jitter when capturing too soon after a move;
+  the frame is a binned ROI of a sensor; the 0th-order centre moves with the beam tilt (far field:
+  shift in beam radii = tilt / NA) and jumps by `pointing_jitter_px` between blinks).
+  `run_alignment_sim.py` with `MARKER_FROM` rehearses the marker objective.
 - **kalishlot**: `adapters/motion_axes.py` (a box per driver group; blocking `wait` moves for scripts)
   and `static/boxes/motion_axes.js` (jog box: E-STOP, jog +/-, go-to, freeze, declare position, lamps),
   registered in `server.py` and `app.js`. **Not tried in a browser**: the server's dependencies

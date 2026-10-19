@@ -30,6 +30,16 @@ Design (kalishlot/MECHANICAL_CONTROL.md, section 3):
 - stop() aborts between evaluations; the axes then return to the best point
   (or the start, or stay: `on_abort`).
 - Every evaluation is logged (JSON lines in log_dir when given).
+- Target objectives (alignment/targets.py, e.g. MarkerTarget) have a goal
+  rather than an optimum: when a new incumbent satisfies objective.reached(),
+  it is measured confirm_repeats more times in place, and if the mean still
+  satisfies it the loop stops there (summary['target_reached']).
+  When the objective also reports a measured position (objective.position(ev),
+  objective.goal), each stage first steers: probe every axis with a step grown
+  until its effect clears the position noise, then move straight at the goal
+  by least squares, refining the Jacobian with every move (Broyden). The
+  coordinate search follows only if steering stalls. Small steps that drown in
+  the noise would otherwise make the coordinate search shrink and give up.
 """
 
 import json
@@ -135,6 +145,7 @@ class AlignmentLoop:
         self.history = []
         self.noise = 0.0
         self.best = None
+        self.target_reached = False
         self._last_remeasure = 0
         self._stop = threading.Event()
         self._log_path = None
@@ -173,7 +184,8 @@ class AlignmentLoop:
                 a.move_to(target, who=self.who)
 
     def _budget_left(self):
-        return len(self.history) < self.max_evaluations and not self._stop.is_set()
+        return (len(self.history) < self.max_evaluations and not self._stop.is_set()
+                and not self.target_reached)
 
     @property
     def margin(self):
@@ -191,7 +203,27 @@ class AlignmentLoop:
         best = max(evs, key=lambda e: (e.feasible, e.score if e.score is not None else -math.inf))
         best.score = mean                      # the incumbent's value is the mean, not a lucky shot
         self.print(f'noise floor: {self.objective.metric} = {mean:.4g} +- {self.noise:.2g}')
+        if hasattr(self.objective, 'reached') and self.objective.reached(evs):
+            self.target_reached = True
+            self.print('target already reached at the start')
         return best
+
+    def _accept(self, ev):
+        """Make ev the incumbent; for a target objective, confirm a hit in place."""
+        self.best = ev
+        if not hasattr(self.objective, 'reached') or not self.objective.reached([ev]):
+            return
+        repeats = [ev]
+        for _ in range(getattr(self.objective, 'confirm_repeats', 2)):
+            if not self._budget_left():
+                break
+            repeats.append(self.measure('confirm target'))
+        scores = [e.score for e in repeats if e.score is not None]
+        ev.score = sum(scores) / len(scores)          # the incumbent is the mean, not the lucky shot
+        if len(repeats) > getattr(self.objective, 'confirm_repeats', 2) and self.objective.reached(repeats):
+            self.target_reached = True
+            self.print(f'target reached: {self.objective.metric} = {-ev.score:.3g} '
+                       f'(mean of {len(repeats)} captures)')
 
     def _confirmed(self, ev):
         """A suspiciously large improvement (> confirm_jump x noise and > 5% of the
@@ -240,7 +272,7 @@ class AlignmentLoop:
                 ev = self._confirmed(self.measure('trial'))
                 results[sign] = ev
                 if ev.better_than(self.best, self.margin):
-                    self.best = ev
+                    self._accept(ev)
                     self.steps[n] *= 1.5
                     improved = accepted = True
                     break
@@ -272,13 +304,102 @@ class AlignmentLoop:
         self._move_to(target)
         ev = self._confirmed(self.measure('gradient'))
         if ev.better_than(self.best, self.margin):
-            self.best = ev
+            self._accept(ev)
             return True
         self._move_to(x0)
         return False
 
+    def _position_noise(self):
+        """rms 2D scatter of the position over the noise-floor evaluations."""
+        pts = [self.objective.position(e) for e in self.history if e.kind == 'noise']
+        pts = [q for q in pts if q is not None]
+        if len(pts) < 2:
+            return 0.0, (pts[0] if pts else None)
+        mx, my = sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts)
+        rms = math.sqrt(sum((q[0] - mx) ** 2 + (q[1] - my) ** 2 for q in pts) / (len(pts) - 1))
+        return rms, (mx, my)
+
+    def _steer_stage(self, active, probe_doublings=4, max_moves=20):
+        """Jacobian steering towards objective.goal (see the module docstring)."""
+        import numpy as np
+        axes = [n for n in active if not self.axes[n].frozen]
+        if not axes or self.best is None:
+            return
+        position = self.objective.position
+        noise, mean_at_start = self._position_noise()
+        cur = self.best
+        c = np.array(position(cur) if len(self.history) > self.noise_repeats or mean_at_start is None
+                     else mean_at_start, dtype=float)
+        goal = np.array(self.objective.goal, dtype=float)
+        J = np.zeros((2, len(axes)))
+        probes = {}
+        for i, n in enumerate(axes):                    # probe: how does each axis move the position?
+            h = self.steps[n]
+            for _ in range(probe_doublings + 1):
+                if not self._budget_left():
+                    return
+                target = cur.positions[n] + h
+                try:
+                    _check(self.axes[n], target)
+                except ValueError:
+                    h = -h
+                    target = cur.positions[n] + h
+                    try:
+                        _check(self.axes[n], target)
+                    except ValueError:
+                        break
+                self._move_to({n: target})
+                q = position(self.measure('probe'))
+                if q is None:
+                    break
+                d = np.array(q) - c
+                J[:, i] = d / h
+                probes[n] = abs(h)
+                if math.hypot(*d) > 3 * noise:
+                    break
+                h *= 2
+            self._move_to(cur.positions)
+        if not probes or np.linalg.norm(J) == 0:
+            self.print('  steering: the axes do not move the position measurably')
+            return
+        self.print('  steering: probed ' + ' '.join(f'{n} ({h:.3g})' for n, h in probes.items()))
+        for _ in range(max_moves):
+            if not self._budget_left():
+                return
+            dp = np.linalg.lstsq(J, goal - c, rcond=None)[0]
+            limit = np.array([8 * probes.get(n, self.steps[n]) for n in axes])
+            dp *= min(1.0, float(np.min(limit / np.maximum(np.abs(dp), 1e-12))))   # trust region
+            moved = False
+            for scale in (1.0, 0.5, 0.25):
+                target = {n: cur.positions[n] + scale * dp[i] for i, n in enumerate(axes)}
+                try:
+                    for n, t in target.items():
+                        _check(self.axes[n], t)
+                except ValueError:
+                    continue
+                self._move_to(target)
+                ev = self.measure('steer')
+                q = position(ev)
+                if q is None:
+                    self._move_to(cur.positions)
+                    continue
+                step = np.array([target[n] - cur.positions[n] for n in axes])
+                if step @ step > 0:                     # Broyden: learn from every move
+                    J += np.outer((np.array(q) - c) - J @ step, step) / (step @ step)
+                if ev.better_than(self.best, self.margin):
+                    self._accept(ev)
+                    cur, c, moved = ev, np.array(q, dtype=float), True
+                    break
+                self._move_to(cur.positions)
+            if not moved or self.target_reached:
+                return
+
     def _optimize_stage(self, active):
         self.print(f'stage: {", ".join(active)}')
+        if hasattr(self.objective, 'position') and hasattr(self.objective, 'goal'):
+            self._steer_stage(active)
+            if self.target_reached:
+                return
         stall = 0
         while self._budget_left() and stall < 2:
             if all(self.steps[n] < self.min_steps[n] for n in active if not self.axes[n].frozen):
@@ -304,10 +425,10 @@ class AlignmentLoop:
                 active = [n for n in seen if not self.axes[n].frozen]
                 if active:
                     self._optimize_stage(active)
-                if self._stop.is_set():
+                if self._stop.is_set() or self.target_reached:
                     break
             aborted = self._stop.is_set()
-            if not aborted:
+            if not aborted and not self.target_reached:   # a reached target was confirmed in place
                 self._finish()
         except Exception:
             aborted = True
@@ -323,6 +444,7 @@ class AlignmentLoop:
         return {'start': start, 'best': self.best.positions if self.best else None,
                 'best_score': self.best.score if self.best else None,
                 'noise': self.noise, 'evaluations': len(self.history),
+                'target_reached': self.target_reached,
                 'aborted': aborted, 'seconds': time.time() - t0}
 
     def _finish(self):

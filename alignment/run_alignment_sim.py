@@ -1,7 +1,9 @@
 """Run the alignment loop against the simulated cavity (laptop, no hardware).
 
 Misaligns the simulated axes of motion/axes_config.py, then lets AlignmentLoop
-recover. A shared fake clock drives the axes' ramps/settle delays and the
+recover. With MARKER_FROM set it rehearses the marker objective instead: it
+leaves a camera marker where the mode sits at those offsets (from one capture's
+fit, as in the lab), goes back, and lets the loop steer the mode onto it. A shared fake clock drives the axes' ramps/settle delays and the
 simulator, so nothing really sleeps; the physics is cavity_design's when the
 cavity-design project is reachable (else the analytic stand-in).
 
@@ -15,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from alignment.loop import AlignmentLoop, Objective  # noqa: E402
 from alignment.metrics import MetricsConfig, evaluate_capture  # noqa: E402
+from alignment.targets import MarkerTarget  # noqa: E402
 from motion.axes_config import AXES, TIERS  # noqa: E402
 from motion.safety import SafeAxis  # noqa: E402
 from motion.simulated import SimulatedAxis  # noqa: E402
@@ -31,6 +34,9 @@ SEED = 3
 LOG_DIR = None               # e.g. a folder: writes evaluations.jsonl there
 FIRST_ORDER_S = 'aligned'    # known first-order offset for mode identification: 'aligned' (from
                              # the physics, like a value measured in the lab), a number, or None
+MARKER_FROM = None           # e.g. {'sim_mirror_phi': +14.0, 'sim_mirror_theta': -10.0}: marker objective
+MARKER_TOLERANCE_PX = 3.0    # sensor px (the marker's units)
+MARKER_TIERS = [['sim_mirror_phi', 'sim_mirror_theta']]   # the knobs that may walk the mode
 
 
 class FakeClock:
@@ -60,7 +66,8 @@ def build(clock, seed=SEED, physics=None):
 def make_measure(setup, clock, with_frames=WITH_FRAMES, duration=5.6, first_order_s=FIRST_ORDER_S):
     if first_order_s == 'aligned':
         first_order_s = setup.aligned_first_order_s()
-    cfg = MetricsConfig(saturation_v=0.995 * setup.scan.range_v, first_order_s=first_order_s)
+    cfg = MetricsConfig(saturation_v=0.995 * setup.scan.range_v, first_order_s=first_order_s,
+                        sensor_geometry=setup.sensor_geometry())
 
     def measure():
         cap = setup.capture(duration=duration, with_frames=with_frames)
@@ -70,7 +77,42 @@ def make_measure(setup, clock, with_frames=WITH_FRAMES, duration=5.6, first_orde
     return measure
 
 
+def leave_marker(axes, setup, measure, offsets, tolerance_px=MARKER_TOLERANCE_PX, label='sim marker'):
+    """Move by `offsets`, put a marker on the fitted mode centre, move back."""
+    for name, delta in offsets.items():
+        axes[name].move_by(delta, who='leave marker')
+    for a in axes.values():
+        a.wait_until_settled()
+    cm = measure()
+    x, y = cm.value('sensor_x'), cm.value('sensor_y')
+    if x is None or y is None:
+        raise RuntimeError(f'no mode position to mark: {cm.metrics["sensor_x"].reason}')
+    for name, delta in offsets.items():
+        axes[name].move_by(-delta, who='leave marker')
+    return MarkerTarget(x, y, tolerance_px=tolerance_px, label=label)
+
+
+def main_marker():
+    clock = FakeClock()
+    axes, setup = build(clock)
+    measure = make_measure(setup, clock, with_frames=True)
+    target = leave_marker(axes, setup, measure, MARKER_FROM)
+    from alignment.metrics import frame_to_sensor
+    geom = setup.sensor_geometry()
+    before = target.distance(*frame_to_sensor(*setup.true_centre_px(), geom))
+    print(f'marker at sensor ({target.x:.1f}, {target.y:.1f}); mode is {before:.1f} px away (truth)')
+    loop = AlignmentLoop(axes, measure, target, tiers=MARKER_TIERS,
+                         max_evaluations=MAX_EVALUATIONS, log_dir=LOG_DIR)
+    summary = loop.run()
+    after = target.distance(*frame_to_sensor(*setup.true_centre_px(), geom))
+    print(f'\nresult: true distance {before:.1f} -> {after:.2f} px, reached={summary["target_reached"]}, '
+          f'{summary["evaluations"]} evaluations, coupling {setup.mode_state().coupling:.3f} (truth)')
+    return summary, before, after
+
+
 def main():
+    if MARKER_FROM:
+        return main_marker()
     clock = FakeClock()
     axes, setup = build(clock)
     for name, delta in MISALIGN.items():

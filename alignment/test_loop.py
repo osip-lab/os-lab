@@ -9,7 +9,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from alignment.loop import AlignmentLoop, Objective, scan_axis  # noqa: E402
-from alignment.run_alignment_sim import FakeClock, build, make_measure  # noqa: E402
+from alignment.metrics import frame_to_sensor  # noqa: E402
+from alignment.run_alignment_sim import FakeClock, build, leave_marker, make_measure  # noqa: E402
+from alignment.targets import MarkerTarget, find_marker, load_markers  # noqa: E402
 from motion.axes_config import TIERS  # noqa: E402
 from simulation.cavity_physics import AnalyticPhysics  # noqa: E402
 
@@ -95,6 +97,46 @@ def test_scan_axis_finds_peak():
     best = max(rows, key=lambda r: r['score'] or -1)
     assert abs(best['target'] - 37.5) <= 1.0, [(r['target'], r['score']) for r in rows]
     assert ax.commanded == best['target']
+
+
+def test_marker_target_reached():
+    """Leave a marker where the mode sits, go back, steer the mode onto it."""
+    clock, axes, setup = setup_case({})
+    measure = make_measure(setup, clock, with_frames=True)
+    target = leave_marker(axes, setup, measure, {'sim_mirror_phi': 4.0, 'sim_mirror_theta': -3.0},
+                          tolerance_px=2.5)
+    true_dist = lambda: target.distance(*frame_to_sensor(*setup.true_centre_px(), setup.sensor_geometry()))
+    before = true_dist()
+    loop = AlignmentLoop(axes, measure, target, tiers=[['sim_mirror_phi', 'sim_mirror_theta']],
+                         max_evaluations=60, **QUIET)
+    summary = loop.run()
+    assert before > 8, before
+    assert summary['target_reached'], summary
+    assert true_dist() < 2 * target.tolerance_px, (before, true_dist(), summary)
+    assert loop.history[-1].kind == 'confirm target'
+
+
+def test_marker_lookup_and_sensor_units(tmp=None):
+    import json
+    import tempfile
+    d = Path(tmp or tempfile.mkdtemp())
+    state = {'ximea': {'markers': [{'id': 'a1', 'label': 'arm 45 cm', 'x': 800.5, 'y': 1100.0, 'r': 9}]},
+             'basler': {'markers': [{'id': 'b1', 'label': 'other', 'x': 1, 'y': 2, 'r': 3}]}}
+    (d / 'device_state.json').write_text(json.dumps(state))
+    (d / 'markers.json').write_text(json.dumps({'format': 'kalishlot-markers', 'markers':
+                                                state['ximea']['markers']}))
+    for f in ('device_state.json', 'markers.json'):
+        t = MarkerTarget.from_markers(d / f, 'arm 45 cm')
+        assert (t.x, t.y, t.label) == (800.5, 1100.0, 'arm 45 cm')
+    assert find_marker(load_markers(d / 'device_state.json'), 'b1')['label'] == 'other'
+    try:
+        find_marker(load_markers(d / 'device_state.json'), 'missing')
+        raise AssertionError('expected ValueError')
+    except ValueError:
+        pass
+    # binned ROI pixel -> unbinned sensor pixel (the markers' units)
+    assert frame_to_sensor(10, 20, {'offset_x': 366, 'offset_y': 544, 'binning_x': 2,
+                                    'binning_y': 2}) == (752.5, 1128.5)
 
 
 def main():

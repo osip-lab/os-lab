@@ -8,6 +8,8 @@ Metrics (see kalishlot/MECHANICAL_CONTROL.md, section 2):
 - gaussian_overlap   median overlap of 0th-order frames with a Gaussian (1 = perfect)
 - ellipticity        median sigma_min / sigma_max of those frames       (1 = round)
 - centroid_x/_y      median 0th-order beam centre on the camera [px]   (guard metric)
+- sensor_x/_y        the same in uncropped, unbinned sensor pixels - the units of
+                     kalishlot's camera markers (needs cfg.sensor_geometry)
 - first_order_s      signed offset of the first-order family [FSR]     (diagnostic)
 - split_linewidths   median first-order splitting / component FWHM     (lower = better)
 - split_fsr          median first-order splitting as an FSR fraction   (lower = better)
@@ -52,6 +54,10 @@ class MetricsConfig:
                                           # Gaussian less is not used (it may be a higher order). Off by
                                           # default: low-finesse sessions (2026-10-11) show real 0th orders
                                           # at 0.72-0.85, high-finesse ones (2026-10-12) at ~0.97.
+    sensor_geometry: dict | None = None   # where the frames sit on the sensor, as a session's 'camera'
+                                          # block records it: offset_x/offset_y (ROI origin, in BINNED px)
+                                          # and binning_x/binning_y. Enables sensor_x/_y. evaluate_session
+                                          # fills it from the session; None = no sensor coordinates.
 
 
 @dataclass
@@ -84,6 +90,16 @@ class CaptureMetrics:
                 'by_direction': {str(d): {k: m.to_dict() for k, m in ms.items()}
                                  for d, ms in self.by_direction.items()},
                 'sweeps': self.sweeps}
+
+
+def frame_to_sensor(x, y, geometry):
+    """Frame pixel (x = column, y = row) -> uncropped, unbinned sensor pixel, the
+    units of kalishlot's markers. A binned pixel covers b sensor pixels; its
+    centre is at b * (offset + index) + (b - 1) / 2."""
+    bx = int(geometry.get('binning_x', 1) or 1)
+    by = int(geometry.get('binning_y', 1) or 1)
+    return (bx * (geometry.get('offset_x', 0) + x) + (bx - 1) / 2,
+            by * (geometry.get('offset_y', 0) + y) + (by - 1) / 2)
 
 
 def _robust(values):
@@ -242,6 +258,14 @@ def _direction_metrics(recs, cfg):
         'split_linewidths': _metric('split_linewidths', splits, n, 'no first-order peak'),
         'split_fsr': _metric('split_fsr', splits_fsr, n, 'no first-order peak'),
     }
+    if cfg.sensor_geometry is not None:
+        sx, sy = frame_to_sensor(np.asarray(cx, dtype=float), np.asarray(cy, dtype=float),
+                                 cfg.sensor_geometry)
+        out['sensor_x'] = _metric('sensor_x', sx, n, 'no usable 0th-order frame')
+        out['sensor_y'] = _metric('sensor_y', sy, n, 'no usable 0th-order frame')
+    else:
+        for k in ('sensor_x', 'sensor_y'):
+            out[k] = Metric(k, reason='sensor geometry unknown (MetricsConfig.sensor_geometry)')
     for k in ('split_linewidths', 'split_fsr'):
         if out[k].valid and not confirmed_any:
             out[k].reason = 'first order not confirmed on the camera'
@@ -299,6 +323,11 @@ def evaluate_session(path, cfg=None, with_frames=True):
         raise ValueError(f'{path}: no aux (scan ramp) channel; sweeps cannot be split')
     if cfg.saturation_v is None and session.get('scope', {}).get('range_v'):
         cfg = MetricsConfig(**{**asdict(cfg), 'saturation_v': 0.995 * float(session['scope']['range_v'])})
+    cam = session.get('camera') or {}
+    if cfg.sensor_geometry is None and 'offset_x' in cam:
+        cfg = MetricsConfig(**{**asdict(cfg), 'sensor_geometry': {
+            k: cam.get(k, d) for k, d in (('offset_x', 0), ('offset_y', 0),
+                                          ('binning_x', 1), ('binning_y', 1))}})
     return evaluate_capture(t, y, aux, frames, windows, mask, cfg)
 
 

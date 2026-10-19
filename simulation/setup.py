@@ -15,7 +15,9 @@ What it reproduces (all seen in the 2026-10 sessions):
   the first order is fed by the misalignment (1 - coupling), higher orders get
   dummy decaying amplitudes; see mode_amplitudes();
 - camera frames integrate each mode's light over the exposure window; the
-  0th order is an elliptical Gaussian whose centroid moves with the beam tilt;
+  0th order is an elliptical Gaussian whose centroid moves with the beam tilt
+  and jumps a little between blinks (pointing jitter); the frame is a binned
+  ROI of a larger sensor (cap['camera'], keyed like a session's camera block);
 - vibrations: a capture starting within `vibration_settle_s` of the last move
   of any axis gets a decaying frequency jitter (messy spectrum), which is why
   real captures must wait until the axes have settled.
@@ -53,12 +55,17 @@ class ScanModel:
 
 @dataclass
 class CameraModel:
-    shape: tuple = (120, 128)
+    shape: tuple = (200, 216)           # (rows, cols) of the delivered (cropped, binned) frame
     frame_rate_hz: float = 14.28
     exposure_s: float = 0.07
-    sigma_px: float = 8.0
-    centre_px: tuple = (64.0, 60.0)     # (x, y) when aligned
-    px_per_tilt: float = 8.0            # centroid shift per unit tilt (tilt is in NA units)
+    sigma_px: float = 20.0              # intensity std of the 0th order
+    centre_px: tuple = (108.0, 100.0)   # (x, y) in frame px when aligned
+    px_per_tilt: float = 40.0           # centroid shift per unit tilt (NA units). Far field: the shift in
+                                        # beam radii w = 2 sigma equals tilt / NA, so 2 x sigma_px.
+    pointing_jitter_px: float = 0.8     # rms jump of the 0th-order centre between blinks (vibrations,
+                                        # air): every frame's fit lands somewhere slightly different
+    offset: tuple = (300, 420)          # ROI origin (x, y) in BINNED px, as a session's camera block
+    binning: int = 2                    # records it; markers are in unbinned sensor px
     counts_per_v_s: float = 2.0e4       # integrated scope volt-seconds -> peak counts
     background: float = 60.0
     noise: float = 4.0
@@ -181,7 +188,7 @@ class SimulatedSetup:
         clean = sc.baseline_v + sum(m[1] for m in modes) if modes else np.full(t.size, sc.baseline_v)
         signal = np.minimum(clean + self._rng.normal(0, sc.noise_v, t.size), sc.range_v)
 
-        out = {'t': t, 'signal': signal, 'aux': aux, 'truth': state,
+        out = {'t': t, 'signal': signal, 'aux': aux, 'truth': state, 'camera': self.sensor_geometry(),
                'range_v': sc.range_v, 't0_abs': t0_abs,
                'vibrating': bool(np.any(np.abs(self._vibration(t_abs[keep][:1])) > 0))}
         if with_frames:
@@ -189,6 +196,19 @@ class SimulatedSetup:
         self.captures += 1
         self.last_capture = out           # for visualizations that replay what was measured
         return out
+
+    def sensor_geometry(self):
+        """Where the frames sit on the sensor, keyed like a session's 'camera' block."""
+        cam = self.camera
+        return {'offset_x': cam.offset[0], 'offset_y': cam.offset[1],
+                'binning_x': cam.binning, 'binning_y': cam.binning}
+
+    def true_centre_px(self, state=None):
+        """Noise-free 0th-order centre (x, y) in frame px for a mode state (default: now)."""
+        cam = self.camera
+        state = state or self.mode_state()
+        return (cam.centre_px[0] + cam.px_per_tilt * (state.tilt_y if state.valid else 0),
+                cam.centre_px[1] + cam.px_per_tilt * (state.tilt_z if state.valid else 0))
 
     def _frames(self, t, modes, state, duration):
         cam = self.camera
@@ -198,8 +218,7 @@ class SimulatedSetup:
         yy, xx = np.indices(cam.shape, dtype=float)
         e = state.ellipticity if state.valid and np.isfinite(state.ellipticity) else 1.0
         sx, sy = cam.sigma_px / np.sqrt(e), cam.sigma_px * np.sqrt(e)
-        cx = cam.centre_px[0] + cam.px_per_tilt * (state.tilt_y if state.valid else 0)
-        cy = cam.centre_px[1] + cam.px_per_tilt * (state.tilt_z if state.valid else 0)
+        cx, cy = self.true_centre_px(state)
         u, v = (xx - cx) / sx, (yy - cy) / sy
         gauss = np.exp(-(u ** 2 + v ** 2) / 2)
         from numpy.polynomial.hermite import hermval
@@ -217,7 +236,11 @@ class SimulatedSetup:
         for k, (a, b) in enumerate(idx):
             img = np.full(cam.shape, cam.background)
             for name, c in cum.items():
-                img = img + cam.counts_per_v_s * (c[b] - c[a]) * templates[name]
+                tpl = templates[name]
+                if name == 'HG00' and cam.pointing_jitter_px > 0 and c[b] > c[a]:
+                    jx, jy = self._rng.normal(0, cam.pointing_jitter_px, 2)   # this blink's pointing
+                    tpl = np.exp(-(((xx - cx - jx) / sx) ** 2 + ((yy - cy - jy) / sy) ** 2) / 2)
+                img = img + cam.counts_per_v_s * (c[b] - c[a]) * tpl
             img = img + self._rng.normal(0, cam.noise, cam.shape)
             frames[k] = np.clip(img, 0, 65535).astype(np.uint16)
         mask = ((xx - cam.centre_px[0]) ** 2 + (yy - cam.centre_px[1]) ** 2) <= (5 * cam.sigma_px) ** 2
