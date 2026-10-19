@@ -301,6 +301,11 @@ Fits the existing patterns.
   +0.31 in two sessions but -0.30 in 113244. On 44.5 cm (2026-10-11) the strongest family is -0.14 in one
   session and +0.13 in the next, four minutes apart, same scan direction. Confirm by eye in the lab, then
   set `MetricsConfig.first_order_s`.
+  **Lab rule (2026-10-19):** aux voltage rising -> the first order passes *after* the 0th order;
+  falling -> *before* (`sweeps.scan_direction`, `sweeps.first_order_time_sign`). In `s` terms the first
+  order has s > 0 in both directions, i.e. the +0.31 family, as the camera favoured. Live captures
+  that day picked -0.36 on up-sweeps (against the rule) and +0.31 on down-sweeps (with it).
+  Proposed: set `first_order_s = +0.31`.
 - Is the Rigol CH1 envelope right (|offset| + amplitude/2 <= 2.5 V, see Implementation status)?
 - Where should the simulator physics live long term: os-lab `simulation/cavity_physics.py` (now) or
   the cavity-design repo?
@@ -447,6 +452,21 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     Each capture costs 3.7 s of wall time.
   - Metrics valid: intensity 0.62-0.65 V, Gaussian overlap 0.98, ellipticity 0.83-0.84, centre
     stable to ~1 px.
+  - Drift, 12 captures over 3 min: the scope clock runs -13 ppm against the host clock (-2.4 ms in
+    3 min). The correction stayed +1.50 +- 0.22 ms with no trend, because both device clocks are re-tied
+    to the host clock in every capture and every capture is re-fitted. Scope driver callbacks arrive in
+    bursts (~60 ms spread); the min-latency estimate ignores that.
+  - The ramp that day: 0.05 Hz, 1.5 Vpp (aux -0.76..+0.76 V, 0.151 V/s). `scan_direction` matched
+    every segment of a 25 s capture.
+- **Synced captures from the streams (proposal, not built):** kalishlot's "Start Capture" could use
+  the same mechanism: arm the recorder, cut the scope span, fit the sync, and write the session in the
+  existing format, without borrowing the devices. Differences from today's capture:
+  - the streams run at the boxes' settings: scope at its streaming rate (20 kHz now; the capture uses
+    100 kS/s blocks), camera at its ROI and binning (no locate step, no auto-range probe);
+  - the live stream hands over the newest frame, so under load a frame can be skipped (visible in
+    the block ids; none in 2 s at 113 fps);
+  - frames sit in RAM until written (~0.8 MB each at 720x546 Mono10), and the scope span must still
+    be in the ~70 s ring.
 - **Open:**
   - `evaluate_capture` took 3-11 s per capture (camera metrics), now longer than the capture itself.
     Speed it up, e.g. score only the frames around the 0th-order peaks.

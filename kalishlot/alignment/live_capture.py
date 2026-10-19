@@ -11,13 +11,19 @@ devices keep streaming as they do in kalishlot, and a measurement only:
 
 Timing. Both streams carry host times: every camera frame (host_time_s next to
 camera_timestamp_ns) and every scope driver callback (PicoScope4000A
-.sample_at_host_time). That puts the frames on the scope's timebase to a few
-ms. The first capture then fits the exact offset optically, with
+.sample_at_host_time). That puts the frames on the scope's timebase to
+~1.5 ms (measured; nearly constant). The first capture then fits the exact offset optically, with
 mode_video_sync.fit_time_offset over +-0.1 s (well under the ~0.4 s between
 modes, so it cannot lock onto an alias), and keeps the correction. Later
 captures search only +-15 ms around it, to follow slow clock drift. The
 correction is dropped when the scope restarts its stream or the camera's
 geometry or exposure changes.
+
+Drift (measured 2026-10-19, 12 captures over 3 min): the scope clock runs
+-13 ppm against the host's, but both device clocks are re-tied to the host
+clock in every capture, so the correction did not walk: +1.50 +- 0.22 ms,
+no trend, the fit locked every time. Every capture is re-fitted anyway, so
+the frame windows come from the data, not from an extrapolated clock.
 
 The scope timebase is absolute: t = sample index / rate since the stream
 started. Pure Python, no kalishlot imports: it takes a PicoScope4000A (device

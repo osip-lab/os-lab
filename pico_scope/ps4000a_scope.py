@@ -593,9 +593,13 @@ class PicoScope4000A:
         Coarse: every driver callback records (host time, samples written),
         and the data of the newest sample reach the host some latency after it
         was taken, never before. So the stream's start in host time is at most
-        min(host - written / rate) over the recent callbacks. Good to the
-        poll interval plus USB jitter (~10-20 ms); a synchronized capture
-        refines it on the data (pico_scope/mode_video_sync.fit_time_offset).
+        min(host - written / rate) over the recent callbacks (~10 s). The
+        data arrive in bursts (callback delays spread over ~60 ms), but the
+        minimum is stable: measured 2026-10-19 at 20 kHz, it stayed within
+        ~0.2 ms of the optically fitted sync over 3 minutes. The scope's clock
+        drifts against the host's by ~-13 ppm (2.4 ms in 3 min); using only
+        the recent callbacks absorbs that. A synchronized capture refines it
+        on the data (pico_scope/mode_video_sync.fit_time_offset).
         """
         pairs = list(self._clock)
         if not pairs:
