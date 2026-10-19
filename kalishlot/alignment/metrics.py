@@ -62,6 +62,11 @@ class MetricsConfig:
                                           # Gaussian less is not used (it may be a higher order). Off by
                                           # default: low-finesse sessions (2026-10-11) show real 0th orders
                                           # at 0.72-0.85, high-finesse ones (2026-10-12) at ~0.97.
+    recover_first_order_s: float | None = None  # |s| of the first order, learned from recent captures.
+                                          # With min_fundamental_overlap set, a 0th-order pick whose frame
+                                          # fails it is retried at -s (by the sign rule the true 0th order
+                                          # comes before its first order on a rising sweep): if that peak's
+                                          # frame passes, it replaces the pick. None = reject only
     fast: bool = False                    # alignment-loop mode: per 0th order, the brightest frame
                                           # within +-1 of the synced one, fitted on a rebinned ROI around
                                           # the spot (camera.fast_gaussian_score, ~0.1 s vs ~2 s);
@@ -198,6 +203,9 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
                 row['usable'], row['why'] = False, 'frame not Gaussian (higher order?)'
         rec['fundamentals'].append(row)
         by_t[f.t] = row
+    if have_camera and cfg.min_fundamental_overlap is not None and cfg.recover_first_order_s:
+        rec['recovered'] = _recover_wrong_mode(t, y, tt, yy, sw, fundamentals, rec, by_t,
+                                               frames, windows, mask, cfg, cache)
     if have_camera:
         # whatever the re-pick could not fix (too few true 0th orders) is
         # at least kept out of the metrics
@@ -245,6 +253,42 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
                     and row['first_order_likeness'] >= camera.FIRST_ORDER_MIN_LIKENESS)
         rec['first_orders'].append(row)
     return rec
+
+
+def _recover_wrong_mode(t, y, tt, yy, sw, fundamentals, rec, by_t, frames, windows, mask, cfg,
+                        cache):
+    """Replace picks whose frame failed the shape guard (a first order taken
+    for the 0th, seen live when the tilt made the first order the tallest
+    peak) by the peak one first-order offset earlier on a rising sweep / later
+    on a falling one, if that peak's frame passes. Returns how many."""
+    idx = spectrum.candidate_peaks(tt, yy)
+    s = abs(cfg.recover_first_order_s)
+    sig = max(spectrum.noise_sigma(yy), 1e-12)
+    n = 0
+    for k, f in enumerate(fundamentals):
+        row = by_t.get(f.t)
+        if (row is None or row['usable'] or not np.isfinite(f.local_fsr)
+                or row['why'] != 'frame not Gaussian (higher order?)'):
+            continue
+        t_exp = f.t - s * sw.direction * f.local_fsr
+        m = idx[np.abs(tt[idx] - t_exp) < spectrum.FAMILY_TOL * f.local_fsr]
+        if not m.size:
+            continue
+        g = spectrum.fit_peak(tt, yy, tt[m[np.argmax(yy[m])]], saturation_v=cfg.saturation_v)
+        g.local_fsr, g.scan_ok, g.snr = f.local_fsr, f.scan_ok, g.height / sig
+        new = {**g.to_dict(), **_frame_score(t, y, g.t, g.gamma, frames, windows, mask, cfg, cache)}
+        gs = new.get('gauss')
+        if not (g.fit_ok and g.snr >= spectrum.MIN_PEAK_SNR and new.get('frame_usable') and gs
+                and gs['overlap'] >= cfg.min_fundamental_overlap
+                and (cfg.allow_saturated or not g.saturated)):
+            continue
+        new.update(usable=True, why='', recovered_from_t=f.t)
+        rec['fundamentals'][rec['fundamentals'].index(row)] = new
+        del by_t[f.t]
+        by_t[g.t] = new
+        fundamentals[k] = g
+        n += 1
+    return n
 
 
 def _family_first_order_score(t, fundamentals, by_t, direction, s, frames, windows, mask, cfg):

@@ -14,6 +14,7 @@ Commands (args):
     measure {duration_s=3.0, with_frames=True, camera=None, scope=None}
         camera / scope: a device_id; None = the only open one of that kind.
         save: a .npz path to also write the raw capture to (offline debugging).
+        profile: True = also return where the metrics' time went ('profile_s').
         fast: True (default) = alignment-loop metrics (MetricsConfig.fast: fitted
               on a rebinned ROI around the spot, ~1 s); False = the full metrics
               incl. first-order camera templates (~10 s).
@@ -38,6 +39,8 @@ from alignment.metrics import MetricsConfig, evaluate_capture  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
 
 SCOPE_TYPE = 'picoscope'
+MIN_FUNDAMENTAL_OVERLAP = 0.85  # shape guard: live 0th orders 0.96-0.985, first orders 0.48-0.66
+FIRST_ORDER_S_MEMORY = 10       # recent captures whose first-order offset is remembered
 SIGNAL_CHANNEL = 'D'        # cavity transmission
 AUX_CHANNEL = 'B'           # temperature-modulation ramp
 
@@ -58,6 +61,7 @@ class LiveMeasureAdapter(DeviceAdapter):
         self._lock = threading.Lock()
         self._captures = {}         # (scope id, camera id) -> LiveCapture (keeps its sync)
         self._last = None
+        self._first_order_s = []     # |s| of the first order in recent valid captures
 
     def open(self):
         pass
@@ -104,12 +108,13 @@ class LiveMeasureAdapter(DeviceAdapter):
                 return self._measure(float(args.get('duration_s', 3.0)),
                                      bool(args.get('with_frames', True)),
                                      args.get('scope'), args.get('camera'), args.get('save'),
-                                     bool(args.get('fast', True)))
+                                     bool(args.get('fast', True)), bool(args.get('profile', False)))
             finally:
                 self._lock.release()
         raise ValueError(f'unknown command {name!r}')
 
-    def _measure(self, duration_s, with_frames, scope_id, camera_id, save=None, fast=True):
+    def _measure(self, duration_s, with_frames, scope_id, camera_id, save=None, fast=True,
+                 profile=False):
         scope_id, scope_adapter, camera_id, camera = self._devices(scope_id, camera_id)
         scope = scope_adapter.scope
         if not scope.is_streaming:
@@ -128,6 +133,9 @@ class LiveMeasureAdapter(DeviceAdapter):
         roi = data.roi or {'x': 0, 'y': 0}
         cfg = MetricsConfig(
             saturation_v=0.995 * scope.channels[SIGNAL_CHANNEL]['range_v'], fast=fast,
+            min_fundamental_overlap=MIN_FUNDAMENTAL_OVERLAP,
+            recover_first_order_s=(float(np.median(self._first_order_s))
+                                   if self._first_order_s else None),
             sensor_geometry={'offset_x': roi['x'], 'offset_y': roi['y'],
                              'binning_x': 1, 'binning_y': 1} if with_frames else None)
         if save:
@@ -136,7 +144,25 @@ class LiveMeasureAdapter(DeviceAdapter):
             np.savez(save, t=data.t, signal=data.signal, aux=data.aux, frames=data.frames,
                      windows=data.windows, roi=np.array([roi['x'], roi['y']]),
                      saturation_v=cfg.saturation_v)
-        res = evaluate_capture(*data.evaluate_args(), cfg=cfg)
+        tic_m = time.time()
+        if profile:
+            import cProfile
+            prof = cProfile.Profile()
+            res = prof.runcall(evaluate_capture, *data.evaluate_args(), cfg=cfg)
+        else:
+            res = evaluate_capture(*data.evaluate_args(), cfg=cfg)
+        metrics_s = time.time() - tic_m
+        fo = res.metrics.get('first_order_s')
+        if fo is not None and fo.valid and fo.value > 0:
+            self._first_order_s = (self._first_order_s + [fo.value])[-FIRST_ORDER_S_MEMORY:]
+        rows = [r for sw in res.sweeps for r in sw['fundamentals']]
+        blinks = {'zeroth_order_picks': len(rows),
+                  'used': sum(bool(r['usable']) for r in rows),
+                  'wrong_mode_rejected': sum(r['why'] in ('frame not Gaussian (higher order?)',
+                                                          'not the same mode as the 0th order')
+                                             for r in rows),
+                  'recovered': sum(sw.get('recovered', 0) for sw in res.sweeps),
+                  'first_order_s_used': cfg.recover_first_order_s}
         result = {
             'metrics': {k: m.to_dict() for k, m in res.metrics.items()},
             'by_direction': {str(d): {k: m.to_dict() for k, m in ms.items()}
@@ -146,13 +172,44 @@ class LiveMeasureAdapter(DeviceAdapter):
             'n_frames': 0 if data.frames is None else int(len(data.frames)),
             'n_samples': int(data.t.size),
             'saturated': data.saturated,
-            'timing_s': {'capture': captured, 'metrics': time.time() - tic - captured},
+            'blinks': blinks,
+            'timing_s': {'capture': captured, 'capture_stages': data.timing,
+                         'metrics': metrics_s},
             'time': time.time(),
         }
+        if profile:
+            result['profile_s'] = _profile_summary(prof)
         result = _json_safe(result)
         self._last = result
         self.emit({'type': 'measurement', **result})
         return result
+
+
+# where the metrics spend their time: cumulative seconds of these functions
+# (nested: camera_fits is inside frame_scores, peak_fits inside find_0th_orders)
+_PROFILED = {'split_sweeps': ('sweeps.py', 'split_sweeps'),
+             'find_0th_orders': ('spectrum.py', 'find_fundamentals'),
+             'fsr_estimate': ('spectrum.py', 'estimate_fsr_time'),
+             'peak_fits': ('spectrum.py', 'fit_peak'),
+             'side_peaks_and_families': ('spectrum.py', 'side_offsets'),
+             'first_orders': ('spectrum.py', 'first_orders'),
+             'frame_scores': ('metrics.py', '_frame_score'),
+             'camera_fits': ('camera.py', 'fast_gaussian_score'),
+             'camera_fits_full': ('camera.py', 'gaussian_score'),
+             'same_mode_check': ('metrics.py', '_same_mode_impostors'),
+             'wrong_mode_recovery': ('metrics.py', '_recover_wrong_mode')}
+
+
+def _profile_summary(prof):
+    import pstats
+    stats = pstats.Stats(prof).stats
+    out = {}
+    for label, (file, func) in _PROFILED.items():
+        total = sum(v[3] for (f, _, fn), v in stats.items()
+                    if fn == func and f.replace(chr(92), '/').endswith(file))
+        if total:
+            out[label] = total
+    return out
 
 
 def _json_safe(value):

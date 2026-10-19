@@ -61,6 +61,7 @@ class LiveCaptureData:
     roi: dict | None = None
     sync: dict = field(default_factory=dict)  # how the frames were placed
     saturated: bool = False         # the signal reached the scope's range
+    timing: dict = field(default_factory=dict)  # seconds per stage of capture()
 
     def evaluate_args(self):
         """Positional args for alignment.metrics.evaluate_capture."""
@@ -117,11 +118,20 @@ class LiveCapture:
             t, signal, aux, sat = self._scope_span(t_start, t_start + duration_s)
             return LiveCaptureData(t, signal, aux, saturated=sat, sync={'mode': 'scope only'})
 
+        clock = [time.perf_counter()]
+        timing = {}
+
+        def lap(name):
+            now = time.perf_counter()
+            timing[name] = now - clock[0]
+            clock[0] = now
+
         self.camera.start_recording(max_s=duration_s + 1.0, max_bytes=max_bytes)
         try:
             time.sleep(duration_s)
         finally:
             rec = self.camera.stop_recording()
+        lap('record')
         if rec is None or len(rec.frames) < 3:
             raise RuntimeError(f'the camera recorded {0 if rec is None else len(rec.frames)} '
                                f'frames (is it streaming?)')
@@ -140,9 +150,12 @@ class LiveCapture:
         t, signal, aux, sat = self._scope_span(t0_host - SCOPE_PAD_S - FIRST_SEARCH_S,
                                                t0_host + starts[-1] + exposure_s
                                                + SCOPE_PAD_S + FIRST_SEARCH_S)
+        lap('scope_span')       # mostly waiting for the scope stream to catch up
         frames = rec.stack()
+        lap('stack_frames')
         mask = varying_pixel_mask(frames)
         brightness = frame_brightness(frames, mask if mask.any() else None)
+        lap('brightness')
 
         key = (self.scope.stream_generation, rec.roi, meta[0]['exposure_us'])
         if key != self._sync_key:
@@ -154,6 +167,7 @@ class LiveCapture:
         trace = ScopeTrace(t, signal, 's', 'V')
         fit = fit_time_offset(starts, exposure_s, brightness, trace,
                               search=(centre - half, centre + half))
+        lap('sync_fit')
         at_edge = min(fit.t0 - (centre - half), (centre + half) - fit.t0) < 0.1 * half
         if fit.locked and not at_edge:
             t0, mode = fit.t0, 'fit'
@@ -166,4 +180,4 @@ class LiveCapture:
                 'correction_s': self._correction, 'depth': fit.depth,
                 'locked': bool(fit.locked), 'searched_s': half}
         return LiveCaptureData(t, signal, aux, frames, frame_windows(starts, exposure_s, t0),
-                               meta, rec.roi, sync, sat)
+                               meta, rec.roi, sync, sat, timing)
