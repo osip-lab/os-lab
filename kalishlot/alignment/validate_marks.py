@@ -18,7 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # kalishlot/: alignment package
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # repo root: local_config
 
 from alignment.metrics import MetricsConfig, evaluate_session  # noqa: E402
 

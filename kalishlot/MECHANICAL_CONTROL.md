@@ -241,7 +241,9 @@ goal rather than an optimum, next to maximizing intensity, minimizing splitting,
 
 ## Proposed architecture
 Fits the existing patterns.
-- **`motion/`**, a pure-Python package at the repo root (like `rigol_fg/`):
+- **`motion/`**, a pure-Python package (GUI-free, like `rigol_fg/`). It lives in `kalishlot/motion/`,
+  next to `kalishlot/alignment/` and `kalishlot/simulation/`, to keep the repo root clean. All three
+  import as top-level packages (`import motion`) with `kalishlot/` on `sys.path`:
   - `axis.py`: the `Axis` interface and capability flags;
   - `safety.py`: `SafeAxis` and its rules;
   - `axes_config.py`: versioned limits and tiers;
@@ -301,6 +303,7 @@ Fits the existing patterns.
 Everything below runs without hardware.
 
 ### Tests to run
+Paths are relative to `kalishlot/`. Run from there (the `-m` forms need it).
 ```
 python alignment/sweeps.py             # sweep segmentation self-test
 python alignment/spectrum.py           # peaks, FSR, families, splitting, saturation, reassignment
@@ -308,10 +311,10 @@ python alignment/camera.py             # Gaussian score, first-order templates, 
 python -m alignment.metrics            # whole-capture metrics
 python alignment/validate_marks.py     # real sessions vs hand marks (edit ROOTS at the top)
 python -m motion.test_safety           # 14 safety-rule tests
-python rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrument
+python ../rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrument
 python -m simulation.cavity_physics    # physics (cavity_design + analytic stand-in)
 python -m simulation.setup             # simulated scope + camera + metrics
-python kalishlot/test_motion_axes.py   # kalishlot adapter (also hooked into smoke_test.py)
+python test_motion_axes.py             # kalishlot adapter (also hooked into smoke_test.py)
 python alignment/test_loop.py          # loop: recovers, frozen, settle, abort, signal lost, 1D scan,
                                        # marker target, marker lookup + sensor units
 python alignment/run_alignment_sim.py  # demo run on the cavity_design physics (edit the globals)

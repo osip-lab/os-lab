@@ -1,6 +1,6 @@
 """Hardware-free tests of every SafeAxis / VirtualAxis safety rule.
 
-    python -m motion.test_safety        (from the repo root)
+    python -m motion.test_safety        (from kalishlot/)
 
 Uses a fake clock (no real sleeping) and a recording driver, so each test can
 check exactly what reached the "hardware".

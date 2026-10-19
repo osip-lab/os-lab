@@ -33,7 +33,7 @@ import numpy as np
 
 from alignment import camera, spectrum, sweeps
 
-_REPO = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[2]
 FAMILY_CAMERA_MARGIN = 0.08     # camera overrides the strongest family only by this much
 
 

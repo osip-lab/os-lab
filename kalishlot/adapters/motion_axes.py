@@ -32,7 +32,7 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # kalishlot/: motion package
 from motion import build_axis  # noqa: E402
 from motion.axes_config import AXES, TIERS  # noqa: E402
 from motion.safety import SafetyError  # noqa: E402

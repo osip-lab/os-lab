@@ -38,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-_REPO = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[2]
 
 
 @dataclass

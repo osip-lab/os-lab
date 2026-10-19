@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'basler_cam'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'basler_cam'))
 from gaussian_fit import fit_gaussian, gaussian2d  # noqa: E402
 from scipy.optimize import curve_fit  # noqa: E402
 
