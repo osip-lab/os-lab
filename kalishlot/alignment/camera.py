@@ -113,6 +113,71 @@ def gaussian_score(frame, mask=None, rebinning=2):
         ok, p = refine_fit(f, p)
     if not ok:
         return GaussianScore(False, 'fit did not converge')
+    return _score(f, p)
+
+
+FAST_CROP_SIGMAS = 6.0      # fit ROI half-size, in moment widths (which underestimate sigma;
+                            # 4 clipped the tails: widths 5% small, noise taken from the tails)
+FAST_TARGET_PX = 48         # the fit ROI is rebinned to about this many pixels across
+FAST_MIN_HALF_PX = 16
+
+
+def _moments(f):
+    """Rough centre and width from intensity moments (background = median,
+    pixels under 20% of the peak ignored). Biased by stray light, so only a
+    starting point: ~7 px off on a live frame where the fit agrees to 0.3 px."""
+    g = f - np.median(f)
+    g[g < 0.2 * g.max()] = 0.0
+    total = float(g.sum())
+    if total <= 0:
+        return None
+    ys, xs = np.indices(g.shape, dtype=float)
+    cx, cy = float((g * xs).sum() / total), float((g * ys).sum() / total)
+    sx = float(np.sqrt((g * (xs - cx) ** 2).sum() / total))
+    sy = float(np.sqrt((g * (ys - cy) ** 2).sum() / total))
+    return cx, cy, max(sx, sy, 2.0)
+
+
+def fast_gaussian_score(frame, mask=None, crop_sigmas=FAST_CROP_SIGMAS,
+                        target_px=FAST_TARGET_PX):
+    """gaussian_score, ~10-50x faster: fit only a region around the spot, rebinned.
+
+    The fit ROI is +-crop_sigmas moment widths around a moments estimate of the
+    spot; it is rebinned to ~target_px across, fitted (fit_gaussian, then the
+    full-tolerance refine_fit on the small rebinned crop), and scored on the
+    full-resolution crop. Centre and widths are in pixels of `frame`. Live
+    frame (2026-10-19): 2.7 s for gaussian_score; rebinning alone 0.37 s."""
+    f = _prepare(frame, mask)
+    h, w = f.shape
+    mom = _moments(f)
+    if mom is None:
+        return GaussianScore(False, 'empty frame')
+    cx, cy, s = mom
+    half = max(crop_sigmas * s, FAST_MIN_HALF_PX)
+    x0, x1 = int(max(cx - half, 0)), int(min(cx + half + 1, w))
+    y0, y1 = int(max(cy - half, 0)), int(min(cy + half + 1, h))
+    crop = f[y0:y1, x0:x1]
+    b = max(1, int(round(max(crop.shape) / target_px)))
+    small = crop[:crop.shape[0] // b * b, :crop.shape[1] // b * b]
+    small = small.reshape(small.shape[0] // b, b, small.shape[1] // b, b).mean(axis=(1, 3))
+    ok, p = fit_gaussian(small)
+    if ok:
+        ok, p = refine_fit(small, p)
+    if not ok:
+        return GaussianScore(False, 'fit did not converge')
+    # rebinned pixel i covers crop pixels [i*b, (i+1)*b): centre at i*b + (b-1)/2
+    p = dict(p, x_0=p['x_0'] * b + (b - 1) / 2, y_0=p['y_0'] * b + (b - 1) / 2,
+             s_x=p['s_x'] * b, s_y=p['s_y'] * b)
+    score = _score(crop, p)
+    score.x0 += x0
+    score.y0 += y0
+    if not (0 <= score.x0 < w and 0 <= score.y0 < h) and score.valid:
+        score.valid, score.reason = False, 'centre outside the frame'
+    return score
+
+
+def _score(f, p):
+    """GaussianScore of fitted parameters `p` on the (prepared) image `f`."""
     h, w = f.shape
     border = f.copy()
     g, q = _gaussian(f.shape, p)
@@ -230,6 +295,17 @@ def _self_test():
     t = np.arange(0, 0.1, 1e-4)
     y = 1.0 / (1 + ((t - 0.05) / 1e-3) ** 2)
     assert exposure_purity(t, y, (0.0, 0.1), 0.05, 0.01) > 0.9
+    # fast fit: same centre and width as the full fit on a live-sized frame with stray light
+    rng = np.random.default_rng(3)
+    yy, xx = np.indices((546, 720), dtype=float)
+    spot = 40 + 600 * np.exp(-((xx - 351.3) ** 2 / (2 * 50 ** 2) + (yy - 236.8) ** 2 / (2 * 62 ** 2)))
+    spot += 80 * np.exp(-((xx - 600) ** 2 + (yy - 80) ** 2) / (2 * 15 ** 2))   # stray light
+    spot += rng.normal(0, 4, spot.shape)
+    fast, full = fast_gaussian_score(spot), gaussian_score(spot)
+    assert fast.valid and full.valid, (fast, full)
+    assert abs(fast.x0 - 351.3) < 0.5 and abs(fast.y0 - 236.8) < 0.5, fast
+    assert abs(fast.sigma_x - 50) < 1.5 and abs(fast.sigma_y - 62) < 1.5, fast
+    assert abs(fast.x0 - full.x0) < 0.5 and abs(fast.overlap - full.overlap) < 0.01, (fast, full)
     print('camera self-test OK')
 
 

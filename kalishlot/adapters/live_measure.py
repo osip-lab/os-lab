@@ -14,6 +14,9 @@ Commands (args):
     measure {duration_s=3.0, with_frames=True, camera=None, scope=None}
         camera / scope: a device_id; None = the only open one of that kind.
         save: a .npz path to also write the raw capture to (offline debugging).
+        fast: True (default) = alignment-loop metrics (MetricsConfig.fast: fitted
+              on a rebinned ROI around the spot, ~1 s); False = the full metrics
+              incl. first-order camera templates (~10 s).
         Returns {'metrics': {name: Metric dict}, 'by_direction', 'direction',
                  'sync', 'n_frames', 'n_samples', 'saturated', 'timing_s'}.
     reset_sync {}   forget the kept camera-to-scope correction
@@ -100,12 +103,13 @@ class LiveMeasureAdapter(DeviceAdapter):
             try:
                 return self._measure(float(args.get('duration_s', 3.0)),
                                      bool(args.get('with_frames', True)),
-                                     args.get('scope'), args.get('camera'), args.get('save'))
+                                     args.get('scope'), args.get('camera'), args.get('save'),
+                                     bool(args.get('fast', True)))
             finally:
                 self._lock.release()
         raise ValueError(f'unknown command {name!r}')
 
-    def _measure(self, duration_s, with_frames, scope_id, camera_id, save=None):
+    def _measure(self, duration_s, with_frames, scope_id, camera_id, save=None, fast=True):
         scope_id, scope_adapter, camera_id, camera = self._devices(scope_id, camera_id)
         scope = scope_adapter.scope
         if not scope.is_streaming:
@@ -123,7 +127,7 @@ class LiveMeasureAdapter(DeviceAdapter):
         captured = time.time() - tic
         roi = data.roi or {'x': 0, 'y': 0}
         cfg = MetricsConfig(
-            saturation_v=0.995 * scope.channels[SIGNAL_CHANNEL]['range_v'],
+            saturation_v=0.995 * scope.channels[SIGNAL_CHANNEL]['range_v'], fast=fast,
             sensor_geometry={'offset_x': roi['x'], 'offset_y': roi['y'],
                              'binning_x': 1, 'binning_y': 1} if with_frames else None)
         if save:

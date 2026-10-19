@@ -62,6 +62,10 @@ class MetricsConfig:
                                           # Gaussian less is not used (it may be a higher order). Off by
                                           # default: low-finesse sessions (2026-10-11) show real 0th orders
                                           # at 0.72-0.85, high-finesse ones (2026-10-12) at ~0.97.
+    fast: bool = False                    # alignment-loop mode: per 0th order, the brightest frame
+                                          # within +-1 of the synced one, fitted on a rebinned ROI around
+                                          # the spot (camera.fast_gaussian_score, ~0.1 s vs ~2 s);
+                                          # no first-order camera templates
     sensor_geometry: dict | None = None   # where the frames sit on the sensor, as a session's 'camera'
                                           # block records it: offset_x/offset_y (ROI origin, in BINNED px)
                                           # and binning_x/binning_y. Enables sensor_x/_y. evaluate_session
@@ -160,10 +164,11 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
     have_camera = frames is not None and windows is not None
     fundamentals, fsr = spectrum.find_fundamentals(tt, yy, cfg.fsr_time_s, cfg.saturation_v)
     rec = {'sweep': sw.to_dict(), 'fsr_time_s': fsr, 'fundamentals': [], 'first_orders': []}
+    cache = {}                          # frame index -> GaussianScore (each frame fitted once)
     if have_camera and fundamentals:
         # Camera check that the picks are one mode; if some are not, pick again
         # with the FSR implied by the true ones (impostors halve the estimate).
-        rows = [{'t': f.t, **_frame_score(t, y, f.t, f.gamma, frames, windows, mask, cfg)}
+        rows = [{'t': f.t, **_frame_score(t, y, f.t, f.gamma, frames, windows, mask, cfg, cache)}
                 for f in fundamentals]
         impostors = _same_mode_impostors(rows, frames, mask, cfg)
         if impostors:
@@ -186,7 +191,7 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
                'nonlinear scan' if not f.scan_ok else 'saturated')
         row = {**f.to_dict(), 'usable': usable, 'why': why}
         if have_camera:
-            row.update(_frame_score(t, y, f.t, f.gamma, frames, windows, mask, cfg))
+            row.update(_frame_score(t, y, f.t, f.gamma, frames, windows, mask, cfg, cache))
             g = row.get('gauss')
             if (cfg.min_fundamental_overlap is not None and usable and row.get('frame_usable')
                     and g and g['overlap'] < cfg.min_fundamental_overlap):
@@ -210,7 +215,7 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
     else:
         family = spectrum.find_family(offsets)
         rec['family_choice'] = 'strongest'
-        if have_camera and len(candidates) >= 2:
+        if have_camera and len(candidates) >= 2 and not cfg.fast:
             # the two strongest families are often +-s of comparable weight;
             # the camera decides which one looks like a first-order mode
             scores = [_family_first_order_score(t, fundamentals, by_t, sw.direction, c,
@@ -225,7 +230,7 @@ def _analyze_sweep(t, y, sw, frames, windows, mask, cfg):
     for fo in spectrum.first_orders(tt, yy, fundamentals, sw.direction, family):
         row = fo.to_dict()
         ref_row = by_t.get(fo.fundamental_t, {})
-        if have_camera and ref_row.get('gauss'):
+        if have_camera and ref_row.get('gauss') and not cfg.fast:
             i = _frame_index(windows, fo.peak.t)
             ref = camera.GaussianScore(**ref_row['gauss'])
             if i is not None and ref.valid:
@@ -267,12 +272,28 @@ def _masked(frame, mask, cfg):
         mask, frame, np.median(frame[~mask]) if (~mask).any() else 0)
 
 
-def _frame_score(t, y, t_peak, gamma, frames, windows, mask, cfg):
+def _brightest_near(frames, i, mask, cfg):
+    """Of frames i-1, i, i+1, the one with the most light above its median:
+    tolerates a sync error of a frame, and a peak shared by two exposures."""
+    def light(j):
+        f = frames[j] if (mask is None or not cfg.use_mask) else frames[j][mask]
+        return float(np.sum(f, dtype=np.float64) - np.median(f) * f.size)
+    return max((j for j in (i - 1, i, i + 1) if 0 <= j < len(frames)), key=light)
+
+
+def _frame_score(t, y, t_peak, gamma, frames, windows, mask, cfg, cache=None):
     i = _frame_index(windows, t_peak)
     if i is None:
         return {'frame': None, 'frame_why': 'peak fell between exposures'}
+    if cfg.fast:
+        i = _brightest_near(frames, i, mask, cfg)
     purity = camera.exposure_purity(t, y, windows[i], t_peak, max(5 * gamma, 0.002))
-    score = camera.gaussian_score(frames[i], mask if cfg.use_mask else None)
+    score = None if cache is None else cache.get(i)
+    if score is None:
+        fit = camera.fast_gaussian_score if cfg.fast else camera.gaussian_score
+        score = fit(frames[i], mask if cfg.use_mask else None)
+        if cache is not None:
+            cache[i] = score
     return {'frame': i, 'purity': purity, 'gauss': score.to_dict(),
             'frame_usable': bool(score.valid and purity >= cfg.min_purity),
             'frame_why': score.reason if not score.valid else
