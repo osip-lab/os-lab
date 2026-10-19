@@ -1,8 +1,8 @@
 # Mechanical control: design record
 
-Status (2026-10-19, laptop, no hardware connected): the laptop phases 1-5 are implemented and tested
-on recorded data and on a simulator; see **Implementation status** at the end. Nothing has touched real
-hardware yet. Read this before starting the work in the lab, and update the "Decisions" and
+Status (2026-10-19): the laptop phases 1-5 are implemented and tested on recorded data and on a
+simulator. In the lab, the first real driver (Thorlabs MDT693B, large-mirror tilts) works with the piezos
+still disconnected. See **Implementation status** at the end. Update the "Decisions" and
 "Open questions" sections as things get settled.
 
 ## Goal
@@ -311,6 +311,7 @@ python alignment/camera.py             # Gaussian score, first-order templates, 
 python -m alignment.metrics            # whole-capture metrics
 python alignment/validate_marks.py     # real sessions vs hand marks (edit ROOTS at the top)
 python -m motion.test_safety           # 14 safety-rule tests
+python -m motion.test_mdt693b          # MDT693B driver against a fake instrument
 python ../rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrument
 python -m simulation.cavity_physics    # physics (cavity_design + analytic stand-in)
 python -m simulation.setup             # simulated scope + camera + metrics
@@ -397,11 +398,29 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
 - With backlash, the best *commanded* position differs from the true one by ~backlash/2. Trusting the
   metric (re-measure, verify) handles it.
 
+### Lab, 2026-10-19: first real driver, Thorlabs MDT693B
+- **Hardware:** large mirror in a POLARIS-K1S3P. Horizontal tilt = controller X = `large_mirror_phi`;
+  vertical tilt = Y = `large_mirror_theta`; Z unused. The MDT693B is on COM4
+  (USB VID 1313 / PID 1003), firmware 1.17, s/n 2408096171-09, limit switch at 150 V.
+- **Driver** `motion/thorlabs_mdt693b.py` (pyvisa, 115200 baud, CR). Written from the protocol, not by
+  importing `mode_position_feedback/` (other team members own that folder and another project uses it;
+  never edit it). Its `inst.clear()` fails on this port (VI_ERROR_SYSTEM_ERROR), so the driver flushes
+  the read buffer instead.
+  - The X and Y axes share one VISA session per port.
+  - On open: checks that `id?` names an MDT693B and that the soft max is not above `vlimit?`.
+  - Before every write it re-reads the output and refuses to move if the output differs from the last
+    known value by more than 0.5 V (front-panel knob turned).
+  - The readback is the controller's measured output: ~+0.07 V above the command at 3-10 V.
+- **Tried with the piezos disconnected:** X 0 -> 5 -> 10 V and Y 0 -> 3 V through `SafeAxis`, confirmed
+  on the front display. 80 V was refused by the 0-75 V placeholder soft range.
+- **Limits are placeholders** (`axes_config.py`): 0-75 V, 0.5 V steps, 5 V/s, approach off. Next:
+  connect the piezos, measure tilt per volt on the camera, then hysteresis, repeatability and settle time.
+
 ### Not done yet
 - **M-LOOP backend**: not written. M-LOOP is not installed here and pulls heavy dependencies; the
   stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
 - **Lab measurement function** for the loop: an in-memory `capture_synchronized` (no video written per
   evaluation) wrapped as `measure()`; today `capture_synchronized` takes an output folder.
 - **Aligner box** in kalishlot (a virtual adapter launching the loop in a child process via loan_client).
-- Real drivers (Standa, PI E-872, MDT693B port, Kinesis) and per-axis characterization in the lab:
+- Real drivers (Standa, PI E-872, Kinesis) and per-axis characterization in the lab (MDT693B included):
   `scan_axis` up and down for hysteresis, repeats for repeatability, delays for the vibration settle.

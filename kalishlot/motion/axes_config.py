@@ -5,9 +5,9 @@ deliberately NOT editable from the kalishlot UI: change it here, commit it,
 and the change is reviewable. (The UI can only freeze/unfreeze at run time,
 and cannot unfreeze an axis frozen here.)
 
-Real hardware is not chosen yet (candidates: Standa positioners, PI E-872
-PiezoMike, Thorlabs MDT693B, Thorlabs Kinesis). Until then only simulated
-axes are defined; the commented template below shows a real entry.
+Real axes so far: the large mirror's two tilts on a Thorlabs MDT693B. Other
+candidates (Standa positioners, PI E-872 PiezoMike, Thorlabs Kinesis) get a
+driver when they are used. The simulated axes stay for the hardware-free tests.
 
 Limits to MEASURE in the lab before trusting a real axis (see the
 characterization script in phase 6): repeatability_sigma, settle_s,
@@ -42,13 +42,23 @@ AXES = {
         'limits': AxisLimits(min=-500.0, max=500.0, max_step=20.0, max_slew=100.0,
                              settle_s=0.05, vibration_settle_s=1.0, repeatability_sigma=0.3),
     },
-    # Template for a real axis (fill in once the hardware is chosen):
-    # 'm1_phi': {     # names follow cavity_design: optical axis x, phi = xy-plane tilt
-    #     'driver': 'thorlabs_mdt693b', 'address': 'ASRL3::INSTR', 'options': {'channel': 'x'},
-    #     'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.05,
-    #                          vibration_settle_s=1.0, repeatability_sigma=..., approach=+1,
-    #                          approach_overshoot=...),
-    # },
+    # Large mirror in a Thorlabs POLARIS-K1S3P (3 piezo actuators), driven by a Thorlabs
+    # MDT693B (s/n 2408096171-09, USB virtual COM port, limit switch at 150 V).
+    # Names follow cavity_design: phi = xy-plane (horizontal) tilt, theta = xz-plane
+    # (vertical) tilt. The controller's Z output is not used.
+    # PLACEHOLDER limits (2026-10-19): range kept to half the 150 V the piezos take until the
+    # tilt per volt is measured; approach off until hysteresis is characterized; settle and
+    # repeatability still to be measured.
+    'large_mirror_phi': {
+        'driver': 'thorlabs_mdt693b', 'address': 'COM4', 'options': {'channel': 'x'},
+        'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.05,
+                             vibration_settle_s=1.0),
+    },
+    'large_mirror_theta': {
+        'driver': 'thorlabs_mdt693b', 'address': 'COM4', 'options': {'channel': 'y'},
+        'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.05,
+                             vibration_settle_s=1.0),
+    },
 }
 
 # Optimization order: the loop works on TIERS[0] alone, then TIERS[0] + TIERS[1], ...

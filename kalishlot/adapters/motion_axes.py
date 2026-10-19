@@ -39,7 +39,7 @@ from motion.safety import SafetyError  # noqa: E402
 
 from .base import DeviceAdapter  # noqa: E402
 
-DRIVER_LABELS = {'simulated': 'Simulated axes'}
+DRIVER_LABELS = {'simulated': 'Simulated axes', 'thorlabs_mdt693b': 'Thorlabs MDT693B piezos'}
 
 
 class MotionAxesAdapter(DeviceAdapter):

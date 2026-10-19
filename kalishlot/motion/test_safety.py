@@ -214,6 +214,8 @@ def test_simulator_repeatability_and_backlash():
 
 def test_config_axes_build():
     for name in AXES:
+        if AXES[name]['driver'] != 'simulated':     # real hardware: see test_mdt693b.py
+            continue
         ax = build_axis(name)
         ax.open()
         assert ax.position_known, name
