@@ -5,6 +5,7 @@
 import { createCameraBox } from './boxes/camera.js';
 import { createPicoScopeBox } from './boxes/picoscope.js';
 import { createRigolDGBox } from './boxes/rigol_dg.js';
+import { createMotionAxesBox } from './boxes/motion_axes.js';
 import { createSyncedPipelineBox } from './boxes/synced_pipeline.js';
 import { initLogger, openLogger } from './boxes/logger.js';
 import { initIdle } from './boxes/idle.js';
@@ -14,6 +15,7 @@ const BOX_RENDERERS = {
   basler_camera: createCameraBox,
   ximea_camera: createCameraBox,
   rigol_dg: createRigolDGBox,
+  motion_axes: createMotionAxesBox,
   picoscope: createPicoScopeBox,
   synced_pipeline: createSyncedPipelineBox,
 };
