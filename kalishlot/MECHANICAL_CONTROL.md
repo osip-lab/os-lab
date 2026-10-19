@@ -439,6 +439,19 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   on the front display. 80 V was refused by the 0-75 V placeholder soft range.
 - **Limits are placeholders** (`axes_config.py`): 0-75 V, 0.5 V steps, 5 V/s, approach off. Next:
   connect the piezos, measure tilt per volt on the camera, then hysteresis, repeatability and settle time.
+- **First scans with the piezos connected** (2026-10-19, through kalishlot with the live view on:
+  `motion_axes` box + `live_measure` fast mode; 0, 5, 10, 15, 20 V and back to 0, ~55 s per scan):
+  - X (`large_mirror_phi`): spot -0.25 px/V horizontally, -0.07 px/V vertically; intensity
+    0.52 -> 0.47 V.
+  - Y (`large_mirror_theta`): spot -0.46 px/V vertically, +0.05 px/V horizontally; intensity
+    0.52 -> 0.60 V and Gaussian overlap 0.956 -> 0.975 (Y up improves the coupling).
+  - The tilt per volt is small: the full 0-75 V moves the spot ~20-35 px. The manual knobs stay the
+    coarse adjustment.
+  - The X and Y cables were swapped at first (X moved the spot vertically); fixed at the controller.
+    After a controller power cycle, close and reopen the piezo box (new serial session; opening only
+    reads).
+  - Piezos do not shake the setup: settle delays set to 0.
+  - Each fast measurement takes ~6 s (3 s recording + ~3 s overhead, not yet broken down).
 
 ### Lab, 2026-10-19: live capture from the running streams
 - **What was added:**
