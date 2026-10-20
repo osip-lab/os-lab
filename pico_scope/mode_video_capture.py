@@ -1406,14 +1406,28 @@ def _json_default(value):
 
 
 
+# the module settings save_session() writes into the record
+SESSION_SETTINGS = ('FRAMES_FORMAT', 'H264_CRF', 'MASK_THRESHOLD', 'LONG_ARM_CM',
+                    'BINNING', 'FRAME_RATE_HZ', 'EXPOSURE_US',
+                    'KALISHLOT_FUNCTION_GENERATOR')
+
+
 def save_session(folder, stem, frames, meta, timing, checks, camera_info,
-                 mode_location):
-    """Write the frame stack, the mask and the session record."""
+                 mode_location, settings=None, record_run_config=True):
+    """Write the frame stack, the mask and the session record.
+
+    `settings` overrides SESSION_SETTINGS for this call only, for a caller that
+    is not a capture run of this script (kalishlot's quick capture, which runs
+    in the server process and must not rewrite these module constants).
+    `record_run_config` False skips the run_config dump, which describes this
+    script's own run and would be wrong for such a caller."""
+    c = {name: globals()[name] for name in SESSION_SETTINGS}
+    c.update(settings or {})
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    mask = varying_pixel_mask(frames, MASK_THRESHOLD)
-    if FRAMES_FORMAT not in FRAMES_FORMATS:
-        raise ValueError(f'FRAMES_FORMAT {FRAMES_FORMAT!r} is not one of '
+    mask = varying_pixel_mask(frames, c['MASK_THRESHOLD'])
+    if c['FRAMES_FORMAT'] not in FRAMES_FORMATS:
+        raise ValueError(f"FRAMES_FORMAT {c['FRAMES_FORMAT']!r} is not one of "
                          f'{FRAMES_FORMATS}')
     mask_name = f'{stem}_mask.npy'
 
@@ -1423,7 +1437,7 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
         # was skipped. Lets the analysis scripts (extract_df_and_fsr_from_
         # scope_csv.py, mode_map_2d.py) take the cavity's long arm from here
         # instead of prompting for it again.
-        'long_arm_m': LONG_ARM_CM / 100 if LONG_ARM_CM is not None else None,
+        'long_arm_m': c['LONG_ARM_CM'] / 100 if c['LONG_ARM_CM'] is not None else None,
         'sync': {
             'method': 'optical',
             'description': 'frame brightness fitted against the scope trace; '
@@ -1431,19 +1445,19 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
             'signal_column': 'Channel D',
         },
         'frames_file': None,        # filled in once the file is written
-        'frames_format': FRAMES_FORMAT,
+        'frames_format': c['FRAMES_FORMAT'],
         'frames_scale': None,
         'mask_file': mask_name,
         'frames_shape': list(frames.shape),
         'frames_dtype': str(frames.dtype),
         'camera': camera_info,
-        'binning': BINNING,
-        'effective_pixel_size_mm': camera_info['pixel_size_mm'] * BINNING,
-        'requested_frame_rate_hz': FRAME_RATE_HZ,
-        'exposure_s': EXPOSURE_US / 1e6,
+        'binning': c['BINNING'],
+        'effective_pixel_size_mm': camera_info['pixel_size_mm'] * c['BINNING'],
+        'requested_frame_rate_hz': c['FRAME_RATE_HZ'],
+        'exposure_s': c['EXPOSURE_US'] / 1e6,
         'checks': checks,
         'mode_location': mode_location,
-        'mask_threshold': MASK_THRESHOLD,
+        'mask_threshold': c['MASK_THRESHOLD'],
         'mask_pixels': int(mask.sum()),
         'timing': timing,
         'meta': meta,
@@ -1452,8 +1466,8 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
         'brightness_full': frame_brightness(frames).tolist(),
         'brightness_masked': frame_brightness(frames, mask).tolist(),
     }
-    if KALISHLOT_FUNCTION_GENERATOR is not None:
-        session['function_generator'] = KALISHLOT_FUNCTION_GENERATOR
+    if c['KALISHLOT_FUNCTION_GENERATOR'] is not None:
+        session['function_generator'] = c['KALISHLOT_FUNCTION_GENERATOR']
     # Serialise before writing anything large. The metadata is the fragile
     # part - it is assembled from a dozen measurements, any of which can carry
     # a type json refuses - and it is also the irreplaceable part, since the
@@ -1464,10 +1478,10 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     text = json.dumps(session, indent=1, default=_json_default)
     fps = timing.get('period_s_median')
     frames_path, info = save_frames(folder / f'{stem}_frames', frames,
-                                    FRAMES_FORMAT, 1 / fps if fps else 30.0,
-                                    H264_CRF)
-    if FRAMES_FORMAT == 'h264':
-        session['frames_crf'] = H264_CRF
+                                    c['FRAMES_FORMAT'], 1 / fps if fps else 30.0,
+                                    c['H264_CRF'])
+    if c['FRAMES_FORMAT'] == 'h264':
+        session['frames_crf'] = c['H264_CRF']
     session['frames_file'] = frames_path.name
     session['frames_scale'] = info['scale']
     text = json.dumps(session, indent=1, default=_json_default)
@@ -1482,11 +1496,12 @@ def save_session(folder, stem, frames, meta, timing, checks, camera_info,
     # than only what was typed. Both capture paths come through here, so a
     # capture run straight from this script is recorded the same as one the
     # pipeline drove.
-    extra = ({'function_generator': KALISHLOT_FUNCTION_GENERATOR}
-             if KALISHLOT_FUNCTION_GENERATOR is not None else None)
-    run_config.dump_into(folder,
-                         resolved=run_config.resolved_values('capture', globals()),
-                         extra=extra)
+    if record_run_config:
+        extra = ({'function_generator': c['KALISHLOT_FUNCTION_GENERATOR']}
+                 if c['KALISHLOT_FUNCTION_GENERATOR'] is not None else None)
+        run_config.dump_into(folder,
+                             resolved=run_config.resolved_values('capture', globals()),
+                             extra=extra)
     return session_path, mask
 
 
@@ -1903,6 +1918,89 @@ def capture_synchronized(serial_number=None, output_root=None,
     print(f'\nOptional fine alignment:')
     print(f'  python pico_scope/mode_video_sync.py --session "{folder}" --refine')
     print(f'SESSION_PATH={session_path}')
+    return session_path
+
+
+def save_live_session(folder, stem, data, camera_info, scope_info, settings):
+    """Write a quick capture - cut out of kalishlot's running streams by
+    kalishlot/alignment/live_capture.py - as a session like capture_synchronized's.
+
+    Same files and keys, so every reader (load_session, session_windows,
+    refine_session, the viewer, mode_marking, alignment's evaluate_session) takes
+    it unchanged. What differs is recorded in session['sync'] and ['live']:
+    the frames were placed with the clock correction kept from the last "sync
+    camera and scope" (t0_fitted_s), not fitted on this capture; t0_host_s is the
+    host clocks' placement alone, which refine_session searches around as usual.
+
+    `data` is a LiveCaptureData. `scope_info`: serial, variant, range_v and
+    coupling per channel name, aux label. `settings`: FRAMES_FORMAT, H264_CRF,
+    MASK_THRESHOLD, LONG_ARM_CM, KALISHLOT_FUNCTION_GENERATOR, SCOPE_CHANNEL,
+    SCOPE_AUX_CHANNEL (None = no aux). Returns the session path.
+    """
+    folder = Path(folder)
+    meta = [dict(row) for row in data.meta]
+    exposure_us = float(meta[0]['exposure_us'])
+    rate = camera_info.get('frame_rate_hz')
+    timing = burst_timing(meta, expected_rate_hz=rate)
+    checks = {'resulting_hz': camera_info.get('resulting_frame_rate_hz') or rate,
+              'burst_s': timing['duration_s'], 'truncated': data.sync.get('truncated') or ''}
+    session_settings = {k: settings[k] for k in SESSION_SETTINGS if k in settings}
+    session_settings.update({'BINNING': camera_info.get('binning_x') or 1,
+                             'FRAME_RATE_HZ': rate, 'EXPOSURE_US': exposure_us})
+    session_path, _ = save_session(folder, stem, data.frames, meta, timing, checks,
+                                   camera_info, None, settings=session_settings,
+                                   record_run_config=False)
+
+    # the saved trace starts at t = 0; the scope stream's own time is t + t_origin
+    t_origin = float(data.t[0])
+    channel, aux_channel = settings['SCOPE_CHANNEL'], settings.get('SCOPE_AUX_CHANNEL')
+    arrays = {'t': data.t - t_origin, 'signal': data.signal}
+    if aux_channel and data.aux is not None:
+        arrays['aux'] = data.aux
+    np.savez_compressed(folder / f'{stem}_scope.npz', **arrays)
+    session = json.loads(session_path.read_text(encoding='utf-8'))
+    ranges, couplings = scope_info.get('range_v', {}), scope_info.get('coupling', {})
+    interval = float(np.median(np.diff(data.t))) if data.t.size > 1 else None
+    session['scope'] = {
+        'file': f'{stem}_scope.npz',
+        'channel': channel,
+        'range_v': ranges.get(channel),
+        'coupling': couplings.get(channel),
+        'sample_interval_s': interval,
+        'n_samples': int(data.t.size),
+        'duration_s': float(data.t[-1] - data.t[0]) if data.t.size else 0.0,
+        'overflow_channels': [channel] if data.saturated else [],
+        'serial': scope_info.get('serial'),
+        'variant': scope_info.get('variant'),
+        'stream_t_origin_s': t_origin,
+    }
+    if 'aux' in arrays:
+        session['scope']['aux'] = {'channel': aux_channel,
+                                   'label': scope_info.get('aux_label') or '',
+                                   'range_v': ranges.get(aux_channel),
+                                   'coupling': couplings.get(aux_channel)}
+    sync = data.sync
+    check = sync.get('check') or {}
+    session['sync'].update({
+        'method': 'live_stream',
+        't0_host_s': float(sync['t0_host_s']) - t_origin,
+        't0_fitted_s': float(data.windows[0, 0]) - t_origin,
+        't0_correction_s': sync.get('correction_s'),
+        'placement': sync.get('mode'),
+        'fit_depth': sync.get('depth'),
+        'check_locked': check.get('locked'),
+        'check_residual_s': check.get('residual_s'),
+        'check_depth': check.get('depth'),
+        'description': 'quick capture from the running kalishlot streams '
+                       '(kalishlot/alignment/live_capture.py). t0_host_s from the '
+                       'host clocks of both streams; t0_fitted_s adds the correction '
+                       'kept from the last "sync camera and scope". check_* is a '
+                       '+-15 ms fit on this capture, recorded but not applied.',
+    })
+    # the quick capture's own settings (scope channels, duration, the sync it used)
+    session['live'] = {k: v for k, v in settings.items() if k not in SESSION_SETTINGS}
+    session_path.write_text(json.dumps(session, indent=1, default=_json_default),
+                            encoding='utf-8')
     return session_path
 
 

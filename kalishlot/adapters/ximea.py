@@ -200,6 +200,27 @@ class XimeaCameraAdapter(StreamerROIMixin, CameraAdapterBase):
         self.emit({'type': 'setting_applied', 'name': 'framerate',
                    'value': self._settings['framerate']})
 
+    def hardware_info(self, timeout_s=2.0):
+        """XimeaCamera.describe() - the camera block of a capture's session
+        record - read in the streaming thread, the only one allowed to touch
+        the SDK while the stream runs."""
+        done, out = threading.Event(), {}
+
+        def read(camera):
+            try:
+                out['info'] = camera.describe()
+            except Exception as error:
+                out['error'] = error
+            finally:
+                done.set()
+
+        self.streamer.submit(read)
+        if not done.wait(timeout_s):
+            raise RuntimeError('the camera did not answer (is its stream running?)')
+        if 'error' in out:
+            raise out['error']
+        return out['info']
+
     # ---------------------------------------------- streaming-thread callbacks
     def _frame_meta(self):
         meta = dict(self.camera.last_frame_meta or {'host_time_s': time.time()})

@@ -214,8 +214,13 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
     # ------------------------------------------------------------ recording
     def start_recording(self, max_s=RECORD_MAX_S, max_bytes=RECORD_MAX_BYTES):
         """Keep every frame from now on (blinks and dark frames included,
-        regardless of the display trigger), until stop_recording() or a cap."""
+        regardless of the display trigger), until stop_recording() or a cap.
+        One recording at a time: the alignment loop and the quick capture
+        share the camera, and a second start would steal the first's frames."""
         with self._record_lock:
+            if self._recording is not None:
+                raise RuntimeError('the camera is already recording (another capture '
+                                   'or measurement is running)')
             self._recording = Recording(roi=self._roi, started_s=time.time())
             self._record_limits = (float(max_s), float(max_bytes))
 
@@ -230,6 +235,11 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
     @property
     def recording(self):
         return self._recording is not None
+
+    def recording_geometry(self):
+        """What a recorded frame's timing depends on, as the stream stands now:
+        the ROI and the exposure (alignment/live_capture.stream_key)."""
+        return {'roi': self._roi, 'exposure_us': self._frame_meta().get('exposure_us')}
 
     def _record_frame(self, frame):
         meta = self._frame_meta()

@@ -26,12 +26,16 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 from pico_scope import run_config  # noqa: E402
+
+sys.path.insert(0, str(_REPO_ROOT / 'kalishlot'))   # the alignment package
+from alignment import live_capture  # noqa: E402
 
 from . import file_dialogs  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
@@ -182,6 +186,19 @@ STOP_WAIT_S = 5.0
 # with no sync and no viewer (the pipeline's --only)
 ONLY_MODES = ('video', 'scope')
 LOAN_BORROWER = 'mode_video_capture.py'
+
+# --- quick capture (LIVE_CAPTURE.md): cut out of the running streams, nothing lent
+LIVE_CAMERA_TYPES = ('ximea_camera',)   # cameras whose stream carries frame timestamps
+SYNC_DURATION_S = 3.0           # "sync camera and scope": ~4 FSRs of blinks at 0.8 s each
+LIVE_MAX_S = 60.0               # well inside the scope's ~70 s ring
+LIVE_PARAMS = ('capture.CAPTURE_DURATION_S', 'capture.FRAMES_FORMAT', 'capture.H264_CRF',
+               'capture.MASK_THRESHOLD', 'capture.SCOPE_CHANNEL',
+               'capture.SCOPE_AUX_CHANNEL', 'capture.SCOPE_AUX_LABEL',
+               'capture.SCOPE_PAD_S')   # the box parameters a quick capture uses
+
+
+def _now():
+    return datetime.now().isoformat(timespec='seconds')
 
 
 # --- values ----------------------------------------------------------------
@@ -391,6 +408,9 @@ class SyncedPipelineAdapter(DeviceAdapter):
         self.run = {'running': False, 'returncode': None, 'started': None,
                     'ended': None, 'step': None, 'session': None,
                     'stopped': False, 'error': None, 'only': None}
+        # the quick capture: busy = None | 'sync' | 'capture'
+        self.live = {'busy': None, 'step': None, 'error': None, 'message': None,
+                     'session': None, 'check': None, 'ended': None}
 
     def open(self):
         pass
@@ -449,7 +469,8 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'commands': ['set_param', 'reset_param', 'set_adopt',
                          'choose_camera', 'pick_folder', 'check_folder',
                          'preset_save', 'preset_load', 'preset_delete',
-                         'start', 'stop', 'show_session'],
+                         'start', 'stop', 'show_session',
+                         'live_sync', 'live_capture', 'live_sync_reset'],
             'params': PARAMS,
             'pixel_formats': PIXEL_FORMATS,
             'adopt_rows': [{'key': k, 'label': label}
@@ -466,6 +487,8 @@ class SyncedPipelineAdapter(DeviceAdapter):
             'run': dict(self.run),
             'show': dict(self.show),
             'log': list(self._log)[-200:],
+            'live': self.live_status(),
+            'live_params': list(LIVE_PARAMS),
         }
 
     def settings_snapshot(self):
@@ -557,10 +580,198 @@ class SyncedPipelineAdapter(DeviceAdapter):
         if name == 'show_session':
             return self._show_session(args.get('path'))
         if name == 'start':
+            if self.live['busy']:
+                raise ValueError('a quick capture or sync is running')
             return self._start(args)
         if name == 'stop':
             return self._stop()
+        if name == 'live_sync':
+            return self._live_begin('sync', args)
+        if name == 'live_capture':
+            return self._live_begin('capture', args)
+        if name == 'live_sync_reset':
+            scope_id, scope, camera_id, camera = self._live_devices()
+            live_capture.shared_sync(scope_id, scope, camera_id, camera).clear('reset by hand')
+            self._set_live()
+            return {'ok': True}
         raise ValueError(f'unknown command {name!r}')
+
+    # ---- the quick capture: from the running streams, nothing lent
+    def _live_devices(self):
+        """(scope id, PicoScope4000A, camera id, camera adapter) of the open,
+        streaming devices a quick capture uses; ValueError saying what is missing."""
+        if self.run['running']:
+            raise ValueError('the full capture has the devices')
+        devices = dict(self.registry()[0]) if self.registry is not None else {}
+        scopes = [(i, a) for i, a in devices.items()
+                  if getattr(a, 'type_name', None) == SCOPE_TYPE]
+        if len(scopes) != 1:
+            raise ValueError('open the PicoScope box' if not scopes
+                             else 'more than one PicoScope box is open')
+        scope_id, scope_adapter = scopes[0]
+        if not scope_adapter.scope.is_streaming:
+            raise ValueError('the PicoScope box is not streaming')
+        camera = self.chosen_camera()
+        adapter = devices.get(camera['device_id']) if camera else None
+        if adapter is None:
+            raise ValueError('open the camera box')
+        if getattr(adapter, 'type_name', None) not in LIVE_CAMERA_TYPES:
+            raise ValueError(f'the quick capture needs a XIMEA camera (its stream carries '
+                             f'frame timestamps); {camera["device_id"]} cannot')
+        return scope_id, scope_adapter.scope, camera['device_id'], adapter
+
+    def live_status(self):
+        """self.live, plus the kept sync of the devices open now and why a
+        quick capture cannot run, if it cannot."""
+        status = dict(self.live)
+        try:
+            scope_id, scope, camera_id, camera = self._live_devices()
+        except Exception as error:
+            status.update(ready=False, why_not=str(error), sync=None)
+            return status
+        sync = live_capture.shared_sync(scope_id, scope, camera_id, camera)
+        if not self.live['busy']:
+            sync.check_key(live_capture.stream_key(scope, camera))
+        record = sync.to_dict()
+        now = time.time()
+        record['age_s'] = now - record['set_at'] if record['set_at'] else None
+        status.update(ready=True, why_not=None, sync=record,
+                      max_s=self._live_max_s(camera))
+        return status
+
+    def _live_max_s(self, camera):
+        """The longest quick capture the free memory and the scope ring allow."""
+        settings = {s['name']: s['value'] for s in camera.describe().get('settings', [])}
+        rate = settings.get('framerate') or 100.0
+        height, width = camera._frame_shape()
+        frame_bytes = 2 * height * width        # 16-bit container; Mono8 is half
+        by_memory = live_capture.recording_budget_bytes() / (frame_bytes * rate)
+        return float(min(LIVE_MAX_S, by_memory))
+
+    def _effective(self, key):
+        """A parameter as a run would take it: edited, else the config file,
+        else the capture script's own default."""
+        if key in self.edited:
+            return self.edited[key]
+        configured = config_values()
+        if key in configured:
+            return configured[key]
+        from pico_scope import mode_video_capture
+        return getattr(mode_video_capture, key.split('.', 1)[1])
+
+    def _set_live(self, **changes):
+        self.live.update(changes)
+        self.emit({'type': 'live', 'live': self.live_status()})
+
+    def _live_begin(self, kind, args):
+        if self.live['busy']:
+            raise ValueError(f'a quick {self.live["busy"]} is already running')
+        devices = self._live_devices()
+        sync = live_capture.shared_sync(*devices)
+        if kind == 'capture':
+            sync.check_key(live_capture.stream_key(devices[1], devices[3]))
+            if not sync.valid:
+                raise ValueError('sync camera and scope first'
+                                 + (f' ({sync.cleared})' if sync.cleared else ''))
+            duration = float(self._effective('capture.CAPTURE_DURATION_S'))
+            limit = self._live_max_s(devices[3])
+            if duration > limit:
+                raise ValueError(f'{duration:g} s is longer than a quick capture can hold '
+                                 f'now ({limit:.1f} s: free memory and the scope ring); '
+                                 f'shorten it, narrow the ROI, or use the full capture')
+            folder = self._folder()
+            ok, message = check_folder(folder)
+            if not ok:
+                raise ValueError(message)
+            extra = {
+                'label': coerce(FOLDER_LABEL_FIELD, args.get('folder_label') or ''),
+                'long_arm_cm': coerce(LONG_ARM_FIELD, args.get('long_arm_cm')),
+                'folder': folder, 'duration_s': duration}
+        else:
+            extra = {}
+        self._set_live(busy=kind, step='recording', error=None, message=None,
+                       ended=None, **({'session': None, 'check': None}
+                                      if kind == 'capture' else {}))
+        threading.Thread(target=self._live_work, args=(kind, devices, sync, extra),
+                         daemon=True).start()
+        return {'ok': True}
+
+    def _live_work(self, kind, devices, sync, extra):
+        scope_id, scope, camera_id, camera = devices
+        try:
+            channel = self._effective('capture.SCOPE_CHANNEL')
+            aux = self._effective('capture.SCOPE_AUX_CHANNEL') or None
+            for name in (channel, aux):
+                if name and not scope.channels[name]['enabled']:
+                    raise ValueError(f'enable scope channel {name} in the PicoScope box')
+            live = live_capture.LiveCapture(scope, camera, channel, aux, sync=sync)
+            if kind == 'sync':
+                live.capture(SYNC_DURATION_S, max_bytes=live_capture.recording_budget_bytes(),
+                             placement='establish')
+                self._set_live(busy=None, step=None, ended=_now(),
+                               message=f'synced: {sync.correction_s * 1e3:+.2f} ms '
+                                       f'(depth {sync.depth:.0f})')
+                return
+            self._live_capture(live, scope, camera, extra)
+        except Exception as error:
+            self._set_live(busy=None, step=None, ended=_now(), error=str(error))
+
+    def _live_capture(self, live, scope, camera, extra):
+        from pico_scope import mode_video_capture
+        data = live.capture(extra['duration_s'], max_bytes=live_capture.recording_budget_bytes(),
+                            placement='kept', pad_s=float(self._effective('capture.SCOPE_PAD_S')))
+        if data.sync.get('truncated'):
+            raise RuntimeError(f'the recording stopped early ({data.sync["truncated"]}); '
+                               f'nothing saved')
+        self._set_live(step='saving')
+        stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+        label = (extra['label'] or '').strip()
+        folder = Path(extra['folder']).expanduser() / (f'{stamp}_{label}' if label else stamp)
+        camera_info = camera.hardware_info()
+        names = [n for n in (live.signal_channel, live.aux_channel) if n]
+        scope_info = {'serial': scope.serial, 'variant': scope.variant,
+                      'range_v': {n: scope.channels[n]['range_v'] for n in names},
+                      'coupling': {n: scope.channels[n]['coupling'] for n in names},
+                      'aux_label': self._effective('capture.SCOPE_AUX_LABEL')}
+        long_arm = extra['long_arm_cm']
+        settings = {
+            'FRAMES_FORMAT': self._effective('capture.FRAMES_FORMAT'),
+            'H264_CRF': int(self._effective('capture.H264_CRF')),
+            'MASK_THRESHOLD': float(self._effective('capture.MASK_THRESHOLD')),
+            'LONG_ARM_CM': long_arm,
+            'KALISHLOT_FUNCTION_GENERATOR': self._function_generator(),
+            'SCOPE_CHANNEL': live.signal_channel, 'SCOPE_AUX_CHANNEL': live.aux_channel,
+            'duration_s': extra['duration_s'], 'sync_record': live.sync.to_dict(),
+            'scope_sample_rate_hz': scope.sample_rate_hz,
+        }
+        path = mode_video_capture.save_live_session(folder, stamp, data, camera_info,
+                                                    scope_info, settings)
+        check = data.sync.get('check') or {}
+        if check.get('resync_advised'):
+            note = (f'saved; the check fit is {check["residual_s"] * 1e3:+.2f} ms off the '
+                    f'kept sync: re-sync recommended')
+        elif check.get('locked'):
+            note = f'saved; check fit agrees ({check["residual_s"] * 1e3:+.2f} ms)'
+        else:
+            note = 'saved (no blinks to check the sync against)'
+        self._set_live(busy=None, step=None, ended=_now(), session=str(path),
+                       check=check, message=note)
+
+    def _function_generator(self):
+        """The open function generator's channels, for the record (as
+        mode_video_capture.read_kalishlot_function_generator, in-process)."""
+        devices = dict(self.registry()[0]) if self.registry is not None else {}
+        for device_id, adapter in devices.items():
+            if getattr(adapter, 'type_name', None) == 'rigol_dg':
+                try:
+                    described = adapter.describe()
+                except Exception:
+                    return None
+                channels = [dict(state, channel=number) for number, state
+                            in enumerate(described.get('channels') or [], start=1)]
+                return {'device_id': device_id, 'label': described.get('label'),
+                        'read_at': _now(), 'channels': channels}
+        return None
 
     # ---- showing a past capture
     def _show_session(self, path=None):

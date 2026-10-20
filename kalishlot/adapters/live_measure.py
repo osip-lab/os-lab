@@ -21,7 +21,8 @@ Commands (args):
               incl. first-order camera templates (~10 s).
         Returns {'metrics': {name: Metric dict}, 'by_direction', 'direction',
                  'sync', 'n_frames', 'n_samples', 'saturated', 'timing_s'}.
-    reset_sync {}   forget the kept camera-to-scope correction
+    reset_sync {}   forget the kept camera-to-scope correction (shared with the
+                    synced pipeline box's quick capture: alignment/live_capture.shared_sync)
     configure {shape_guard=None, min_overlap=None}   persistent settings (kept across restarts):
         shape_guard: True (default) = a 0th-order pick must look like a Gaussian (overlap >=
             min_overlap) and like the other picks; failures are recovered at -s or invalid.
@@ -39,7 +40,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # kalishlot/: alignment package
-from alignment.live_capture import LiveCapture  # noqa: E402
+from alignment.live_capture import LiveCapture, clear_shared, shared_sync  # noqa: E402
 from alignment.metrics import MetricsConfig, evaluate_capture  # noqa: E402
 
 from .base import DeviceAdapter  # noqa: E402
@@ -65,7 +66,6 @@ class LiveMeasureAdapter(DeviceAdapter):
     def __init__(self, address):
         super().__init__(address)
         self._lock = threading.Lock()
-        self._captures = {}         # (scope id, camera id) -> LiveCapture (keeps its sync)
         self._last = None
         self._first_order_s = []     # |s| of the first order in recent valid captures
         self.shape_guard = True
@@ -75,7 +75,7 @@ class LiveMeasureAdapter(DeviceAdapter):
         pass
 
     def close(self):
-        self._captures.clear()
+        pass
 
     def describe(self):
         return {'type': self.type_name, 'label': self.display_name,
@@ -117,8 +117,7 @@ class LiveMeasureAdapter(DeviceAdapter):
     def command(self, name, args):
         args = args or {}
         if name == 'reset_sync':
-            for live in self._captures.values():
-                live.reset_sync()
+            clear_shared('reset by hand')
             return {'ok': True}
         if name == 'configure':
             if args.get('shape_guard') is not None:
@@ -153,10 +152,8 @@ class LiveMeasureAdapter(DeviceAdapter):
             if not scope.channels[ch]['enabled']:
                 raise ValueError(f'enable scope channel {ch} '
                                  f'({"transmission" if ch == SIGNAL_CHANNEL else "scan ramp"})')
-        key = (scope_id, camera_id)
-        live = self._captures.get(key)
-        if live is None:
-            live = self._captures[key] = LiveCapture(scope, camera, SIGNAL_CHANNEL, AUX_CHANNEL)
+        live = LiveCapture(scope, camera, SIGNAL_CHANNEL, AUX_CHANNEL,
+                           sync=shared_sync(scope_id, scope, camera_id, camera))
         tic = time.time()
         data = live.capture(duration_s, with_frames=with_frames)
         captured = time.time() - tic

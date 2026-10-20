@@ -12,6 +12,14 @@
 // takes the camera/scope box's value; unticked, the capture works the value out
 // itself, and the parameters that feed that logic appear under the row.
 // Inputs commit on Enter or focus loss (lab convention).
+//
+// Two ways to capture. The quick capture (LIVE_CAPTURE.md) cuts the video and
+// the spectrum out of the running camera and scope streams, with the clock
+// correction kept from "sync camera and scope"; nothing is lent and the live
+// views keep running. "Start capture" stays greyed out until that sync exists,
+// and the sync is dropped when either box is reopened or the scope stream, the
+// camera ROI or its exposure changes. The full capture lends both devices to
+// the pipeline, which sets them up itself (locate, binning, auto-range).
 // Returns a cleanup function.
 
 import { connectDeviceStream } from './stream.js';
@@ -27,6 +35,7 @@ const AUTO_RULE = {
   scope_range: 'auto-ranged from a short probe of the signal',
 };
 const LOG_LINES = 400;
+const SYNC_S = 3;         // the adapter's SYNC_DURATION_S
 
 export function createSyncedPipelineBox(device, container, sendCommand) {
   container.innerHTML = `
@@ -59,8 +68,18 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
       <button class="sp-show" title="pick a synced capture folder (opens the interactive viewer), a scope recording .npz (plots it) or a frames file .mkv/.avi/.npy (video inspector), on the lab PC">show a capture…</button>
       <span class="sp-show-state status-line"></span>
     </div>
+    <div class="sp-live">
+      <div class="toolbar">
+        <button class="sp-live-sync" title="record ${SYNC_S} s from the running streams and fit the camera-to-scope clock offset on the mode blinks (laser on, scan running)">sync camera and scope ⟲</button>
+        <button class="sp-live-start" title="record from the running streams, placed with the kept sync, and save a session; the live views keep running">start capture ▶</button>
+        <button class="sp-live-reset" title="forget the kept sync">forget sync</button>
+        <span class="sp-live-state status-line"></span>
+      </div>
+      <div class="sp-live-sync-state status-line"></div>
+      <div class="sp-live-note status-line">quick capture: takes the measurement length, compression, mask threshold, scope channels and padding from here; ROI, exposure, gain, frame rate and scope range are whatever the camera and scope boxes run at (no locate, binning, auto-range or trailing capture)</div>
+    </div>
     <div class="toolbar sp-run">
-      <button class="sp-start">run pipeline ▶</button>
+      <button class="sp-start" title="lend the camera and the scope to the pipeline, which sets them up itself (locate, binning, auto-range); their live views stop meanwhile">full capture (borrow devices) ▶</button>
       <button class="sp-start-video" title="record the video with the settings above; no scope, no sync">record video only ●</button>
       <button class="sp-start-scope" title="record the PicoScope with the settings above; no video, no sync">record scope only ●</button>
       <button class="sp-stop" hidden>stop ■</button>
@@ -362,6 +381,9 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     $('.sp-start-video').onclick = () => openStartDialog('video');
     $('.sp-start-scope').onclick = () => openStartDialog('scope');
     $('.sp-stop').onclick = () => send('stop', {}).catch(fail);
+    $('.sp-live-start').onclick = () => openStartDialog('live');
+    $('.sp-live-sync').onclick = () => send('live_sync', {}).then(refreshSoon).catch(fail);
+    $('.sp-live-reset').onclick = () => send('live_sync_reset', {}).then(refreshSoon).catch(fail);
     buildStartDialog();
   }
 
@@ -373,7 +395,8 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
   // never feeds back into the long arm.
   let startKind = null;     // null = the whole pipeline, else 'video' / 'scope'
   const START_TITLE = { video: 'before this video recording',
-                        scope: 'before this scope recording' };
+                        scope: 'before this scope recording',
+                        live: 'before this quick capture' };
 
   function buildStartDialog() {
     const backdrop = $('.sp-start-backdrop');
@@ -396,8 +419,10 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     });
     const run = (longArmCm, label) => {
       error.textContent = '';
-      send('start', { long_arm_cm: longArmCm, folder_label: label, only: startKind })
-        .then(closeStartDialog)
+      const sent = startKind === 'live'
+        ? send('live_capture', { long_arm_cm: longArmCm, folder_label: label })
+        : send('start', { long_arm_cm: longArmCm, folder_label: label, only: startKind });
+      sent.then(() => { closeStartDialog(); refreshSoon(); })
         .catch((err) => { error.textContent = err.message; });
     };
     $('.sp-start-confirm').onclick = (event) => {
@@ -411,6 +436,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     $('.sp-start-title').textContent = START_TITLE[kind] ?? 'before this capture';
     $('.sp-start-confirm').textContent = {
       video: 'record video ●', scope: 'record scope ●' }[kind] ?? 'start capture ▶';
+    if (kind === null) $('.sp-start-confirm').textContent = 'start full capture ▶';
     $('.sp-start-long-arm').value = '';
     $('.sp-start-folder-label').value = '';
     $('.sp-start-error').textContent = '';
@@ -538,6 +564,7 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     }
     showRun();
     showViewer();
+    showLive();
   }
 
   function showViewer() {
@@ -550,9 +577,44 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     line.classList.toggle('sp-bad', Boolean(viewer.error));
   }
 
+  const ago = (s) => (s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min`
+    : `${(s / 3600).toFixed(1)} h`);
+
+  function showLive() {
+    const live = state.live ?? {};
+    const sync = live.sync;
+    const busy = Boolean(live.busy) || state.run.running;
+    $('.sp-live-sync').disabled = busy || !live.ready;
+    $('.sp-live-start').disabled = busy || !live.ready || !sync?.valid;
+    $('.sp-live-reset').disabled = busy || !sync?.valid;
+    const syncLine = $('.sp-live-sync-state');
+    let text;
+    if (!live.ready) text = `quick capture: ${live.why_not ?? 'not available'}`;
+    else if (sync.valid) {
+      text = `synced: ${(sync.correction_s * 1e3).toFixed(2)} ms, depth ${Math.round(sync.depth)}, ` +
+        `${sync.method === 'tracked' ? 'refreshed by an alignment measurement ' : ''}${ago(sync.age_s)} ago`;
+      const check = sync.last_check;
+      if (check?.locked) text += ` · last capture's check ${(check.residual_s * 1e3).toFixed(2)} ms`;
+      if (live.max_s) text += ` · up to ${live.max_s.toFixed(0)} s per capture`;
+    } else {
+      text = `not synced${sync.cleared ? ` (cleared: ${sync.cleared})` : ''} — sync camera and scope first`;
+    }
+    syncLine.textContent = text;
+    syncLine.classList.toggle('sp-bad', live.ready && !sync.valid);
+    const resync = sync?.last_check?.resync_advised;
+    syncLine.classList.toggle('sp-warn', Boolean(resync));
+
+    const stateLine = $('.sp-live-state');
+    if (live.busy) stateLine.textContent = `${live.busy === 'sync' ? 'syncing' : 'capturing'} — ${live.step ?? ''}…`;
+    else if (live.error) stateLine.textContent = `failed: ${live.error}`;
+    else if (live.message) stateLine.textContent = live.message + (live.session ? ` — ${live.session}` : '');
+    else stateLine.textContent = '';
+    stateLine.classList.toggle('sp-bad', !live.busy && Boolean(live.error));
+  }
+
   function showRun() {
     const run = state.run;
-    $('.sp-start').disabled = run.running || !state.ready;
+    $('.sp-start').disabled = run.running || !state.ready || Boolean(state.live?.busy);
     $('.sp-start-video').disabled = run.running || !state.ready_video;
     $('.sp-start-scope').disabled = run.running || !state.ready_scope;
     $('.sp-stop').hidden = !run.running;
@@ -617,7 +679,8 @@ export function createSyncedPipelineBox(device, container, sendCommand) {
     status: $('.sp-message'),
     onEvent(event) {
       if (event.type === 'log') appendLog([event.line]);
-      else if (event.type === 'run') { state.run = event.run; showRun(); }
+      else if (event.type === 'run') { state.run = event.run; showRun(); showLive(); }
+      else if (event.type === 'live') { state.live = event.live; showLive(); showRun(); }
       else if (event.type === 'show') { state.show = event.show; showViewer(); }
       else if (event.type === 'param_applied') { state.edited[event.key] = event.value; show(); }
       else if (event.type === 'param_reset') { delete state.edited[event.key]; show(); }

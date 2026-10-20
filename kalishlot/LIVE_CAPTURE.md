@@ -1,9 +1,11 @@
 # Live capture: measurements cut out of the running streams
 
-Status (2026-10-19): the recorder and `alignment/live_capture.py` exist and work on the lab's
-XIMEA + PicoScope 4424A. The **quick synced capture** for kalishlot's "Start Capture" (section 4)
-is designed here but **not built**. This file is the handover for whoever builds it. Background
-on the alignment side: `MECHANICAL_CONTROL.md`.
+Status (2026-10-20): built. The recorder and `alignment/live_capture.py` run the alignment
+measurements (`adapters/live_measure.py`) and the **quick synced capture** of the synced pipeline
+box (section 4). Tested on simulated devices and, with the laser off, on the lab's XIMEA +
+PicoScope 4424A (the sync refuses without blinks, as it should). **Still to do in the lab:** a sync
+with the laser on, and one quick capture compared with a borrowed one (end of section 4).
+Background on the alignment side: `MECHANICAL_CONTROL.md`.
 
 ## 1. The problem it removes
 Today a synced video + spectrum capture (`adapters/synced_pipeline.py` ->
@@ -47,61 +49,72 @@ and D (transmission) at 20 kHz.
 - Scope callbacks arrive in bursts (~60 ms spread); the min-latency estimate is unaffected.
 - One 3 s capture costs 3.7 s of wall time (record + scope span + fit).
 
-## 4. Quick synced capture (to build)
-**Goal.** kalishlot's "Start Capture" writes a session that every existing tool reads unchanged
-(`mode_video_sync.load_session`, `session_windows`, `mode_marking.py`, `mode_video_sync_show.py`,
-`alignment/metrics.evaluate_session`), in about the capture duration, with no device borrowed.
+## 4. Quick synced capture (built)
+**In the box.** The synced pipeline box has two ways to capture:
+- **sync camera and scope ⟲**: records 3 s from the running streams (`SYNC_DURATION_S`) and fits
+  the camera-to-scope clock correction on the mode blinks (+-0.1 s search). It needs blinks: laser
+  on, scan running, cavity transmitting. Without them it refuses ("did not lock") and keeps any
+  earlier sync.
+- **start capture ▶**: greyed out until a sync exists. Asks the long arm and folder label (the same
+  pop-up as before), records `measurement length` from the running streams, places the frames with
+  the **kept** correction, and saves a session. Nothing is lent; the live views keep running.
+- **forget sync**: drops it by hand.
+- **full capture (borrow devices) ▶**: the old pipeline run, unchanged. It is still the way to get
+  locate / binning / auto-range / 100 kS/s / the trailing scope capture.
 
-**Where.** A second run mode of `adapters/synced_pipeline.py`, e.g. a "live" toggle next to the
-existing run. Keep the current borrowed capture: it is still the way to get locate / binning /
-auto-range / 100 kS/s.
-- The mode runs in a thread in the server process, not through `subprocess` and `loan_client`.
-- It finds the open scope and camera through `self.registry()` (the same lookup the box uses to
-  list cameras and the scope).
+The status line shows the sync (`+1.52 ms, depth 41, 12 min ago`), the last capture's check, the
+longest capture memory allows now, or why there is no sync ("cleared: the camera exposure changed").
 
-**Steps.**
-1. Check that both devices are open and streaming, and that the camera supports recording (XIMEA now;
-   the Basler needs the timing hook). Refuse with a clear message otherwise.
-2. `data = LiveCapture(scope_adapter.scope, camera_adapter).capture(CAPTURE_DURATION_S)`. Keep one
-   `LiveCapture` per (scope, camera) pair on the adapter, so the sync correction carries over between
-   captures.
-3. If `data.sync['locked']` is False, still save, but say so in the box. The first capture of a stream
-   is the one most likely to need the wide search.
-4. Write the session in the existing format. Reuse `mode_video_capture.save_session` (frames file,
-   mask, brightness series, `_json_default`) instead of re-implementing it:
-   - `t` in `<stamp>_scope.npz` = `data.t - data.t[0]` (the saved trace starts at 0), plus `signal`
-     and `aux`;
-   - `session['meta']` = `data.meta` rows (`block_id`, `camera_timestamp_ns`, `host_time_s`,
-     `exposure_us`);
-   - `session['exposure_s']` = `meta[0]['exposure_us'] / 1e6`;
-   - `session['sync']` = `{'method': 'live_stream', 't0_fitted_s': data.windows[0, 0] - data.t[0],
-     't0_host_s': ..., 'fit_depth': ..., 'fit_locked': ...}`. Check `session_windows(prefer_fitted=True)`
-     reads `t0_fitted_s` the same way as for a refined session (it must be in the saved trace's
-     time coordinate);
-   - `session['camera']`: the ROI as `offset_x/offset_y`, `binning_x/binning_y = 1` (this is what
-     `evaluate_session` turns into sensor coordinates), plus pixel size, exposure and gain from the
-     camera adapter's settings;
-   - `session['scope']`: range per channel from `scope.channels`, `sample_interval_s = 1 /
-     sample_rate_hz`, overflow = `data.saturated`;
-   - `long_arm_m` from the box's pop-up, as today.
-5. Do the writing (video encoding) in the worker thread, after the frames are taken. The streams keep
-   running throughout.
+**The sync** (`alignment/live_capture.py`):
+- `ClockSync`: the correction (fitted minus host-clock placement of frame 0), the stream key it
+  holds for (scope `stream_generation`, camera ROI, exposure), depth, when set, why cleared.
+- `shared_sync(scope_id, scope, camera_id, camera)`: one per pair of open devices, **shared** by
+  the quick capture and `live_measure` (an alignment measurement refreshes it too: method
+  `tracked`). Another device object under the same id = the box was reopened = a fresh, empty
+  sync ("the camera box was reopened").
+- Cleared when: a box is reopened (device off/disconnected means reopening it), the scope restarts
+  its stream (rate or range change), the camera ROI or exposure changes, or by hand. Kept in memory
+  only, so a server restart clears it too.
+- `LiveCapture.capture(placement=...)`: `'track'` (alignment: fit +-15 ms and keep), `'establish'`
+  (the button: fit +-0.1 s, `SyncError` unless locked), `'kept'` (the quick capture: place with the
+  kept correction; a +-15 ms fit only **checks** it). The check is saved, and a check more than 1 ms
+  off (`CHECK_WARN_S`) shows "re-sync recommended". A capture with no blinks at all is placed by the
+  kept correction like any other.
+- The camera records for one capture at a time (`start_recording` refuses a second), so an
+  alignment measurement and a quick capture cannot steal each other's frames.
 
-**Limits to show in the box / handle:**
-- Settings are whatever the boxes run at. The scope streams at its box rate (20 kHz is enough per
-  the lab; up to 100 kHz offered), and the camera at its box ROI and exposure. There is no locate step
-  and no auto-range.
-- `CAPTURE_DURATION_S` must stay well under the ~70 s scope ring. Frames sit in RAM until written:
-  0.8 MB x 113 fps = 90 MB/s at the current ROI, so the recorder's byte cap matters.
-- The live stream gets the camera's newest frame (`enable_recent_frame`). Under load a frame can be
-  skipped; it shows as a gap in `block_id` and the timestamps keep the timing right. Record and report
-  it (`mode_video_sync.dropped_frames`).
-- An ROI or exposure change during the capture truncates the recording (`Recording.truncated`).
-  Changing them between captures resets the sync correction.
-- The scope range must not change during a capture. A restart of its stream changes
-  `stream_generation` and resets the correction.
+**The session** (`pico_scope/mode_video_capture.save_live_session`): the same files and keys as a
+borrowed capture, written through `save_session` (which now takes its settings as an argument, so
+the server never rewrites that module's constants). Every reader takes it unchanged.
+- `<stamp>_scope.npz`: `t` starts at 0 (`session['scope']['stream_t_origin_s']` = where in the
+  scope stream), `signal`, `aux`.
+- `sync.method = 'live_stream'`; `t0_host_s` = host clocks alone; `t0_fitted_s` = with the kept
+  correction (what `session_windows` uses); `check_locked` / `check_residual_s` / `check_depth`.
+  `refine_session` still works on it (it searches around `t0_host_s`).
+- `camera` = `XimeaCamera.describe()`, read in the streaming thread (`XimeaCameraAdapter
+  .hardware_info()`); `function_generator` from the open Rigol box; `live` = duration, channels,
+  scope rate and the sync record used.
+- No `run_config` dump: it describes a script run, which this is not.
 
-**Tests to add:** `smoke_test.py` with the dummy camera and a fake scope (the dummy camera has no
-camera timestamps, so give it a `_frame_meta` returning `camera_timestamp_ns` from its own clock).
-Then a lab check: a quick capture and a borrowed capture of the same scene, both through
-`evaluate_session`; peaks, frame windows and metrics should agree.
+**What the box parameters mean for it** (`LIVE_PARAMS`): measurement length, frames compression,
+h264 quality, mask threshold, scope transmission/aux channels and label, scope padding. ROI,
+exposure, gain, frame rate and scope range are whatever the camera and scope boxes run at.
+
+**Length limit.** Frames sit raw in memory until the capture is written, exactly as in the borrowed
+capture (`record_burst` allocates the whole burst, then `save_frames` encodes it), so compression
+only changes the file size, not the possible length. The quick capture may use half the free memory
+(`RECORD_RAM_FRACTION`) and at most 60 s (the scope ring holds ~70 s): ~19 s at 720x546 Mono10,
+113 fps with ~3.5 GB free. Longer needs a narrower ROI or real-time encoding (not built: h264 would
+need its brightness scale chosen before the capture, and 113 fps encoding inside the server competes
+with the live streams).
+
+**Tests:** `alignment/test_live_capture.py`: establish / kept / no-blink placement, the clearing
+reasons, a reopened box, and a sync + quick capture through the box adapter on a fake scope and
+camera, read back with `load_session` / `session_windows`.
+
+**Still to check in the lab (laser on):**
+1. Sync: depth, and the correction (~+1.5 ms on 2026-10-19).
+2. A quick capture and a borrowed capture of the same scene, both through `evaluate_session`;
+   peaks, frame windows and metrics should agree.
+3. A quick capture an hour after the sync: the check residual says whether the correction drifts.
+4. The Basler cannot do this yet: it needs chunk timestamps in its stream and a `_frame_meta` hook.
