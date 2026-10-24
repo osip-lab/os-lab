@@ -100,8 +100,13 @@ EXAMPLE_DOFS = {
     'sim_mirror_phi': DoF(3, 'phi', 1e-6),      # end mirror, xy-plane tilt: 1 V -> 1 urad (37.5 V = aligned)
     'sim_mirror_theta': DoF(3, 'theta', 1e-6),  # end mirror, xz-plane tilt
     'sim_lens_x': DoF(1, 'x', 1e-7),            # lens along the optical axis: 1 um of stage -> 0.1 um
+    'sim_lens_y': DoF(1, 'y', 1e-7),            # lens across the optical axis (in the xy plane)
 }
-EXAMPLE_ALIGNED = {'sim_mirror_phi': 37.5, 'sim_mirror_theta': 37.5, 'sim_lens_x': 0.0}
+EXAMPLE_ALIGNED = {'sim_mirror_phi': 37.5, 'sim_mirror_theta': 37.5, 'sim_lens_x': 0.0, 'sim_lens_y': 0.0}
+# With sim_lens_y the end-mirror phi tilt has a partner: a lens shift re-centres the mode, so the
+# coupling loss is a narrow ridge in (phi, lens_y), curvature ratio ~2400, soft direction about
+# 0.98 phi + 0.18 lens_y in axis units (finite differences, 2026-10-24). Moving phi alone looks
+# much worse than moving along the ridge: the case alignment/nested.py is for.
 
 
 def _gouy_s(cavity):
@@ -185,13 +190,26 @@ class CavityPhysics:
 
 class AnalyticPhysics:
     """Dependency-free stand-in: coupling = exp(-sum((d/scale)^2)), astigmatism
-    linear in the tilt axes, tilt proportional to the offsets. Same interface."""
+    linear in the tilt axes, tilt proportional to the offsets. Same interface.
+
+    curvature   optional (names, matrix M): coupling = exp(-d M d) over those axes
+                instead of the separable scales, e.g. a rotated, elongated quadratic
+                (a narrow ridge, see ridge_curvature).
+    signed_split optional {axis: FSR per unit}: the splitting is sum(k * d), signed,
+                so one axis can cancel the astigmatism another one makes; it
+                replaces split_per_unit (which grows with |d| of every axis)."""
 
     def __init__(self, aligned=None, scales=None, s0=0.3, split_per_unit=None,
-                 tilt_per_unit=None, lost_beyond=3.0):
+                 tilt_per_unit=None, lost_beyond=3.0, curvature=None, signed_split=None):
         self.aligned = dict(EXAMPLE_ALIGNED if aligned is None else aligned)
-        self.scales = dict({'sim_mirror_phi': 8.0, 'sim_mirror_theta': 8.0, 'sim_lens_x': 60.0}
+        self.scales = dict({'sim_mirror_phi': 8.0, 'sim_mirror_theta': 8.0, 'sim_lens_x': 60.0,
+                            'sim_lens_y': 15.0}
                            if scales is None else scales)
+        self.curvature = None
+        if curvature is not None:
+            names, m = curvature
+            self.curvature = (list(names), np.asarray(m, dtype=float))
+        self.signed_split = dict(signed_split) if signed_split else None
         self.s0 = s0
         self.split_per_unit = dict({'sim_mirror_phi': 4e-4, 'sim_mirror_theta': -4e-4}
                                    if split_per_unit is None else split_per_unit)
@@ -201,14 +219,30 @@ class AnalyticPhysics:
 
     def evaluate(self, positions):
         d = {n: float(positions.get(n, a)) - a for n, a in self.aligned.items()}
-        r2 = sum((d[n] / self.scales[n]) ** 2 for n in self.scales if n in d)
+        coupled = set(self.curvature[0]) if self.curvature else set()
+        r2 = sum((d[n] / self.scales[n]) ** 2 for n in self.scales if n in d and n not in coupled)
+        if self.curvature:
+            v = np.array([d.get(n, 0.0) for n in self.curvature[0]])
+            r2 += float(v @ self.curvature[1] @ v)
         if r2 > self.lost_beyond ** 2:
             return INVALID
-        split = sum(abs(d.get(n, 0.0)) * k for n, k in self.split_per_unit.items())
+        if self.signed_split is not None:
+            split = sum(d.get(n, 0.0) * k for n, k in self.signed_split.items())
+        else:
+            split = sum(abs(d.get(n, 0.0)) * k for n, k in self.split_per_unit.items())
         tx = sum(d.get(n, 0.0) * v[0] for n, v in self.tilt_per_unit.items())
         ty = sum(d.get(n, 0.0) * v[1] for n, v in self.tilt_per_unit.items())
         return ModeState(float(np.exp(-r2)), self.s0 + split / 2, self.s0 - split / 2,
                          float(1.0 / (1.0 + 5 * abs(split))), tx, ty, True)
+
+
+def ridge_curvature(names, soft_direction, soft_width, stiff_width):
+    """(names, M) for AnalyticPhysics(curvature=...): coupling falls by 1/e at
+    soft_width along soft_direction and at stiff_width across it (two axes)."""
+    u = np.asarray(soft_direction, dtype=float)
+    u /= np.linalg.norm(u)
+    w = np.array([-u[1], u[0]])
+    return list(names), np.outer(u, u) / soft_width ** 2 + np.outer(w, w) / stiff_width ** 2
 
 
 def make_physics(prefer_cavity_design=True, **kw):
@@ -229,6 +263,13 @@ def _self_test():
     off = a.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 8})
     assert off.valid and abs(off.coupling - np.exp(-1)) < 1e-9 and off.split > 0
     assert not a.evaluate({**EXAMPLE_ALIGNED, 'sim_lens_x': 1000}).valid
+    names, m = ridge_curvature(['sim_mirror_phi', 'sim_lens_y'], (1.0, 0.2), 25.0, 1.5)
+    r = AnalyticPhysics(curvature=(names, m))
+    along = r.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 10, 'sim_lens_y': 2.0})
+    phi_only = r.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 10})
+    assert along.coupling > 0.8 > 0.2 > phi_only.coupling, (along.coupling, phi_only.coupling)
+    sp = AnalyticPhysics(signed_split={'sim_mirror_phi': 1e-3, 'sim_lens_y': -1e-3})
+    assert abs(sp.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 40.5, 'sim_lens_y': 3.0}).split) < 1e-12
     try:
         p = CavityPhysics()
     except Exception as e:

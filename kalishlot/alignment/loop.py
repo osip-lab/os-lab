@@ -40,6 +40,11 @@ Design (kalishlot/MECHANICAL_CONTROL.md, section 3):
   by least squares, refining the Jacobian with every move (Broyden). The
   coordinate search follows only if steering stalls. Small steps that drown in
   the noise would otherwise make the coordinate search shrink and give up.
+- Objective(good_enough=thr) is a target too: "reached" once the metric is past
+  thr. A loop started there measures once and stops, so an inner level of
+  alignment/nested.py can "keep the mode symmetric" without chasing noise.
+- known_noise skips the noise floor (one 'start' capture instead): for warm
+  restarts whose noise was measured already (alignment/nested.py).
 """
 
 import json
@@ -57,6 +62,8 @@ class Objective:
     metric: str = 'intensity'
     maximize: bool = True
     constraints: tuple = ()          # (metric, '>=' | '<=', threshold), e.g. ('gaussian_overlap', '>=', 0.9)
+    good_enough: float | None = None  # stop once the metric is past this (>= when maximized, else <=)
+    confirm_repeats: int = 0         # extra captures in place before good_enough is believed
 
     def evaluate(self, cm):
         """(score, feasible, reason). score is None when the metric is invalid.
@@ -73,6 +80,19 @@ class Objective:
             if not ok:
                 return score, False, f'constraint {name} {op} {thr} violated ({c.value:.4g})'
         return score, True, ''
+
+    def value_of(self, score):
+        return score if self.maximize else -score
+
+    def reached(self, evaluations):
+        """good_enough: every evaluation feasible and the mean metric past the threshold."""
+        if self.good_enough is None or not evaluations or not all(e.feasible for e in evaluations):
+            return False
+        vals = [e.metrics.get(self.metric) for e in evaluations]
+        if any(v is None for v in vals):
+            return False
+        mean = sum(vals) / len(vals)
+        return mean >= self.good_enough if self.maximize else mean <= self.good_enough
 
 
 @dataclass
@@ -127,7 +147,7 @@ class AlignmentLoop:
     def __init__(self, axes, measure, objective=None, tiers=None, steps=None,
                  accept_sigmas=1.0, min_step_sigmas=3.0, noise_repeats=4,
                  remeasure_every=8, max_evaluations=150, on_abort='best', confirm_jump=10.0,
-                 log_dir=None, who='alignment loop', print_fn=print):
+                 log_dir=None, who='alignment loop', print_fn=print, known_noise=None, stall_passes=2):
         self.axes = dict(axes)
         self.measure_fn = measure
         self.objective = objective or Objective()
@@ -139,6 +159,8 @@ class AlignmentLoop:
         self.noise_repeats = noise_repeats
         self.remeasure_every = remeasure_every
         self.max_evaluations = max_evaluations
+        self.known_noise = known_noise
+        self.stall_passes = stall_passes      # passes without improvement before a stage ends
         self.on_abort = on_abort
         self.who = who
         self.print = print_fn or (lambda *a, **k: None)
@@ -193,6 +215,15 @@ class AlignmentLoop:
 
     # --------------------------------------------------------------- stages
     def _noise_floor(self):
+        if self.known_noise is not None:              # warm restart: the noise is known
+            ev = self.measure('start')
+            if ev.score is None:
+                raise RuntimeError(f'signal lost before starting: {ev.reason}')
+            self.noise = float(self.known_noise)
+            if self.objective.reached([ev]):
+                self.target_reached = True
+                self.print('target already reached at the start')
+            return ev
         evs = [self.measure('noise') for _ in range(self.noise_repeats)]
         scores = [e.score for e in evs if e.score is not None]
         if len(scores) < 2:
@@ -222,7 +253,8 @@ class AlignmentLoop:
         ev.score = sum(scores) / len(scores)          # the incumbent is the mean, not the lucky shot
         if len(repeats) > getattr(self.objective, 'confirm_repeats', 2) and self.objective.reached(repeats):
             self.target_reached = True
-            self.print(f'target reached: {self.objective.metric} = {-ev.score:.3g} '
+            shown = getattr(self.objective, 'value_of', lambda sc: -sc)(ev.score)
+            self.print(f'target reached: {self.objective.metric} = {shown:.4g} '
                        f'(mean of {len(repeats)} captures)')
 
     def _confirmed(self, ev):
@@ -310,14 +342,14 @@ class AlignmentLoop:
         return False
 
     def _position_noise(self):
-        """rms 2D scatter of the position over the noise-floor evaluations."""
+        """rms scatter (any dimension) of the position over the noise-floor evaluations."""
         pts = [self.objective.position(e) for e in self.history if e.kind == 'noise']
-        pts = [q for q in pts if q is not None]
+        pts = [tuple(q) for q in pts if q is not None]
         if len(pts) < 2:
             return 0.0, (pts[0] if pts else None)
-        mx, my = sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts)
-        rms = math.sqrt(sum((q[0] - mx) ** 2 + (q[1] - my) ** 2 for q in pts) / (len(pts) - 1))
-        return rms, (mx, my)
+        mean = tuple(sum(q[i] for q in pts) / len(pts) for i in range(len(pts[0])))
+        rms = math.sqrt(sum(sum((a - b) ** 2 for a, b in zip(q, mean)) for q in pts) / (len(pts) - 1))
+        return rms, mean
 
     def _steer_stage(self, active, probe_doublings=4, max_moves=20):
         """Jacobian steering towards objective.goal (see the module docstring)."""
@@ -331,7 +363,7 @@ class AlignmentLoop:
         c = np.array(position(cur) if len(self.history) > self.noise_repeats or mean_at_start is None
                      else mean_at_start, dtype=float)
         goal = np.array(self.objective.goal, dtype=float)
-        J = np.zeros((2, len(axes)))
+        J = np.zeros((goal.size, len(axes)))
         probes = {}
         for i, n in enumerate(axes):                    # probe: how does each axis move the position?
             h = self.steps[n]
@@ -355,7 +387,7 @@ class AlignmentLoop:
                 d = np.array(q) - c
                 J[:, i] = d / h
                 probes[n] = abs(h)
-                if math.hypot(*d) > 3 * noise:
+                if np.linalg.norm(d) > 3 * noise:
                     break
                 h *= 2
             self._move_to(cur.positions)
@@ -401,7 +433,7 @@ class AlignmentLoop:
             if self.target_reached:
                 return
         stall = 0
-        while self._budget_left() and stall < 2:
+        while self._budget_left() and stall < self.stall_passes:
             if all(self.steps[n] < self.min_steps[n] for n in active if not self.axes[n].frozen):
                 break
             improved, grad = self._coordinate_pass(active)
@@ -460,7 +492,8 @@ class AlignmentLoop:
         self.best = ev
         for n in self.axes:
             self.steps[n] = max(self.min_steps[n] * 1.01, self.steps[n])
-        active = [n for n in self.axes if not self.axes[n].frozen]
+        in_tiers = {n for tier in self.tiers for n in tier}
+        active = [n for n in self.axes if n in in_tiers and not self.axes[n].frozen]
         self._coordinate_pass(active)
         self._move_to(self.best.positions)
 

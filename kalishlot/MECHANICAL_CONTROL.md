@@ -243,6 +243,66 @@ goal rather than an optimum, next to maximizing intensity, minimizing splitting,
   - Hysteresis and landing error make each move approximate; the Broyden update and the confirmation
     absorb that.
 
+### 3.e Nested optimization: ridges and kept targets (2026-10-24, laptop)
+Two situations where one joint optimization over all axes fails:
+- **Narrow ridge.** Almost every direction drops the target sharply and only one combination of axes
+  gains, slowly. Single-axis steps (and the per-axis-scaled gradient step) fall off the crest every time,
+  so the loop shrinks its steps and concludes it is at the optimum. Noise makes it worse.
+- **A hierarchy of targets**, e.g. maximize the coupling while *keeping* the mode symmetric. A constraint
+  (`Objective.constraints`) only rejects moves that break symmetry; it never restores it.
+
+`alignment/nested.py: NestedLoop(axes, measure, levels)`, levels outermost first, each
+`Level(axes, objective, steps, max_evaluations)`. For each trial position of level k the levels below are
+optimized again (recursive, any depth; the innermost is a plain `AlignmentLoop`), and only then is level
+k's objective measured: theta_k* = argmax F_k(theta_k, theta_below*(theta_k)). The same objective at every
+level is the ridge case: the profile max_inner F(outer, inner) is smooth along the ridge.
+- **The inner axes must be the stiff ones.** An inner problem without a sharp optimum makes the outer
+  profile noise.
+- **Predictor:** K = d(theta_below*)/d(theta_k), a damped Broyden update from every trial (accepted or
+  not). Each trial starts the levels below at theta_below* + K delta. On a ridge, (delta, K delta) is the
+  ridge direction (implicit function theorem: K -> -H_bb^-1 H_bk).
+- **Outer search:** coordinate search on the profile (+step, -step, x1.5 / x0.5, never below 3 sigma of
+  the repeatability), a parabola through (-step, 0, +step) when both sides fail, and a gradient step when
+  the level has >= 2 axes.
+- **Noise:** each level's noise comes from the same noise_repeats captures at the start. A level's value
+  at a point is the last capture of the levels below (taken there) plus `outer_repeats` more, not the
+  inner's best capture (biased upwards). Large jumps are confirmed; the incumbent is re-measured.
+- **"Keep" = good enough:** `Objective(metric, good_enough=thr)` is reached once the metric is past thr;
+  a loop started there measures once and stops. Maximizing an already-flat metric would chase noise.
+- **Shared:** one hard evaluation budget, one history (every capture tagged with its level), stop(),
+  and the best point is the full position. Every capture waits for all axes to settle. With 3 levels give
+  the middle level a `max_evaluations`, or its first solve takes the whole budget.
+- Simulator: new axis `sim_lens_y` (lens across the beam, `DoF(1, 'y', 1e-7)`, limits as `sim_lens_x`,
+  not in `TIERS`). `AnalyticPhysics(curvature=ridge_curvature(...))` makes a rotated elongated quadratic,
+  `signed_split` a splitting that one axis can cancel. `run_alignment_sim.py`: set `LEVELS`.
+- `AlignmentLoop` gained `known_noise` (skip the noise floor on warm restarts), `stall_passes` (1 for warm
+  inner runs), `Objective.good_enough`, steering goals of any length, and its final fine pass now only
+  touches the tiers' axes.
+
+Simulator results (`alignment/test_nested.py`, analytic physics, 150 captures):
+- Ridge (1/e at 40 units along (1, 0.5) and at 4 across, start on the crest 30 units out, coupling
+  0.55-0.58): the plain loop stops after 25-42 captures at 0.61-0.71 (3 seeds). Nested: 0.98-0.998. K
+  converged to 0.46-0.56 (true slope 0.5). 5-13 captures per outer trial.
+- Keep symmetric (outer phi + theta on intensity, inner lens_y on asymmetry <= 1 linewidth, start 0.37-0.39):
+  nested 1.000 on 3 seeds with the splitting kept below 1 linewidth; the joint loop with the symmetry as
+  a constraint ends at 0.66-0.96 (one seed at 4.5 linewidths). Predictor on: 100-119 captures, off: 122-150.
+- cavity_design (phi + theta outer, lens_y inner, start 0.81): plain 1.000 in 55 captures, nested 0.999 in
+  150. In the example cavity phi and lens_y are not a sloped ridge but an exactly flat valley (lens_y
+  -5.5 cancels phi +30: coupling 1.000), so nesting only adds cost there. Use it when the joint loop stalls.
+
+Known limits:
+- **The scope's `split_linewidths` cannot be the symmetry metric in the simulator:** it reads 0 above
+  ~2 linewidths, because a one-plane tilt feeds only HG10 and `fit_split` counts a partner below 10% as
+  "not split". So 0 means "symmetric" or "cannot tell". The tests inject the truth as `asymmetry`. For
+  the lab, check this, or use the camera's ellipticity / gaussian_overlap (slower).
+- **K needs outer steps large enough** that K delta clears the inner resolution (3 sigma). On cavity_design
+  K came out -0.78 (true -0.18) from 1-2 V phi steps.
+- **The outer acceptance margin counts only the measurement noise**, not the inner convergence scatter. On
+  a flat profile the outer level accepts noise and runs to the budget. Next: estimate the profile noise
+  from one extra inner solve from a perturbed start.
+- With a good-enough inner level the inner optimum is not unique, so K is noisier (one seed learned a
+  junk theta column); it still helped.
+
 ### Also needed
 - Abort that returns (ramped) to the start point or the best point.
 - A "signal lost" policy: a small spiral search, or stop.
@@ -366,6 +426,8 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     `Objective` (metric, direction, constraints), `scan_axis` (1D scan, one-sided approach).
     Target objectives stop the loop once `reached()` is confirmed in place.
   - `targets.py`: `MarkerTarget` (section 3.d), marker lookup from a marker file or `device_state.json`.
+  - `nested.py`: `NestedLoop` / `Level` (section 3.e): outer axes stepped, inner axes re-optimized at
+    every step, any depth, with a learned d(inner*)/d(outer) predictor; tests in `test_nested.py`.
   - `metrics.py` also gives `sensor_x/_y` (centre in the markers' units) when the sensor geometry is
     known; `evaluate_session` takes it from the session's `camera` block.
 - Axis names follow cavity_design (optical axis = x): simulated axes `sim_mirror_phi` (end mirror,
@@ -498,6 +560,8 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     family" open question.
 
 ### Not done yet
+- **Nested loop**: profile-noise estimate for the outer margin; a symmetry metric that works in the
+  lab (section 3.e, known limits); a first nested run on real axes.
 - **M-LOOP backend**: not written. M-LOOP is not installed here and pulls heavy dependencies; the
   stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
 - **Lab measurement function** for the loop: wrap `LiveCapture` as `measure()` (wait for the axes'

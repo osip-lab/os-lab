@@ -3,7 +3,8 @@
 Misaligns the simulated axes of motion/axes_config.py, then lets AlignmentLoop
 recover. With MARKER_FROM set it rehearses the marker objective instead: it
 leaves a camera marker where the mode sits at those offsets (from one capture's
-fit, as in the lab), goes back, and lets the loop steer the mode onto it. A shared fake clock drives the axes' ramps/settle delays and the
+fit, as in the lab), goes back, and lets the loop steer the mode onto it. With LEVELS set it runs the
+nested loop (alignment/nested.py) from NESTED_MISALIGN instead. A shared fake clock drives the axes' ramps/settle delays and the
 simulator, so nothing really sleeps; the physics is cavity_design's when the
 cavity-design project is reachable (else the analytic stand-in).
 
@@ -16,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from alignment.loop import AlignmentLoop, Objective  # noqa: E402
+from alignment.nested import Level, NestedLoop  # noqa: E402
 from alignment.metrics import MetricsConfig, evaluate_capture  # noqa: E402
 from alignment.targets import MarkerTarget  # noqa: E402
 from motion.axes_config import AXES, TIERS  # noqa: E402
@@ -37,6 +39,10 @@ FIRST_ORDER_S = 'aligned'    # known first-order offset for mode identification:
 MARKER_FROM = None           # e.g. {'sim_mirror_phi': +14.0, 'sim_mirror_theta': -10.0}: marker objective
 MARKER_TOLERANCE_PX = 3.0    # sensor px (the marker's units)
 MARKER_TIERS = [['sim_mirror_phi', 'sim_mirror_theta']]   # the knobs that may walk the mode
+LEVELS = None                # e.g. [Level(['sim_mirror_phi', 'sim_mirror_theta'], Objective('intensity')),
+                             #       Level(['sim_lens_y'], Objective('intensity'), steps={'sim_lens_y': 2.0})]
+                             # outermost first; the inner axes should be the stiff ones
+NESTED_MISALIGN = {'sim_mirror_phi': +12.0, 'sim_mirror_theta': -9.0, 'sim_lens_y': +5.0}   # coupling 0.85
 
 
 class FakeClock:
@@ -110,9 +116,34 @@ def main_marker():
     return summary, before, after
 
 
+def main_nested():
+    clock = FakeClock()
+    axes, setup = build(clock)
+    for name, delta in NESTED_MISALIGN.items():
+        if delta:
+            axes[name].move_by(delta, who='misalign')
+    for name in FROZEN:
+        axes[name].set_frozen(True, who='run_alignment_sim')
+    before = setup.mode_state()
+    print(f'misaligned: coupling {before.coupling:.3f} (truth)')
+    loop = NestedLoop(axes, make_measure(setup, clock), LEVELS, max_evaluations=MAX_EVALUATIONS,
+                      log_dir=LOG_DIR)
+    t_sim0 = clock.t
+    summary = loop.run()
+    after = setup.mode_state()
+    print(f'\nresult: coupling {before.coupling:.3f} -> {after.coupling:.3f} (truth), '
+          f'{summary["evaluations"]} evaluations, {(clock.t - t_sim0) / 60:.1f} simulated minutes')
+    print('evaluations per outer trial:', summary['evaluations_per_trial'])
+    print('predictor d(below)/d(level):', summary['predictor'])
+    print('true positions:', {n: round(v, 3) for n, v in setup.true_positions().items()})
+    return summary, before, after
+
+
 def main():
     if MARKER_FROM:
         return main_marker()
+    if LEVELS:
+        return main_nested()
     clock = FakeClock()
     axes, setup = build(clock)
     for name, delta in MISALIGN.items():

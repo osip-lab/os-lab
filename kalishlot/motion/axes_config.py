@@ -42,6 +42,13 @@ AXES = {
         'limits': AxisLimits(min=-500.0, max=500.0, max_step=20.0, max_slew=100.0,
                              settle_s=0.05, vibration_settle_s=1.0, repeatability_sigma=0.3),
     },
+    'sim_lens_y': {     # the lens across the beam: with sim_mirror_phi a narrow ridge (cavity_physics)
+        'driver': 'simulated', 'address': 'sim:3',
+        'options': dict(units='um', kind='position', start=0.0, closed_loop=True,
+                        repeatability_sigma=0.3, sensor_noise=0.05),
+        'limits': AxisLimits(min=-500.0, max=500.0, max_step=20.0, max_slew=100.0,
+                             settle_s=0.05, vibration_settle_s=1.0, repeatability_sigma=0.3),
+    },
     # Large mirror in a Thorlabs POLARIS-K1S3P (3 piezo actuators), driven by a Thorlabs
     # MDT693B (s/n 2408096171-09, USB virtual COM port, limit switch at 150 V).
     # Names follow cavity_design: phi = xy-plane (horizontal) tilt, theta = xz-plane
