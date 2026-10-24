@@ -73,10 +73,15 @@ class DoF:
     si_per_unit: float      # e.g. 1e-6 rad per volt for a piezo tilt
 
 
-def example_cavity():
+def example_cavity(end_mirror_shift=0.0, paraxial=True):
     """The mirror-lens-mirror cavity of the cavity-calculations skill example
     (examples/perturbation_tolerance_analysis.py). Replace with the lab's
-    actual cavity once the motorized elements are chosen."""
+    actual cavity once the motorized elements are chosen.
+
+    end_mirror_shift [m]: move the large end mirror towards the lens by this
+    much, away from the concentric limit (less sensitive to every perturbation).
+    paraxial=False: trace the central line exactly (needed when the beam crosses
+    the lens hundreds of um off-centre; the paraxial trace then loses the mode)."""
     from cavity_design import (Cavity, SphericalMirror, LASER_OPTIK_MIRROR,
                                EKSMA_LENS_20MM_ASPHERIC, DUMMY_LENS)
     return Cavity(
@@ -85,12 +90,12 @@ def example_cavity():
             EKSMA_LENS_20MM_ASPHERIC.to_position(np.array([0.017623230771841976, 0.0, 0.0])),
             DUMMY_LENS.to_position(np.array([0.03305723077184197, 0.0, 0.0])),
             SphericalMirror(name='End mirror', radius=0.2, outwards_normal=np.array([1.0, 0.0, 0.0]),
-                            center=np.array([0.4511688875799871, 0.0, 0.0]), curvature_sign=-1,
+                            center=np.array([0.4511688875799871 - end_mirror_shift, 0.0, 0.0]), curvature_sign=-1,
                             diameter=0.0254,
                             material_properties=LASER_OPTIK_MIRROR.material_properties),
         ],
         standing_wave=True, lambda_0_laser=1.064e-06, t_is_trivial=True, p_is_trivial=True,
-        use_paraxial_ray_tracing=True)
+        use_paraxial_ray_tracing=paraxial)
 
 
 # Example DoF map for the simulated axes in motion/axes_config.py. The example

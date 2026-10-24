@@ -30,6 +30,13 @@ theta_below* + K delta. On a ridge, (delta, K delta) is the ridge direction
 (implicit function theorem: K -> -H_bb^-1 H_bk), so the inner runs shrink to
 small corrections; that is where the evaluations are saved.
 
+Probe steps. When the levels below must follow closely (a narrow ridge: an
+outer step without the right inner correction loses the mode), the first
+large steps fail before K is known, and the steps only ever shrink. With
+Level.probe_steps = {axis: small step}, each axis first takes one small trial
+(the levels below still re-optimized, the result judged like any trial), which
+gives K; the larger steps then start already predicted.
+
 Outer search per level: the coordinate search of AlignmentLoop on the profile
 (+step, then -step; x1.5 on success, x0.5 on failure; never below 3 sigma of
 the repeatability), a parabola through (-step, 0, +step) when both sides fail,
@@ -77,6 +84,8 @@ class Level:
     axes: list
     objective: object = field(default_factory=Objective)
     steps: dict = field(default_factory=dict)    # initial step per axis (default: as AlignmentLoop)
+    probe_steps: dict = field(default_factory=dict)  # small first trial per axis, to learn the predictor
+                                                     # before the (larger) steps; see the module docstring
     max_evaluations: int | None = None           # per optimization of this level (captures, levels below included)
 
 
@@ -307,7 +316,8 @@ class NestedLoop:
         if not self._allowed(target):
             return None, False
         n_before = len(self.history)
-        self._move_to({**target, **self._predict(k, delta)})
+        predicted = self._predict(k, delta)
+        self._move_to({**target, **predicted})
         try:
             self._optimize(k + 1)
         except RuntimeError as e:                 # the levels below lost the signal there
@@ -318,9 +328,12 @@ class NestedLoop:
         ev = self._confirmed(k, self._score_here(k, kind))
         self._learn(k, delta, x0, x1)
         accepted = ev.better_than(inc, self.margin(k))
+        K = self.K.get(k)
         self.profile[k].append({'delta': dict(delta), 'kind': kind, 'score': ev.score, 'feasible': ev.feasible,
                                 'accepted': accepted, 'evaluations': len(self.history) - n_before,
-                                'start': x0, 'positions': x1, 'metrics': ev.metrics})
+                                'first_capture': n_before, 'last_capture': len(self.history) - 1,
+                                'start': x0, 'positions': x1, 'metrics': ev.metrics,
+                                'predicted': predicted, 'K': K[2].copy() if K else None})
         self._trials_since[k] += 1
         if accepted:
             self.best_at[k] = ev
@@ -401,6 +414,12 @@ class NestedLoop:
         self.print(f'{ind}level {k} ({", ".join(names)}): start {self.best_at[k].score:.4g}')
         if self.profile_noise and k not in self.profile_sigma:
             self._estimate_profile_noise(k)
+        for n in names:                           # learn the predictor with small steps first
+            h = self.levels[k].probe_steps.get(n)
+            if h:
+                ev, ok = self._trial(k, {n: h}, kind='probe')
+                if not ok and (ev is None or ev.score is None):
+                    self._trial(k, {n: -h}, kind='probe')
         stall = 0
         n0 = len(self.history)
         cap = self.levels[k].max_evaluations

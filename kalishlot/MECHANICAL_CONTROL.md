@@ -318,6 +318,48 @@ Known limits:
 - With a good-enough inner level the inner optimum is not unique, so K is noisier (one seed learned a
   junk theta column); it still helped.
 
+**Probe steps** (`Level(..., probe_steps={axis: small step})`). On a narrow line an outer step without
+the right lens correction loses the mode, so the first large steps all fail before K is known and the
+steps only shrink. Each axis first takes one small trial (the levels below re-optimized, judged like any
+trial), which gives K; the large steps then start already predicted.
+
+#### A lens error hidden by the mirror tilt (cavity_design, 2026-10-24)
+Example cavity with the end mirror 1 mm towards the lens (`example_cavity(end_mirror_shift=1e-3,
+paraxial=False)`), end-mirror phi tilt and lens y shift, both in the xy plane:
+- A mirror tilt of **53.3 urad per um of lens shift** keeps the mode almost unchanged, along a straight
+  line, to hundreds of um. Across the line the mode is lost within ~1.5 um of lens or ~70 urad of tilt
+  (0.2 um or 10 urad already cost ~1% coupling). Within the simulated axes' old ranges (+-37.5 urad) this
+  looked like an exact compensation; it is not.
+- Along the line the coupling barely changes but the mode becomes astigmatic (exact tracing):
+
+  | lens off | coupling | splitting [peak widths] |
+  |---|---|---|
+  | 50 um | 0.99999 | 0.12 |
+  | 100 um | 0.99979 | 0.46 |
+  | 150 um | 0.99889 | 1.03 |
+  | 200 um | 0.99621 | 1.79 |
+  | 300 um | 0.97835 | 3.54 |
+
+  The paraxial trace loses the mode beyond ~30 um along the line; use `paraxial=False` there.
+- **cavity_design limit (not fixed, cavity-design repo):** refractive surfaces get different ABCD terms in
+  the two planes from the angle of incidence (`SphericalRefractiveSurface.ABCD_matrix`), but the aspheric
+  lens surface (`AsphericRefractiveSurface.ABCD_matrix`) always uses its vertex radius (9.07 mm). Off-centre,
+  the real asphere is curved differently in the two planes: relative difference ~0.57 x (surface slope)^2,
+  the same size as the angle term. The astigmatism above may be off by up to ~2x (rough estimate).
+- **Who does what.** Start: lens -200 um, mirror tilted to hide it (coupling 0.996, splitting 1.9).
+  - Outer = mirror tilt -> coupling, inner = lens -> least splitting: **fails** (lens -200 -> -210 um,
+    coupling 0.996 -> 0.963). The coupling gains only ~0.4% along the whole line, less than its variation
+    between inner runs (0.27%), and the least-split lens position is ~0.5 um off the line, so the inner
+    level trades coupling for symmetry.
+  - Outer = mirror tilt -> least splitting, inner = lens -> coupling: **works on 3 of 5 seeds** (lens ends at
+    -181, -13, -157, -48, -1 um; seed 5: splitting 1.89 -> 0.00, coupling 0.9999, 167 captures). K =
+    -0.01877 um/urad on every seed (true 1/53.3). The stalls: the splitting changes fast across the line
+    (white lines on the map lie close together) while the coupling peak there is flat, so where the lens
+    stops varies the splitting by ~0.17 peak widths between inner runs; that sets the outer threshold.
+  - Symmetry is the true splitting + 0.05 noise here; the lab needs a working symmetry metric (above).
+- Animation: `alignment/visualize_nested_sim.py` (writes `alignment/figures/nested_<roles>.gif` and a final
+  PNG for both role choices; `LIVE = True` shows it in a window).
+
 ### Also needed
 - Abort that returns (ramped) to the start point or the best point.
 - A "signal lost" policy: a small spiral search, or stop.
