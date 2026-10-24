@@ -195,7 +195,11 @@ Conventions the existing frontend already understands:
   `restore_settings(snapshot)` — the server records the snapshot after every
   command and on close (`kalishlot/device_state.json`, gitignored) and
   restores it right after `open()`, so a re-opened device comes back with
-  its last-used settings even across server restarts. `CameraAdapterBase`
+  its last-used settings even across server restarts. The file is a
+  `SystemState` (`utilities/system_state.py`): one section per device id
+  (`type:address`) holding its snapshot, the same layout as any saved record
+  of the lab's parameters. Put units in the snapshot's key names
+  (`exposure_us`, `sample_rate_hz`). `CameraAdapterBase`
   implements both generically from the settings schema (set
   `RESTORE_SETTLE_S` if `_apply_setting` is asynchronous); the PicoScope
   restores only what differs (each change restarts streaming). Return None

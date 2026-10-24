@@ -46,6 +46,8 @@ def load_markers(path, device=None):
         return data
     if data.get('format') == 'kalishlot-markers':
         return list(data.get('markers') or [])
+    if data.get('format') == 'os-lab-system-state':   # device_state.json is a SystemState (utilities/system_state.py)
+        data = data.get('values') or {}
     markers = []                                   # device_state.json: {device_id: snapshot}
     for dev, snap in data.items():
         if (device is None or dev == device) and isinstance(snap, dict):

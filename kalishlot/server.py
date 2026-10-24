@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -174,13 +175,21 @@ def is_virtual(adapter):
 
 # ------------------------------------------------- settings persistence
 # Last-used settings per device, kept on disk so a re-opened device (even
-# after a server restart) comes back configured the way it was left.
+# after a server restart) comes back configured the way it was left. The file
+# is a SystemState (utilities/system_state.py): one section per device id,
+# holding its settings_snapshot(), so any saved system state has the same
+# layout. Device ids are type:address and an address may contain dots (an IP),
+# hence the one-element tuple paths. An older plain {device: snapshot} file
+# still loads.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from utilities.system_state import SystemState, to_plain  # noqa: E402
+
 STATE_PATH = Path(__file__).parent / 'device_state.json'
 settings_lock = threading.Lock()
 try:
-    saved_settings = json.loads(STATE_PATH.read_text())
+    saved_settings = SystemState.load(STATE_PATH)
 except Exception:
-    saved_settings = {}
+    saved_settings = SystemState(note='kalishlot: last-used settings per device')
 
 
 def record_settings(device_id, adapter):
@@ -192,11 +201,13 @@ def record_settings(device_id, adapter):
     if snapshot is None:  # device keeps its own state (e.g. Rigol)
         return
     with settings_lock:
-        if saved_settings.get(device_id) == snapshot:
-            return
-        saved_settings[device_id] = snapshot
         try:
-            STATE_PATH.write_text(json.dumps(saved_settings, indent=1))
+            snapshot = to_plain(snapshot)
+            if saved_settings.get((device_id,)) == snapshot:
+                return
+            saved_settings.set((device_id,), snapshot)
+            saved_settings.stamp()
+            saved_settings.save(STATE_PATH)
         except Exception:
             pass  # persistence must never break device control
 
@@ -490,7 +501,7 @@ def open_adapter(type_name, address):
         adapter.close()
         raise HTTPException(
             status_code=409, detail=f'could not connect to {address}: {error}')
-    snapshot = saved_settings.get(f'{type_name}:{address}')
+    snapshot = saved_settings.get((f'{type_name}:{address}',))
     if snapshot is not None:
         try:
             adapter.restore_settings(snapshot)

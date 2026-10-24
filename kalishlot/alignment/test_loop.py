@@ -125,7 +125,11 @@ def test_marker_lookup_and_sensor_units(tmp=None):
     (d / 'device_state.json').write_text(json.dumps(state))
     (d / 'markers.json').write_text(json.dumps({'format': 'kalishlot-markers', 'markers':
                                                 state['ximea']['markers']}))
-    for f in ('device_state.json', 'markers.json'):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from utilities.system_state import SystemState
+    SystemState(state).save(d / 'device_state_new.json')       # the server now writes a SystemState
+    assert find_marker(load_markers(d / 'device_state_new.json'), 'b1')['device'] == 'basler'
+    for f in ('device_state.json', 'device_state_new.json', 'markers.json'):
         t = MarkerTarget.from_markers(d / f, 'arm 45 cm')
         assert (t.x, t.y, t.label) == (800.5, 1100.0, 'arm 45 cm')
     assert find_marker(load_markers(d / 'device_state.json'), 'b1')['label'] == 'other'
