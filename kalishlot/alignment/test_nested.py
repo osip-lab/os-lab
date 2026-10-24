@@ -125,6 +125,20 @@ def test_keep_symmetric():
     assert setup.mode_state().coupling < nested - 0.02, (setup.mode_state().coupling, nested)
 
 
+def test_profile_noise_flag():
+    """On (default): the scatter of the inner runs is estimated and raises the margin. Off: not measured."""
+    *_, loop, summary = ridge_runs()
+    assert summary['profile_noise'].get(0, 0) > 0, summary['profile_noise']
+    assert loop.margin(0) == loop.accept_sigmas * max(loop.noise[0], summary['profile_noise'][0])
+    assert any(h['kind'] == 'profile noise' for h in loop.history)
+    clock, axes, setup = ridge_case()
+    off = NestedLoop(axes, make_measure(setup, clock), ridge_levels(), max_evaluations=30,
+                     profile_noise=False, **QUIET)
+    summary = off.run()
+    assert summary['profile_noise'] == {} and off.margin(0) == off.accept_sigmas * off.noise[0]
+    assert not any(h['kind'] == 'profile noise' for h in off.history)
+
+
 def test_stop_returns_all_axes_to_best():
     clock, axes, setup = ridge_case()
     inner = make_measure(setup, clock)

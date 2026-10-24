@@ -24,8 +24,8 @@ Two uses (kalishlot/MECHANICAL_CONTROL.md, section 3.e):
   sits at its (flat) peak would only chase noise.
 
 Predictor. After each outer trial the optimized inner positions are known, so
-d(theta_below*)/d(theta_k) is learned as a matrix K (damped Broyden update from
-every trial, accepted or not). The next trial starts the levels below at
+d(theta_below*)/d(theta_k) is learned as a matrix K (least squares over the
+last predictor_window trials, accepted or not). The next trial starts the levels below at
 theta_below* + K delta. On a ridge, (delta, K delta) is the ridge direction
 (implicit function theorem: K -> -H_bb^-1 H_bk), so the inner runs shrink to
 small corrections; that is where the evaluations are saved.
@@ -41,6 +41,18 @@ capture of the levels below (taken there) plus outer_repeats more, not the
 inner's best capture (that one is biased upwards). Accepting needs
 accept_sigmas x that level's noise; large jumps are confirmed in place; the
 incumbent is re-measured every remeasure_every trials.
+
+Profile noise (profile_noise=True, the default). The levels below never end
+exactly at their optimum, and where they end differs from run to run, so a
+level's value at one fixed position scatters more than the measurement noise
+alone. Without counting that, a lucky run of the levels below looks like an
+improvement; on a flat profile every step can, and the level never stops. So
+the first time a level is optimized, the levels below are solved a second time
+at the same position, from a start shifted by one step on each of their axes;
+the difference d of the two values gives the profile noise |d| / sqrt(2), and
+the level's noise (margin, jump confirmation) is the larger of the two. It
+costs one more solve of the levels below per level, once per run. A single
+difference is a rough estimate; it only ever raises the margin.
 
 Budget, stop() and abort are shared by all levels: one evaluation budget, one
 history (every capture, tagged with the level that asked for it), and the best
@@ -75,7 +87,8 @@ class _Stopped(Exception):
 class NestedLoop:
     def __init__(self, axes, measure, levels, outer_repeats=1, accept_sigmas=1.0, min_step_sigmas=3.0,
                  noise_repeats=4, remeasure_every=6, max_evaluations=400, confirm_jump=10.0,
-                 predictor=True, predictor_damping=0.7, inner_stall_passes=1, on_abort='best', log_dir=None,
+                 predictor=True, predictor_window=10, inner_stall_passes=1, profile_noise=True,
+                 on_abort='best', log_dir=None,
                  who='nested alignment', print_fn=print):
         self.axes = dict(axes)
         self.measure_fn = measure
@@ -96,8 +109,11 @@ class NestedLoop:
         self.max_evaluations = max_evaluations
         self.confirm_jump = confirm_jump
         self.predictor = predictor
-        self.damping = predictor_damping
+        self.window = predictor_window      # outer trials the predictor is fitted to
+        self._pairs = {}                    # level -> [(outer move, shift of the optimum below)]
         self.inner_stall_passes = inner_stall_passes   # warm inner runs: one failed pass is enough
+        self.profile_noise = profile_noise             # also count the scatter of the levels below
+        self.profile_sigma = {}                        # level -> estimated profile noise
         self.on_abort = on_abort
         self.who = who
         self.print = print_fn or (lambda *a, **k: None)
@@ -260,20 +276,27 @@ class NestedLoop:
         return out
 
     def _learn(self, k, delta, x0, x1):
-        """Broyden update of K from one outer trial: delta on level k's axes moved
-        the optimum of the axes below from x0 to x1."""
+        """Refit K from one more outer trial: delta on level k's axes moved the
+        optimum of the axes below from x0 to x1. K is the least-squares fit
+        D K^T = Y over the last predictor_window trials: every single trial's
+        shift is noisy (the levels below end only near their optimum), and a
+        fit over many trials averages that out, where an update that follows
+        the latest trials does not (2026-10-24: 0.48 vs 0.67, true 0.5)."""
         below = self._free(self._below(k))
         cols = self._free(self.levels[k].axes)
         if not below or not cols:
             return
         if k not in self.K:
             self.K[k] = (below, cols, np.zeros((len(below), len(cols))))
+            self._pairs[k] = []
         names_b, cols, K = self.K[k]
         d = np.array([delta.get(n, 0.0) for n in cols])
         if d @ d == 0:
             return
-        y = np.array([x1[n] - x0[n] for n in names_b])
-        K += self.damping * np.outer(y - K @ d, d) / (d @ d)
+        self._pairs[k] = (self._pairs[k] + [(d, np.array([x1[n] - x0[n] for n in names_b]))])[-self.window:]
+        D = np.array([a for a, _ in self._pairs[k]])
+        Y = np.array([b for _, b in self._pairs[k]])
+        K[:] = np.linalg.lstsq(D, Y, rcond=None)[0].T
 
     def _trial(self, k, delta, kind='trial'):
         """Move level k's axes by delta (predicted moves below), optimize below,
@@ -307,15 +330,19 @@ class NestedLoop:
             self._remeasure(k)
         return ev, False
 
+    def level_noise(self, k):
+        """Level k's noise: the measurement noise, or the profile noise when larger."""
+        return max(self.noise[k], self.profile_sigma.get(k, 0.0))
+
     def margin(self, k):
-        return self.accept_sigmas * self.noise[k]
+        return self.accept_sigmas * self.level_noise(k)
 
     def _confirmed(self, k, ev):
         inc = self.best_at[k]
         if ev.score is None or inc.score is None or self._budget() <= 0:
             return ev
         jump = ev.score - inc.score
-        if jump <= max(self.confirm_jump * self.noise[k], 0.05 * abs(inc.score)):
+        if jump <= max(self.confirm_jump * self.level_noise(k), 0.05 * abs(inc.score)):
             return ev
         again = self._score_here(k, 'confirm', extra=1 + self.outer_repeats)
         if again.score is None:
@@ -332,6 +359,37 @@ class NestedLoop:
         if ev.score is not None:
             self.best_at[k] = ev
 
+    def _estimate_profile_noise(self, k):
+        """Solve the levels below again at the same level-k position, from a start
+        shifted by one step on each of their axes; keep the better of the two."""
+        first = self.best_at[k]
+        shifted = {}
+        for n in self._free(self._below(k)):
+            for sign in (+1, -1):
+                t = first.positions[n] + sign * self._steps[n]
+                if self._allowed({n: t}):
+                    shifted[n] = t
+                    break
+        if not shifted:
+            return
+        self._move_to(shifted)
+        try:
+            self._optimize(k + 1)
+        except RuntimeError:                      # lost the signal from the shifted start
+            self._move_to(first.positions)
+            return
+        second = self._score_here(k, 'profile noise')
+        if second.score is None:
+            self._move_to(first.positions)
+            return
+        self.profile_sigma[k] = abs(second.score - first.score) / math.sqrt(2)
+        self.print(f'{"  " * k}  level {k}: profile noise {self.profile_sigma[k]:.2g} '
+                   f'(measurement noise {self.noise[k]:.2g})')
+        if second.better_than(first, 0.0):
+            self.best_at[k] = second
+        else:
+            self._move_to(first.positions)
+
     def _profile_search(self, k):
         ind = '  ' * k
         names = self._free(self.levels[k].axes)
@@ -341,6 +399,8 @@ class NestedLoop:
         if self.best_at[k].score is None:
             raise RuntimeError(f'signal lost at level {k}: {self.best_at[k].reason}')
         self.print(f'{ind}level {k} ({", ".join(names)}): start {self.best_at[k].score:.4g}')
+        if self.profile_noise and k not in self.profile_sigma:
+            self._estimate_profile_noise(k)
         stall = 0
         n0 = len(self.history)
         cap = self.levels[k].max_evaluations
@@ -444,7 +504,8 @@ class NestedLoop:
         per_trial = {k: [p['evaluations'] for p in self.profile[k]] for k in self.profile}
         return {'start': start, 'best': self.best.positions if self.best else None,
                 'best_score': self.best.score if self.best else None,
-                'noise': list(self.noise), 'evaluations': len(self.history),
+                'noise': list(self.noise), 'profile_noise': dict(self.profile_sigma),
+                'evaluations': len(self.history),
                 'evaluations_per_trial': per_trial,
                 'predictor': {k: {'below': b, 'axes': c, 'K': K.tolist()} for k, (b, c, K) in self.K.items()},
                 'aborted': aborted, 'stopped_because': reason, 'seconds': time.time() - t0}

@@ -42,6 +42,7 @@ MARKER_TIERS = [['sim_mirror_phi', 'sim_mirror_theta']]   # the knobs that may w
 LEVELS = None                # e.g. [Level(['sim_mirror_phi', 'sim_mirror_theta'], Objective('intensity')),
                              #       Level(['sim_lens_y'], Objective('intensity'), steps={'sim_lens_y': 2.0})]
                              # outermost first; the inner axes should be the stiff ones
+PROFILE_NOISE = True         # nested: also count the scatter of the inner runs in the outer margin
 NESTED_MISALIGN = {'sim_mirror_phi': +12.0, 'sim_mirror_theta': -9.0, 'sim_lens_y': +5.0}   # coupling 0.85
 
 
@@ -127,12 +128,13 @@ def main_nested():
     before = setup.mode_state()
     print(f'misaligned: coupling {before.coupling:.3f} (truth)')
     loop = NestedLoop(axes, make_measure(setup, clock), LEVELS, max_evaluations=MAX_EVALUATIONS,
-                      log_dir=LOG_DIR)
+                      profile_noise=PROFILE_NOISE, log_dir=LOG_DIR)
     t_sim0 = clock.t
     summary = loop.run()
     after = setup.mode_state()
     print(f'\nresult: coupling {before.coupling:.3f} -> {after.coupling:.3f} (truth), '
           f'{summary["evaluations"]} evaluations, {(clock.t - t_sim0) / 60:.1f} simulated minutes')
+    print('noise per level:', summary['noise'], 'profile noise:', summary['profile_noise'])
     print('evaluations per outer trial:', summary['evaluations_per_trial'])
     print('predictor d(below)/d(level):', summary['predictor'])
     print('true positions:', {n: round(v, 3) for n, v in setup.true_positions().items()})

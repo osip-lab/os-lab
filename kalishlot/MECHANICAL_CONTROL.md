@@ -258,13 +258,26 @@ k's objective measured: theta_k* = argmax F_k(theta_k, theta_below*(theta_k)). T
 level is the ridge case: the profile max_inner F(outer, inner) is smooth along the ridge.
 - **The inner axes must be the stiff ones.** An inner problem without a sharp optimum makes the outer
   profile noise.
-- **Predictor:** K = d(theta_below*)/d(theta_k), a damped Broyden update from every trial (accepted or
-  not). Each trial starts the levels below at theta_below* + K delta. On a ridge, (delta, K delta) is the
+- **Predictor:** K = d(theta_below*)/d(theta_k): how far the optimum of the lower axes moves per unit
+  step of level k's axes. Fitted by least squares to the last `predictor_window` (10) trials, accepted or
+  not; each single trial's shift is noisy, the fit averages it out (a damped update that followed the
+  latest trials gave 0.67 on a ridge of slope 0.5; the fit gave 0.48). Each trial starts the levels below
+  at theta_below* + K delta. On a ridge, (delta, K delta) is the
   ridge direction (implicit function theorem: K -> -H_bb^-1 H_bk).
 - **Outer search:** coordinate search on the profile (+step, -step, x1.5 / x0.5, never below 3 sigma of
   the repeatability), a parabola through (-step, 0, +step) when both sides fail, and a gradient step when
   the level has >= 2 axes.
-- **Noise:** each level's noise comes from the same noise_repeats captures at the start. A level's value
+- **Profile noise** (`profile_noise=True`, default; `False` turns it off). A step of level k is kept only
+  if level k's target beats the best value so far by more than a threshold (`accept_sigmas` x the noise).
+  The measurement noise alone (4 captures without moving) is too small for that: the levels below never
+  stop exactly at their optimum, and where they stop differs from run to run, so level k's target
+  measured at one fixed position varies more than the measurement noise. A lucky stop then looks like an
+  improvement; on a flat profile every step can, and the level never decides it has finished. So the
+  first time a level is optimized, the levels below are solved twice at the same position, the second
+  time from a start shifted by one step on each of their axes. The difference d of the two results gives
+  the profile noise |d| / sqrt(2); the threshold uses the larger of the two noises. Cost: one more solve
+  of the levels below per level, once per run. A single difference is a rough estimate.
+- **Noise:** each level's measurement noise comes from the same noise_repeats captures at the start. A level's value
   at a point is the last capture of the levels below (taken there) plus `outer_repeats` more, not the
   inner's best capture (biased upwards). Large jumps are confirmed; the incumbent is re-measured.
 - **"Keep" = good enough:** `Objective(metric, good_enough=thr)` is reached once the metric is past thr;
@@ -279,15 +292,19 @@ level is the ridge case: the profile max_inner F(outer, inner) is smooth along t
   inner runs), `Objective.good_enough`, steering goals of any length, and its final fine pass now only
   touches the tiers' axes.
 
-Simulator results (`alignment/test_nested.py`, analytic physics, 150 captures):
+Simulator results (`alignment/test_nested.py`, analytic physics, 150 captures allowed, 3 seeds; profile
+noise on, K by least squares):
 - Ridge (1/e at 40 units along (1, 0.5) and at 4 across, start on the crest 30 units out, coupling
-  0.55-0.58): the plain loop stops after 25-42 captures at 0.61-0.71 (3 seeds). Nested: 0.98-0.998. K
-  converged to 0.46-0.56 (true slope 0.5). 5-13 captures per outer trial.
+  0.55-0.58): the plain loop stops after 25-42 captures at 0.61-0.71. Nested: 0.991-0.995, K 0.47-0.50
+  (true slope 0.5). Here the profile noise came out below the measurement noise, so it changed nothing;
+  the runs use all 150 captures.
 - Keep symmetric (outer phi + theta on intensity, inner lens_y on asymmetry <= 1 linewidth, start 0.37-0.39):
-  nested 1.000 on 3 seeds with the splitting kept below 1 linewidth; the joint loop with the symmetry as
-  a constraint ends at 0.66-0.96 (one seed at 4.5 linewidths). Predictor on: 100-119 captures, off: 122-150.
-- cavity_design (phi + theta outer, lens_y inner, start 0.81): plain 1.000 in 55 captures, nested 0.999 in
-  150. In the example cavity phi and lens_y are not a sloped ridge but an exactly flat valley (lens_y
+  nested 0.996-0.998 in 103-122 captures, splitting kept below 1 linewidth; the joint loop with the
+  symmetry as a constraint ends at 0.66-0.96 (one seed at 4.5 linewidths).
+- cavity_design (phi + theta outer, lens_y inner, start 0.81): plain 1.000 in 55 captures. Nested with
+  profile noise off: 0.999, all 150 captures used. On: profile noise 0.0083 V, 10x the measurement noise
+  (0.0008 V); it stops by itself after 100 captures at 0.987 (the higher threshold also rejects small real
+  gains). In the example cavity phi and lens_y are not a sloped ridge but an exactly flat valley (lens_y
   -5.5 cancels phi +30: coupling 1.000), so nesting only adds cost there. Use it when the joint loop stalls.
 
 Known limits:
@@ -295,11 +312,9 @@ Known limits:
   ~2 linewidths, because a one-plane tilt feeds only HG10 and `fit_split` counts a partner below 10% as
   "not split". So 0 means "symmetric" or "cannot tell". The tests inject the truth as `asymmetry`. For
   the lab, check this, or use the camera's ellipticity / gaussian_overlap (slower).
-- **K needs outer steps large enough** that K delta clears the inner resolution (3 sigma). On cavity_design
-  K came out -0.78 (true -0.18) from 1-2 V phi steps.
-- **The outer acceptance margin counts only the measurement noise**, not the inner convergence scatter. On
-  a flat profile the outer level accepts noise and runs to the budget. Next: estimate the profile noise
-  from one extra inner solve from a perturbed start.
+- **K needs outer steps large enough** that the shift they cause below (K delta) is larger than the
+  smallest step the lower axes can resolve (3 x their repeatability). On cavity_design K came out -0.53
+  (profile noise on) / -0.96 (off), true -0.18, from 1-2 V phi steps.
 - With a good-enough inner level the inner optimum is not unique, so K is noisier (one seed learned a
   junk theta column); it still helped.
 
@@ -560,7 +575,7 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     family" open question.
 
 ### Not done yet
-- **Nested loop**: profile-noise estimate for the outer margin; a symmetry metric that works in the
+- **Nested loop**: a symmetry metric that works in the
   lab (section 3.e, known limits); a first nested run on real axes.
 - **M-LOOP backend**: not written. M-LOOP is not installed here and pulls heavy dependencies; the
   stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
