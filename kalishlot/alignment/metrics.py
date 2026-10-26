@@ -19,9 +19,10 @@ cfg.allow_saturated), peaks in the nonlinear scan region, too few samples,
 frames that mostly saw other modes (low exposure purity), dim or failed fits.
 The optimizer must treat `valid=False` as "no information", never as zero.
 
-Up- and down-sweeps are never pooled: every metric is computed per direction,
-and the headline value uses cfg.direction (+1, -1, or None = the direction with
-more valid samples).
+Every metric is computed per scan direction (by_direction, a check), and the
+headline value uses cfg.direction (+1, -1, or None = the direction with more
+valid samples). The recorded sessions agree between the directions within the
+noise, so either direction can be used (MECHANICAL_CONTROL.md, section 2.c).
 """
 
 import json

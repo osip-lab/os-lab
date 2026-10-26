@@ -16,6 +16,91 @@ Core pieces:
 3. Smart control: an optimizer that moves the knobs, respecting a DoF hierarchy, banned DoFs,
    hysteresis and limited repeatability.
 
+## Cheatsheet: writing an alignment
+The lines that run an alignment, assuming `axes` and `measure` exist (first block). Imports are from
+`kalishlot/` (`motion.*`, `alignment.*`). Every move goes through the safety layer: ranges, ramps and
+frozen axes bind the optimizer as well.
+
+**The two things every alignment needs.** `axes` is a dict of axis name -> SafeAxis. `measure()` returns
+one capture's metrics: `intensity`, `gaussian_overlap`, `ellipticity`, `split_linewidths`,
+`first_order_s`, `centroid_x/_y` and `sensor_x/_y`, each with a value and `valid`.
+```python
+from motion import build_axis
+axes = {n: build_axis(n) for n in ('large_mirror_phi', 'large_mirror_theta')}   # names: motion/axes_config.py
+for a in axes.values():
+    a.open()
+
+live = LiveCapture(scope, camera)          # the running devices (alignment/live_capture.py)
+def measure():                             # not yet a ready-made function: see "Not done yet"
+    return evaluate_capture(*live.capture(1.5).evaluate_args(), cfg=MetricsConfig(fast=True))
+```
+
+**Maximize the intensity with the large mirror** (`alignment/loop.py`):
+```python
+summary = AlignmentLoop(axes, measure, Objective('intensity')).run()
+```
+The axes end at the best point. `summary` has `best`, `best_score`, `evaluations`, and `aborted`.
+`loop.stop()` from another thread ends the run and returns to the best point.
+
+**Common variations on the same line:**
+```python
+Objective('split_linewidths', maximize=False)                          # minimize instead
+Objective('intensity', constraints=(('gaussian_overlap', '>=', 0.9),))  # only accept points that pass
+Objective('split_linewidths', maximize=False, good_enough=0.5)         # stop once below 0.5
+AlignmentLoop(axes, measure, Objective('intensity'),
+              tiers=[['large_mirror_phi', 'large_mirror_theta'], ['lens_x']],   # first tier 1 alone, then 1+2
+              steps={'large_mirror_phi': 0.5}, max_evaluations=100)
+axes['lens_x'].set_frozen(True, who='me')                               # this axis must not move
+```
+
+**Put the mode on a camera marker** (`alignment/targets.py`; the markers come from kalishlot):
+```python
+target = MarkerTarget.from_markers('device_state.json', 'arm 45 cm', tolerance_px=3)
+AlignmentLoop(axes, measure, target).run()
+```
+
+**Scan one axis** (and stay at the best point). Also the tool to measure hysteresis and repeatability:
+```python
+rows = scan_axis(axes['large_mirror_phi'], np.linspace(30, 45, 16), measure, Objective('intensity'))
+```
+
+**Nested: re-optimize some axes after every step of others** (`alignment/nested.py`, section 3.e).
+Level 0 is the outer level. Example: maximize the intensity with the lens while the large mirror keeps
+the mode symmetric:
+```python
+levels = [Level(['lens_y'], Objective('intensity')),
+          Level(['large_mirror_phi', 'large_mirror_theta'], Objective('split_linewidths', maximize=False))]
+summary = NestedLoop(axes, measure, levels).run()
+```
+
+**A target that is a procedure: align the optical axis to the large mirror's stage** (section 3.f).
+Outer level: the short arm's orientation, until moving the stage no longer moves the mode on the camera.
+Inner level: the large mirror, for a symmetric mode. The axis names below are not configured yet.
+```python
+drift = move_and_compare('large_mirror_stage', -10.0, metrics=('sensor_x', 'sensor_y'))   # mm, towards the lens
+levels = [Level(['short_arm_phi', 'short_arm_theta'],
+                VectorTarget(('drift_sensor_x', 'drift_sensor_y'), (0.0, 0.0), tolerance=2.0, unit='px'),
+                measure=drift),
+          Level(['large_mirror_phi', 'large_mirror_theta'], Objective('split_linewidths', maximize=False))]
+summary = NestedLoop(axes, measure, levels).run()
+```
+
+**Your own procedure** (any function; every axis it moves is put back afterwards):
+```python
+def walk_test(run):                        # e.g. how much does the intensity drop 20 um off?
+    run.move_by({'lens_y': 20.0})
+    return run.capture('off')              # a CaptureMetrics; the level's Objective scores it
+Level(['lens_x'], Objective('intensity', maximize=False), measure=walk_test)
+```
+
+**A combination of axes as one knob** (`motion/virtual.py`):
+```python
+walk = VirtualAxis('beam_walk', [(axes['m1_phi'], 1.0), (axes['m2_phi'], -1.0)])
+```
+
+Simulator versions of all of this, with no hardware: `alignment/run_alignment_sim.py`,
+`run_stage_alignment_sim.py`, and the tests `test_loop.py` and `test_nested.py`.
+
 ## Decisions
 - **Hardware is deliberately left undecided.** Candidates:
   Standa motorized positioners (at least 3 axes; standa.lt catalog item 525),
@@ -85,35 +170,55 @@ Read and log it. For open-loop devices treat it as **untrusted**: open-loop piez
 inertia drives, steppers without encoders (there "position" is a step count). Each axis declares
 capability flags: `has_readback`, `closed_loop`, `units`.
 
-### The biggest undefined item: one evaluation is slow
-The recorded sessions use a 0.05 Hz, 3 Vpp ramp (20 s period, so 10 s per sweep) and 5.6 s captures
-at about 14 fps with 70 ms exposure. One metric value therefore costs about one sweep plus move and
-settle time, roughly 10 s. A few hundred evaluations is about an hour. This drives the whole optimizer
-design: it must be sample-efficient and noise-aware.
+### Time per evaluation
+The recorded sessions used a 0.05 Hz, 3 Vpp ramp and 5.6 s captures. Those numbers are not fixed. The
+plan (2026-10-26):
+- **Ramp:** as large a Vpp as possible, at a low frequency, so that little of the time is spent in the
+  turns.
+  - The Vpp is limited by the temperature swing it causes: too much, and condensation can form.
+  - The frequency must not be too low either, or the spectrum becomes unstable.
+- **Capture:** only the first ~4 FSRs that are not part of a turn. That is about 1 s when the capture
+  starts outside a turn, plus about 1 s when it must first wait for a turn to end.
+  - Capture time = 4 × the time per FSR. The recorded ramp took ~0.45 s per FSR, so ~1.8 s.
+  - Not implemented yet: `LiveCapture.capture(duration_s)` records a fixed time from now. It should wait
+    for the turn to end (`sweeps.aux_near_extreme`), then stop after N FSRs.
+- **One evaluation is then ~1-2 s** plus the axes' settle times (zero for piezos, see below).
+  A few hundred evaluations take minutes, not an hour.
 
-To decide in the lab: can the scan be narrowed and sped up during optimization, so it covers only the
-0th + 1st order region? The fixed turnaround dead time makes very short sweeps wasteful.
+The optimizer still has to be sample-efficient and noise-aware, but time is less critical than first
+assumed.
 
-### Measure only between moves (vibrations)
-Motor motion shakes the setup, so a spectrum recorded while (or just after) a motor moves looks messy
-and must not be used. Rules for the alignment loop:
-- Never capture while any axis is moving. A move is "done" only when the driver reports it finished
-  (closed-loop: in position; open-loop: last step sent and acknowledged).
-- Then wait a per-axis **vibration settle delay** before the capture starts. Start with a conservative
-  value (e.g. 0.5-1 s) and measure it in the lab: repeat captures at increasing delays after a move
-  and take the delay after which the metrics stop changing beyond their noise floor.
-- The settle delay belongs to the axis config (different mounts ring differently), and the loop takes
-  the maximum over the axes that just moved.
-- Optionally check for residual vibration in the data itself (peak jitter / extra peaks relative to a
-  reference capture) and re-capture if it is present.
-- This adds to the evaluation cost (see above), so it is one more reason to keep evaluations few.
+### Waiting after a move (vibrations)
+Some motors shake the setup while they move and for a while after, and a spectrum recorded then looks
+messy. Others don't: **piezos need no waiting at all** (lab, 2026-10-19). So the wait is a property of
+each axis, measured, not a general rule:
+- Each axis config has `settle_s` (until the move is done) and `vibration_settle_s` (shaking after it).
+  The loop waits for the largest of these over the axes before every capture (`wait_until_settled`).
+  Both are 0 for the MDT693B piezos.
+- To measure per motor in the lab: repeat captures at increasing delays after a move of that motor, and
+  take the delay after which the metrics stop changing beyond their noise floor (`scan_axis` with
+  repeats, or a dedicated script).
+- Optional: check for residual vibration in the data itself (peak jitter, extra peaks against a
+  reference capture), and re-capture if present.
 
 ### 2.c Scan nonlinearity after turnarounds (proposed design)
 - Split each capture into monotonic sweeps using the extrema of the aux channel (the ramp, Channel B
   "Temperature modulation Voltage"). Drop a configurable guard window after each turnaround. Start at
   0.5 s and measure the real value from data.
-- **Never mix up- and down-sweeps.** Thermal lag shifts peak positions and heights between them.
-  Optimize on one direction only, or treat the two as separate samples.
+- **Up- and down-sweeps can both be used: take the first usable sweep, whichever direction it is**
+  (2026-10-26). Only the turns are excluded (the guard window). The recorded sessions agree between the
+  directions within the noise:
+
+  | session | up | down |
+  |---|---|---|
+  | 2026-10-12 113244, splitting [linewidths] | 1.04 ± 0.13 | 1.10 ± 0.34 |
+  | 2026-10-12 113244, first-order position [FSR] | 0.3185 | 0.3194 |
+  | 2026-10-12 115852, intensity | 1.57 ± 0.07 | 1.74 ± 0.23 |
+  | 2026-10-12 115852, splitting [linewidths] | 1.50 | 1.47 |
+
+  The scan moves ~20% faster on the way up (0.42 against 0.52 s per FSR). The local FSR ruler cancels
+  that. `metrics.py` still computes every metric per direction (`by_direction`), as a check. The headline
+  value uses `cfg.direction`, or the direction with more sweeps when that is None.
 - The aux channel is the **drive voltage, not the laser frequency**. For time-to-frequency conversion
   use the modes themselves (FSR / sideband spacing) as a local ruler.
 - **Reject saturated sweeps.** The 2026-10-12 sample session has `overflow_channels: ['D']`.
@@ -147,9 +252,10 @@ The proposed approach is sound. Additions:
 - **Fit the pair** with the existing `fit_lorentzian_pair` in `pico_scope/mode_analysis.py` and convert
   the splitting to frequency with the local scan calibration. Report it relative to the birefringence
   baseline of the molded lens.
-- **Risk.** Near degeneracy, or when the transverse spacing is close to a multiple of the FSR, the
-  "which side in time" rule is ambiguous. Then rely on the camera check, and report "not identified"
-  rather than guess.
+- **Which side is unambiguous.** On a rising scan the first order comes after the 0th order in time; on
+  a falling scan, before it. `sweeps.scan_direction` gives the direction from the scope channel that
+  records the ramp, and `sweeps.first_order_time_sign` / `MetricsConfig.first_order_sign` apply the
+  rule. Near degeneracy the first order just sits closer to the 0th order; the side does not change.
 - **Validate the detector against the hand marks** before trusting it in a loop.
 
 ### Additions to the metrics
@@ -195,7 +301,7 @@ characterized). Consequences:
 
 ### 3.c M-LOOP
 A reasonable **later** backend, not the first one.
-- Good: its Gaussian-process learner is sample-efficient and noise-aware, which suits ~10 s evaluations.
+- Good: its Gaussian-process learner is sample-efficient and noise-aware, which suits evaluations that cost seconds.
 - Poor fit: it assumes the cost is a function of the parameters, which hysteresis breaks. It can propose
   large jumps across the whole range, and it has no notion of tiers. Its neural-net learner pulls in
   TensorFlow.
@@ -425,6 +531,10 @@ The scalar search stalls because a 40 µrad arm step changes |drift| by ~5 µm, 
 inner runs. On a linear test model (`test_vector_target_steering_beats_scalar`), steering used 52–120
 captures against 115–159.
 
+Animation: `alignment/visualize_stage_alignment_sim.py` writes `alignment/figures/stage_alignment.gif`
+and a final PNG. It shows top and side views of the mode axis against the stage direction, the axis
+direction walking to the stage's, and the angle and drift per capture.
+
 **What limits the accuracy: the large mirror's landing.** 1 µrad of large-mirror tilt turns the optical axis
 by ~46 µrad. The tilt moves the mirror's centre of curvature sideways, and the point the long-arm axis pivots
 about is only ~4 mm away from it. The drift is therefore ~45× more sensitive to the large mirror (~6 µm/µrad)
@@ -555,7 +665,7 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     tolerances are too loose for astigmatism), HG10/LG01 template overlap for first orders, exposure
     purity from the scope.
   - `metrics.py`: `evaluate_capture` / `evaluate_session` give metrics with value, spread, n, valid and
-    reason, per scan direction (never pooled): intensity, gaussian_overlap, ellipticity, centroid_x/y,
+    reason, per scan direction (either can be used, 2.c): intensity, gaussian_overlap, ellipticity, centroid_x/y,
     first_order_s, split_linewidths (separation / component FWHM), split_fsr.
   - `loop.py`: `AlignmentLoop` (tiers, noise floor, noise-aware coordinate search plus a gradient step
     along a linear combination, min step = 3 x repeatability sigma, outlier confirmation, periodic
