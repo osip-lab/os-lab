@@ -360,6 +360,86 @@ paraxial=False)`), end-mirror phi tilt and lens y shift, both in the xy plane:
 - Animation: `alignment/visualize_nested_sim.py` (writes `alignment/figures/nested_<roles>.gif` and a final
   PNG for both role choices; `LIVE = True` shows it in a window).
 
+### 3.f Targets that are procedures, and vector targets (2026-10-26, laptop)
+**Problem.** Some target values are not one capture but a procedure that ends in a measurement. Example:
+align the optical axis to the linear stage under the large mirror. Move the stage and see whether the mode
+moves on the mirror. Moving the stage should change only the NA. If the stage axis is at an angle to the
+optical axis, the mode's spot on the mirror drifts as well.
+
+**Why the drift measures it.** Every line through the large mirror's centre of curvature meets the mirror
+at normal incidence. When the stage moves that centre along the optical axis, the same axis still closes on
+itself, so the spot stays put. When the stage moves it at an angle, the axis turns and the spot drifts.
+
+**Design.**
+- `Level(axes, objective, measure=procedure)`. The procedure is any function `procedure(run)` that returns
+  a CaptureMetrics; the level's objective then scores it as usual. `run` gives:
+  - `capture(label)`: waits for every axis to settle, counts against the shared budget, and is logged with
+    the level;
+  - `move_to` / `move_by`: through the SafeAxes;
+  - `positions()`, `move_back()`.
+- The loop puts every axis the procedure moved back where it was, also on stop() or an error in the middle.
+- A procedure level's noise floor comes from `noise_repeats` procedure calls, and it never reuses another
+  level's capture.
+- `alignment/procedures.py: move_and_compare(axis, travel, metrics)`: capture, move, capture, move back.
+  It returns `drift_<m>` (after − before) and `drift` (the length of that vector).
+- `targets.py: VectorTarget(metrics, goal, tolerance)`: bring a measured vector to a goal (score = minus the
+  distance). `MarkerTarget` is now a VectorTarget of (sensor_x, sensor_y).
+
+**Vector targets: steering, not a new search.** Minimizing |drift| with the old one-axis-at-a-time search
+works without any change, but slowly. A vector target also tells the loop which way to go. For an outer
+level whose objective has `position`/`goal`, `NestedLoop._steer`:
+1. probes each axis (a full nested trial; the step is doubled until the vector moves by more than 3× its
+   noise);
+2. fits a straight line, vector = a + J·x, over **all** trials of the level;
+3. moves to where the fit meets the goal, and repeats until that point stops moving;
+4. moves there and keeps it (`adopt`: the fit over many trials is a better judge than one more noisy
+   capture). Up to 3 rounds; then the coordinate search, if the goal is still not reached.
+
+The fit matters here. Every trial's vector carries the scatter of where the inner level ended. Comparing
+single trials then keeps a lucky one (first version: recorded 2.2 µm, true 4.1 µm).
+
+**Simulator.**
+- `short_arm_cavity()`: the example cavity with the small mirror and the aspheric lens as one OpticalSystem
+  (element 0), turned about its mechanical centre.
+- `stage_dofs(tilt_y, tilt_z)`: a DoF entry may be a tuple, so one axis moves several parameters. The stage
+  moves the end mirror along x plus the hidden tilt.
+- `ModeState.spot_y/_z`: where the long arm's central line meets the end mirror, relative to its centre, in µm.
+- Facts (cavity_design):
+  - a stage tilted 100 µrad from the axis gives a 13 µm drift per cm of travel towards the lens. Moving away
+    from the lens passes the concentric limit, where there is no mode;
+  - |split| against the large-mirror tilt is one quadratic bowl, about 10 ppm of the FSR per µrad²;
+  - its minimum follows the short arm: mirror phi ≈ −1.08 × arm phi, mirror theta ≈ +1.08 × arm theta;
+  - with the mirror re-tilted, the axis follows the arm about 1:1, so the drift changes only ~0.13 µm per
+    µrad of arm rotation.
+
+**Example** `alignment/run_stage_alignment_sim.py` (the user's procedure). Outer = short arm (phi, theta),
+target = drift (dy, dz) → (0, 0). Inner = large mirror (phi, theta), target = least |split|. Hidden stage
+tilt (150, −80) µrad, 1 cm of travel. Noise: split 2 ppm, spot 1 µm per capture, landing error 0.2 µrad.
+
+| outer target | axis vs stage at the end (3 seeds) | captures |
+|---|---|---|
+| vector (steering) | 13, 17, 11 µrad (start 170) | 389, 400, 297 |
+| scalar \|drift\| | 106 µrad (seed 1), stalls | 297 |
+
+The scalar search stalls because a 40 µrad arm step changes |drift| by ~5 µm, about the scatter between
+inner runs. On a linear test model (`test_vector_target_steering_beats_scalar`), steering used 52–120
+captures against 115–159.
+
+**What limits the accuracy: the large mirror's landing.** 1 µrad of large-mirror tilt turns the optical axis
+by ~46 µrad. The tilt moves the mirror's centre of curvature sideways, and the point the long-arm axis pivots
+about is only ~4 mm away from it. The drift is therefore ~45× more sensitive to the large mirror (~6 µm/µrad)
+than to the short arm. The inner level ends a few tenths of a µrad from the symmetric point (landing error,
+3σ minimum step, the flat bottom of |split|), so every trial's drift scatters by a few µm. The fit averages
+that. Less splitting noise (0.5 ppm) did not improve the result, so the landing sets the limit. In the lab:
+- the large mirror's repeatability matters more than the short arm's;
+- more travel gives proportionally more drift signal;
+- more outer trials average more.
+
+**cavity_design bug, fixed locally (cavity-design repo, not committed).** `find_central_line_standing_wave`
+used `optimize.root(...).success`. hybr reports "not making good progress" when it already sits on the root
+(residual 1e-17 m). The trace then counted as failed: the overlap was NaN and the mode was "lost", at most
+points once the short arm is turned. The fix also accepts a residual below 1e-12 m.
+
 ### Also needed
 - Abort that returns (ramped) to the start point or the best point.
 - A "signal lost" policy: a small spiral search, or stop.
@@ -485,6 +565,9 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   - `targets.py`: `MarkerTarget` (section 3.d), marker lookup from a marker file or `device_state.json`.
   - `nested.py`: `NestedLoop` / `Level` (section 3.e): outer axes stepped, inner axes re-optimized at
     every step, any depth, with a learned d(inner*)/d(outer) predictor; tests in `test_nested.py`.
+    Levels can measure through a procedure, and vector targets are steered at (section 3.f).
+  - `procedures.py`: `move_and_compare` (section 3.f). `targets.py` also has `VectorTarget`.
+  - `run_stage_alignment_sim.py`: align the optical axis to the large mirror's stage (section 3.f).
   - `metrics.py` also gives `sensor_x/_y` (centre in the markers' units) when the sensor geometry is
     known; `evaluate_session` takes it from the session's `camera` block.
 - Axis names follow cavity_design (optical axis = x): simulated axes `sim_mirror_phi` (end mirror,
@@ -619,6 +702,9 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
 ### Not done yet
 - **Nested loop**: a symmetry metric that works in the
   lab (section 3.e, known limits); a first nested run on real axes.
+- **Stage alignment in the lab** (section 3.f): a driver for the large mirror's stage, a spot measurement
+  (the camera behind the large mirror), and a check of the large mirror's repeatability, which sets the
+  accuracy.
 - **M-LOOP backend**: not written. M-LOOP is not installed here and pulls heavy dependencies; the
   stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
 - **Lab measurement function** for the loop: wrap `LiveCapture` as `measure()` (wait for the axes'

@@ -16,6 +16,8 @@ element perturbations it builds the perturbed cavity and returns:
                the camera sees this as a centroid shift in beam widths.
 - valid        False when the perturbed cavity has no stable mode (NaN): the
                light then does not resonate at all.
+- spot_y/_z    where the central line meets the end mirror (spot_element), relative
+               to that mirror's centre, in um: the mode's position on the mirror.
 
 `AnalyticPhysics` is a dependency-free stand-in (quadratic coupling loss,
 linear astigmatism) for tests and for machines without cavity-design.
@@ -50,6 +52,8 @@ class ModeState:
     tilt_y: float = 0.0
     tilt_z: float = 0.0
     valid: bool = True
+    spot_y: float = 0.0
+    spot_z: float = 0.0
 
     @property
     def split(self):
@@ -67,7 +71,9 @@ INVALID = ModeState(0.0, float('nan'), float('nan'), float('nan'), 0.0, 0.0, Fal
 
 @dataclass(frozen=True)
 class DoF:
-    """How one motor axis perturbs the cavity: element, parameter, SI per axis unit."""
+    """How one motor axis perturbs the cavity: element, parameter, SI per axis unit.
+    A dofs entry may also be a tuple of DoFs: one axis that moves several parameters
+    at once (a stage that is not parallel to x moves x, y and z)."""
     element_index: int
     parameter: str          # 'x', 'y', 'phi', ... as cavity_design names them
     si_per_unit: float      # e.g. 1e-6 rad per volt for a piezo tilt
@@ -98,6 +104,44 @@ def example_cavity(end_mirror_shift=0.0, paraxial=True):
         use_paraxial_ray_tracing=paraxial)
 
 
+def short_arm_cavity(end_mirror_shift=0.0, paraxial=True):
+    """example_cavity with the small mirror and the aspheric lens as one rigid body
+    (an OpticalSystem, element 0): phi/theta on element 0 turn the whole short arm
+    about its mechanical centre. Elements: [short arm, DUMMY_LENS, end mirror]."""
+    from cavity_design import (Cavity, OpticalSystem, SphericalMirror, LASER_OPTIK_MIRROR,
+                               EKSMA_LENS_20MM_ASPHERIC, DUMMY_LENS)
+    arm = OpticalSystem(elements=[LASER_OPTIK_MIRROR.to_position(np.array([-0.005, 0.0, 0.0])),
+                                  EKSMA_LENS_20MM_ASPHERIC.to_position(np.array([0.017623230771841976, 0.0, 0.0]))],
+                        use_paraxial_ray_tracing=paraxial, name='Short arm')
+    return Cavity(
+        elements=[
+            arm,
+            DUMMY_LENS.to_position(np.array([0.03305723077184197, 0.0, 0.0])),
+            SphericalMirror(name='End mirror', radius=0.2, outwards_normal=np.array([1.0, 0.0, 0.0]),
+                            center=np.array([0.4511688875799871 - end_mirror_shift, 0.0, 0.0]), curvature_sign=-1,
+                            diameter=0.0254,
+                            material_properties=LASER_OPTIK_MIRROR.material_properties),
+        ],
+        standing_wave=True, lambda_0_laser=1.064e-06, t_is_trivial=True, p_is_trivial=True,
+        use_paraxial_ray_tracing=paraxial)
+
+
+def stage_dofs(tilt_y_urad=0.0, tilt_z_urad=0.0):
+    """DoFs for short_arm_cavity: the short arm's and the end mirror's tilts (urad),
+    and a linear stage under the end mirror (mm along the optical axis). The stage's
+    mechanical axis is tilted from the optical axis by (tilt_y, tilt_z) urad: one mm
+    of stage also moves the mirror tilt_y nm across in y and tilt_z nm in z. Move the
+    stage towards the lens (negative): away from it the cavity passes the concentric
+    limit and has no mode."""
+    return {
+        'sim_arm_phi': DoF(0, 'phi', 1e-6),
+        'sim_arm_theta': DoF(0, 'theta', 1e-6),
+        'sim_mirror_phi': DoF(2, 'phi', 1e-6),
+        'sim_mirror_theta': DoF(2, 'theta', 1e-6),
+        'sim_stage': (DoF(2, 'x', 1e-3), DoF(2, 'y', tilt_y_urad * 1e-9), DoF(2, 'z', tilt_z_urad * 1e-9)),
+    }
+
+
 # Example DoF map for the simulated axes in motion/axes_config.py. The example
 # cavity is near the stability edge: ~10 urad of end-mirror tilt or ~10 um of
 # lens travel already costs a few percent of coupling, and ~3x that loses the mode.
@@ -122,7 +166,7 @@ def _gouy_s(cavity):
 class CavityPhysics:
     """Mode state of a cavity whose elements are perturbed by motor axes."""
 
-    def __init__(self, cavity_factory=None, dofs=None, aligned=None, cache_decimals=6):
+    def __init__(self, cavity_factory=None, dofs=None, aligned=None, cache_decimals=6, spot_element=-1):
         repo = str(_REPO)
         if repo not in sys.path:
             sys.path.insert(0, repo)
@@ -139,6 +183,7 @@ class CavityPhysics:
         self._na = float(np.mean(mp.NA))
         self._cache = {}
         self._decimals = cache_decimals
+        self.spot_element = spot_element
 
     def evaluate(self, positions):
         """positions: {axis name: position in axis units}. Missing axes = aligned."""
@@ -158,7 +203,21 @@ class CavityPhysics:
         cd = self._cd
         return [cd.PerturbationPointer(element_index=d.element_index, parameter_name=d.parameter,
                                        perturbation_value=offsets[n] * d.si_per_unit)
-                for n, d in self.dofs.items() if offsets[n] != 0]
+                for n, ds in self.dofs.items() if offsets[n] != 0
+                for d in (ds if isinstance(ds, tuple) else (ds,)) if d.si_per_unit != 0]
+
+    def spot(self, cavity):
+        """(y, z) in um where the central line meets element spot_element, relative to
+        its centre; (nan, nan) when no arm ends there."""
+        el = cavity.elements[self.spot_element]
+        surfaces = getattr(el, '_surfaces', [el])
+        for arm in cavity.arms:
+            if arm.surface_1 is surfaces[0] or arm.surface_1 is surfaces[-1]:
+                r = arm.central_line
+                hit = np.asarray(r.origin, dtype=float) + np.asarray(r.k_vector, dtype=float) * float(r.length)
+                d = (hit - np.asarray(arm.surface_1.center, dtype=float)) * 1e6
+                return float(d[1]), float(d[2])
+        return float('nan'), float('nan')
 
     def perturbed_cavity(self, positions):
         """The cavity_design Cavity for these motor positions (the reference when aligned),
@@ -173,7 +232,8 @@ class CavityPhysics:
         cd = self._cd
         pointers = self._pointers(offsets)
         if not pointers:
-            return ModeState(1.0, float(self._s0[0]), float(self._s0[1]), 1.0, 0.0, 0.0, True)
+            sy, sz = self.spot(self.reference)
+            return ModeState(1.0, float(self._s0[0]), float(self._s0[1]), 1.0, 0.0, 0.0, True, sy, sz)
         with np.errstate(all='ignore'):
             try:
                 pc = cd.perturb_cavity(self.reference, pointers)
@@ -182,6 +242,7 @@ class CavityPhysics:
                 mp = pc.arms[0].mode_parameters
                 w0 = np.asarray(mp.w_0, dtype=float)
                 k = np.asarray(mp.k_vector, dtype=float)
+                sy, sz = self.spot(pc)
             except Exception:
                 return INVALID
         if not (np.isfinite(ov) and np.all(np.isfinite(s)) and np.all(np.isfinite(w0))):
@@ -190,7 +251,7 @@ class CavityPhysics:
         return ModeState(coupling=float(abs(ov) ** 2), s_x=float(s[0]), s_y=float(s[1]),
                          ellipticity=float(w0.min() / w0.max()),
                          tilt_y=float(dk[1] / self._na), tilt_z=float(dk[2] / self._na),
-                         valid=True)
+                         valid=True, spot_y=sy, spot_z=sz)
 
 
 class AnalyticPhysics:
@@ -287,6 +348,15 @@ def _self_test():
         assert not p.evaluate({**EXAMPLE_ALIGNED, 'sim_mirror_phi': 37.5 + 100}).valid
         print(f'CavityPhysics: aligned s = {z.s_x:.4f}; 10 urad tilt -> coupling {t.coupling:.4f}, '
               f'split {t.split:+.5f} FSR, tilt {t.tilt_y:+.3f} NA')
+        sa = CavityPhysics(cavity_factory=short_arm_cavity, dofs=stage_dofs(100.0, 0.0),
+                           aligned={n: 0.0 for n in stage_dofs()})
+        here, moved = sa.evaluate({}), sa.evaluate({'sim_stage': -10.0})
+        assert here.valid and moved.valid and abs(here.spot_y) < 1e-6, (here, moved)
+        assert 5 < moved.spot_y - here.spot_y < 30, moved      # 100 urad off the stage axis, 1 cm: ~13 um
+        turned = sa.evaluate({'sim_arm_phi': 10.0})
+        assert turned.valid and abs(turned.spot_y) > 20, turned
+        print(f'short arm: stage 100 urad off, 1 cm -> spot drift {moved.spot_y - here.spot_y:.1f} um; '
+              f'arm turned 10 urad -> spot {turned.spot_y:.1f} um')
     print('cavity_physics self-test OK')
 
 

@@ -22,8 +22,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from alignment.loop import AlignmentLoop, Objective  # noqa: E402
-from alignment.metrics import Metric  # noqa: E402
+from alignment.metrics import CaptureMetrics, Metric  # noqa: E402
 from alignment.nested import Level, NestedLoop  # noqa: E402
+from alignment.procedures import move_and_compare  # noqa: E402
+from alignment.targets import VectorTarget  # noqa: E402
 from alignment.run_alignment_sim import FakeClock, build, make_measure  # noqa: E402
 from simulation.cavity_physics import AnalyticPhysics, ridge_curvature  # noqa: E402
 
@@ -178,6 +180,107 @@ def test_three_levels_smoke():
     assert {h['level'] for h in loop.history} >= {0, 1, 2}, {h['level'] for h in loop.history}
     pos = {n: a.commanded for n, a in axes.items()}
     assert all(abs(pos[n] - summary['best'][n]) < 1e-9 for n in pos)
+
+
+LENS_X = 'sim_lens_x'
+HIDDEN = {PHI: 3.0, THETA: -2.0}               # where the vector (vx, vy) is zero, offsets from aligned
+JAC = np.array([[2.0, 0.5], [-0.3, 1.5]])       # vector units per axis unit
+
+
+def quick_case(seed=1):
+    """Analytic physics, truth-only captures (no scope): intensity = coupling, and a
+    vector (vx, vy) linear in the tilts with its zero at HIDDEN."""
+    clock = FakeClock()
+    physics = AnalyticPhysics()
+    axes, setup = build(clock, seed=seed, physics=physics)
+    rng = np.random.default_rng(seed)
+
+    def measure():
+        clock.sleep(1.0)
+        st = setup.mode_state()
+        d = np.array([setup.true_positions()[n] - physics.aligned[n] - HIDDEN[n] for n in (PHI, THETA)])
+        v = JAC @ d + rng.normal(0, 0.05, 2)
+        return CaptureMetrics(metrics={
+            'intensity': Metric('intensity', st.coupling + rng.normal(0, 0.002), 0.002, 1, True),
+            'vx': Metric('vx', float(v[0]), 0.05, 1, True), 'vy': Metric('vy', float(v[1]), 0.05, 1, True),
+            'vnorm': Metric('vnorm', float(np.hypot(*v)), 0.05, 1, True)})
+    return clock, axes, setup, measure
+
+
+def test_procedure_moves_back_and_counts():
+    """A procedure level: every axis it moves comes back; its captures count and are logged;
+    its noise floor comes from procedure calls."""
+    clock, axes, setup, measure = quick_case()
+    home = axes[LENS_X].commanded
+    calls = []
+    procedure = move_and_compare(LENS_X, 30.0, metrics=('intensity',))
+
+    def counted(run):
+        calls.append(len(run._loop.history))
+        return procedure(run)
+    loop = NestedLoop(axes, measure, [Level([PHI], Objective('intensity'), measure=counted),
+                                      Level([LENS_Y], Objective('intensity'))],
+                      max_evaluations=60, noise_repeats=3, **QUIET)
+    summary = loop.run()
+    assert axes[LENS_X].commanded == home and summary['best'][LENS_X] == home
+    noise = [h for h in loop.history if h['kind'].startswith('noise')]
+    assert [h['kind'] for h in noise[:6]] == ['noise before', f'noise {LENS_X} moved'] * 3, noise
+    moved = [h for h in loop.history if h['kind'].endswith(f'{LENS_X} moved')]
+    assert moved and all(h['level'] == 0 and abs(h['positions'][LENS_X] - home - 30.0) < 1e-9 for h in moved)
+    assert len(moved) == len(calls) and summary['evaluations'] <= 60
+
+
+def test_stop_inside_procedure_moves_back():
+    clock, axes, setup, measure = quick_case()
+    home = axes[LENS_X].commanded
+    holder = {}
+
+    def procedure(run):
+        before = run.capture('before')
+        run.move_by({LENS_X: 30.0})
+        if len(holder['loop'].history) > 20:
+            holder['loop'].stop()
+        run.capture('moved')                         # raises: stopped
+        return before
+    loop = NestedLoop(axes, measure, [Level([PHI], Objective('intensity'), measure=procedure),
+                                      Level([LENS_Y], Objective('intensity'))], max_evaluations=100, **QUIET)
+    holder['loop'] = loop
+    summary = loop.run()
+    assert summary['aborted'] and axes[LENS_X].commanded == home, (summary, axes[LENS_X].commanded)
+    pos = {n: a.commanded for n, a in axes.items()}
+    assert all(abs(pos[n] - summary['best'][n]) < 1e-9 for n in pos)
+
+
+def test_vector_target_steering_beats_scalar():
+    """A 2-vector linear in two outer axes: steering at it (VectorTarget) gets to the zero
+    in fewer captures than minimizing its length one axis at a time."""
+    runs = {}
+    for name, target in (('vector', VectorTarget(('vx', 'vy'), (0.0, 0.0), tolerance=0.2)),
+                         ('scalar', Objective('vnorm', maximize=False, good_enough=0.2, confirm_repeats=2))):
+        clock, axes, setup, measure = quick_case()
+        loop = NestedLoop(axes, measure, [Level([PHI, THETA], target), Level([LENS_Y], Objective('intensity'))],
+                          max_evaluations=300, **QUIET)
+        summary = loop.run()
+        d = np.array([setup.true_positions()[n] - 37.5 - HIDDEN[n] for n in (PHI, THETA)])
+        runs[name] = (float(np.hypot(*(JAC @ d))), summary['evaluations'], summary['target_reached'])
+    assert runs['vector'][0] < 0.3 and runs['vector'][2], runs
+    assert runs['vector'][1] < runs['scalar'][1], runs
+
+
+def test_stage_alignment_on_cavity_design():
+    """The user's example (alignment/run_stage_alignment_sim.py): turn the short arm until
+    moving the large mirror's stage no longer moves the mode on it. Skipped without
+    cavity-design."""
+    try:
+        from alignment import run_stage_alignment_sim as stage
+        stage.make_physics()
+    except Exception as e:
+        print(f'skipped: cavity-design not reachable ({e})')
+        return
+    r = stage.run('vector', seed=2, print_fn=None)
+    start, end = np.hypot(*r['angle_start']), np.hypot(*r['angle_end'])
+    assert start > 150 and end < 20, (r['angle_start'], r['angle_end'])
+    assert abs(r['stage_end_mm']) < 0.01 and r['split_end_ppm'] < 20, r
 
 
 def main():

@@ -68,15 +68,80 @@ def find_marker(markers, name):
 
 
 @dataclass
-class MarkerTarget:
-    x: float                          # sensor px (uncropped, unbinned), as kalishlot stores markers
-    y: float
-    tolerance_px: float = 3.0
+class VectorTarget:
+    """Bring a measured vector (several metrics) to a goal, e.g. the drift of the mode
+    when the large mirror's stage moves to (0, 0):
+
+        VectorTarget(('drift_spot_y', 'drift_spot_z'), (0.0, 0.0), tolerance=2.0, unit='um')
+
+    The score is minus the distance to the goal. Because the target also reports the
+    measured vector (position) and the goal, the loops steer at it with a Jacobian
+    (AlignmentLoop, and the outer levels of alignment/nested.py) instead of only
+    stepping one axis at a time."""
+    metrics: tuple
+    goal: tuple
+    tolerance: float = 1.0
     confirm_repeats: int = 2          # extra captures in place before "reached" is believed
     constraints: tuple = ()
     label: str = ''
-    metric_x: str = 'sensor_x'
-    metric_y: str = 'sensor_y'
+    unit: str = ''
+
+    @property
+    def metric(self):                 # for the loop's printouts
+        unit = f' [{self.unit}]' if self.unit else ''
+        return f'distance of ({", ".join(self.metrics)}) to {self.label or tuple(self.goal)}{unit}'
+
+    def position(self, ev):
+        """The measured vector of an Evaluation, or None when invalid."""
+        q = tuple(ev.metrics.get(m) for m in self.metrics)
+        return None if any(v is None for v in q) else q
+
+    def distance(self, *q):
+        return math.sqrt(sum((a - b) ** 2 for a, b in zip(q, self.goal)))
+
+    def evaluate(self, cm):
+        ms = [cm.metrics.get(m) for m in self.metrics]
+        bad = next((m for m in ms if m is None or not m.valid), False)
+        if bad is not False:
+            return None, False, f'{self.metrics} invalid: {bad.reason if bad else "missing"}'
+        score = -self.distance(*(m.value for m in ms))
+        for name, op, thr in self.constraints:
+            c = cm.metrics.get(name)
+            if c is None or not c.valid:
+                return score, False, f'constraint {name} invalid'
+            if not (c.value >= thr if op == '>=' else c.value <= thr):
+                return score, False, f'constraint {name} {op} {thr} violated ({c.value:.4g})'
+        return score, True, ''
+
+    def value_of(self, score):
+        return -score
+
+    def mean_distance(self, evaluations):
+        """Distance of the mean measured vector over evaluations taken at one point."""
+        pts = [q for q in (self.position(e) for e in evaluations) if q is not None]
+        if not pts:
+            return math.inf
+        return self.distance(*(sum(p[i] for p in pts) / len(pts) for i in range(len(self.metrics))))
+
+    def reached(self, evaluations):
+        """True when every evaluation is feasible and the mean vector is within tolerance."""
+        return (bool(evaluations) and all(e.feasible for e in evaluations)
+                and self.mean_distance(evaluations) <= self.tolerance)
+
+
+class MarkerTarget(VectorTarget):
+    """VectorTarget of the mode's fit centre (sensor_x, sensor_y) to a marker, in px."""
+
+    def __init__(self, x, y, tolerance_px=3.0, confirm_repeats=2, constraints=(), label='',
+                 metric_x='sensor_x', metric_y='sensor_y'):
+        super().__init__((metric_x, metric_y), (float(x), float(y)), tolerance_px, confirm_repeats,
+                         constraints, label, 'px')
+
+    x = property(lambda self: self.goal[0])
+    y = property(lambda self: self.goal[1])
+    tolerance_px = property(lambda self: self.tolerance)
+    metric_x = property(lambda self: self.metrics[0])
+    metric_y = property(lambda self: self.metrics[1])
 
     @classmethod
     def from_markers(cls, path, name, device=None, **kw):
@@ -86,42 +151,3 @@ class MarkerTarget:
     @property
     def metric(self):                 # for the loop's printouts
         return f'distance to marker {self.label or (round(self.x), round(self.y))} [px]'
-
-    @property
-    def goal(self):                   # for the loop's Jacobian steering
-        return self.x, self.y
-
-    def position(self, ev):
-        """Measured (x, y) of an Evaluation, or None when invalid."""
-        x, y = ev.metrics.get(self.metric_x), ev.metrics.get(self.metric_y)
-        return None if x is None or y is None else (x, y)
-
-    def distance(self, x, y):
-        return math.hypot(x - self.x, y - self.y)
-
-    def evaluate(self, cm):
-        mx, my = cm.metrics.get(self.metric_x), cm.metrics.get(self.metric_y)
-        if mx is None or my is None or not (mx.valid and my.valid):
-            bad = mx if (mx is None or not mx.valid) else my
-            return None, False, f'mode position invalid: {bad.reason if bad else "missing"}'
-        score = -self.distance(mx.value, my.value)
-        for name, op, thr in self.constraints:
-            c = cm.metrics.get(name)
-            if c is None or not c.valid:
-                return score, False, f'constraint {name} invalid'
-            if not (c.value >= thr if op == '>=' else c.value <= thr):
-                return score, False, f'constraint {name} {op} {thr} violated ({c.value:.4g})'
-        return score, True, ''
-
-    def mean_distance(self, evaluations):
-        """Distance of the mean measured centre over evaluations taken at one point."""
-        pts = [(e.metrics.get(self.metric_x), e.metrics.get(self.metric_y)) for e in evaluations]
-        pts = [(x, y) for x, y in pts if x is not None and y is not None]
-        if not pts:
-            return math.inf
-        return self.distance(sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
-
-    def reached(self, evaluations):
-        """True when every evaluation is feasible and the mean centre is within tolerance."""
-        return (bool(evaluations) and all(e.feasible for e in evaluations)
-                and self.mean_distance(evaluations) <= self.tolerance_px)

@@ -61,6 +61,21 @@ the level's noise (margin, jump confirmation) is the larger of the two. It
 costs one more solve of the levels below per level, once per run. A single
 difference is a rough estimate; it only ever raises the margin.
 
+Procedure targets (section 3.f). Level(..., measure=procedure): the level's value
+at a point comes from procedure(run) -> CaptureMetrics instead of one capture,
+e.g. alignment/procedures.py: move_and_compare (capture, move the large mirror's
+stage, capture, move back: the drift of the mode on the mirror). run.capture()
+counts against the shared budget; every axis the procedure moved is put back
+when it ends, also on stop() or an error. Its noise floor comes from
+noise_repeats procedure calls.
+
+Vector targets (alignment/targets.py: VectorTarget, e.g. the drift (dy, dz) -> 0).
+A level whose objective reports a position and a goal is steered first: probe
+each axis, fit vector = a + J x over all the level's trials, move to where the
+fit meets the goal, repeat; then keep the fitted zero (_steer). A fit over many
+trials averages the scatter of the levels below, which comparing two single
+trials does not. If the goal is still not reached, the coordinate search goes on.
+
 Budget, stop() and abort are shared by all levels: one evaluation budget, one
 history (every capture, tagged with the level that asked for it), and the best
 point is the full position (all levels' axes). Every capture waits for ALL
@@ -87,17 +102,51 @@ class Level:
     probe_steps: dict = field(default_factory=dict)  # small first trial per axis, to learn the predictor
                                                      # before the (larger) steps; see the module docstring
     max_evaluations: int | None = None           # per optimization of this level (captures, levels below included)
+    measure: object = None                       # procedure(run) -> CaptureMetrics, instead of one capture;
+                                                 # see "Procedure targets" in the module docstring
 
 
 class _Stopped(Exception):
     pass
 
 
+class _Run:
+    """What a procedure gets: capture, move (through the safe axes), positions.
+    Every axis it moves is put back by the loop when the procedure ends."""
+
+    def __init__(self, loop, level, kind):
+        self._loop, self._level, self._kind = loop, level, kind
+        self.home = {}                              # axis -> position before the procedure moved it
+
+    @property
+    def axes(self):
+        return self._loop.axes
+
+    def positions(self):
+        return self._loop.positions()
+
+    def capture(self, label=''):
+        """Settle every axis, capture once (counted in the shared budget). CaptureMetrics."""
+        self._loop._check_running()
+        return self._loop._capture(self._level, f'{self._kind} {label}'.strip())
+
+    def move_to(self, targets):
+        for n in targets:
+            self.home.setdefault(n, _pos(self._loop.axes[n]))
+        self._loop._move_to(targets)
+
+    def move_by(self, deltas):
+        self.move_to({n: _pos(self._loop.axes[n]) + d for n, d in deltas.items()})
+
+    def move_back(self):
+        self._loop._move_to(self.home)
+
+
 class NestedLoop:
     def __init__(self, axes, measure, levels, outer_repeats=1, accept_sigmas=1.0, min_step_sigmas=3.0,
                  noise_repeats=4, remeasure_every=6, max_evaluations=400, confirm_jump=10.0,
                  predictor=True, predictor_window=10, inner_stall_passes=1, profile_noise=True,
-                 on_abort='best', log_dir=None,
+                 steer=True, on_abort='best', log_dir=None,
                  who='nested alignment', print_fn=print):
         self.axes = dict(axes)
         self.measure_fn = measure
@@ -123,6 +172,10 @@ class NestedLoop:
         self.inner_stall_passes = inner_stall_passes   # warm inner runs: one failed pass is enough
         self.profile_noise = profile_noise             # also count the scatter of the levels below
         self.profile_sigma = {}                        # level -> estimated profile noise
+        self.steer = steer                             # Jacobian steering for vector targets
+        self._reached = {}                             # level -> its target reached (this optimization)
+        self._noise_points = {}                        # level -> vector-target positions at the noise floor
+        self._points = {}                              # level -> every Evaluation of this optimization
         self.on_abort = on_abort
         self.who = who
         self.print = print_fn or (lambda *a, **k: None)
@@ -203,18 +256,37 @@ class NestedLoop:
             return False
         return True
 
+    def _call_procedure(self, k, kind):
+        """Run level k's procedure here; every axis it moved goes back, also on
+        stop or error. Returns its CaptureMetrics."""
+        self._check_running()
+        run = _Run(self, k, kind)
+        try:
+            cm = self.levels[k].measure(run)
+        finally:
+            run.move_back()
+            self._last_cm = self._last_pos = None      # the last capture was not taken here
+        return cm
+
+    def _measure_level(self, k, kind):
+        if self.levels[k].measure is not None:
+            return self._call_procedure(k, kind)
+        self._check_running()
+        return self._capture(k, kind)
+
     def _score_here(self, k, kind, extra=None):
         """Level k's objective at the current position: the last capture if it was
-        taken here, plus outer_repeats (or `extra`) more. Returns an Evaluation."""
+        taken here (not for a procedure level), plus outer_repeats (or `extra`)
+        more. Returns an Evaluation."""
         obj = self.levels[k].objective
         pos = self.positions()
         cms = []
-        if self._last_pos is not None and all(abs(self._last_pos[n] - pos[n]) < 1e-12 for n in pos):
+        if (self.levels[k].measure is None and self._last_pos is not None
+                and all(abs(self._last_pos[n] - pos[n]) < 1e-12 for n in pos)):
             cms.append(self._last_cm)
         want = len(cms) + (self.outer_repeats if extra is None else extra)
         while len(cms) < max(want, 1):
-            self._check_running()
-            cms.append(self._capture(k, kind))
+            cms.append(self._measure_level(k, kind))
         results = [obj.evaluate(cm) for cm in cms]
         scores = [r[0] for r in results]
         metrics = {}
@@ -250,7 +322,7 @@ class NestedLoop:
         if lv.max_evaluations is not None:
             budget = min(budget, lv.max_evaluations)
         steps = {n: self._steps[n] for n in names}
-        loop = AlignmentLoop({n: self.axes[n] for n in names}, lambda: self._capture(k, 'inner'),
+        loop = AlignmentLoop({n: self.axes[n] for n in names}, lambda: self._measure_level(k, 'inner'),
                              lv.objective, tiers=[names], steps=steps,
                              accept_sigmas=self.accept_sigmas, min_step_sigmas=self.min_step_sigmas,
                              max_evaluations=max(budget, 1), on_abort='stay', known_noise=self.noise[k],
@@ -307,9 +379,11 @@ class NestedLoop:
         Y = np.array([b for _, b in self._pairs[k]])
         K[:] = np.linalg.lstsq(D, Y, rcond=None)[0].T
 
-    def _trial(self, k, delta, kind='trial'):
+    def _trial(self, k, delta, kind='trial', adopt=False):
         """Move level k's axes by delta (predicted moves below), optimize below,
-        score level k. Keep it if better; else return to the incumbent."""
+        score level k. Keep it if better (or `adopt`: keep it whatever it
+        measured, when a fit over many trials says it is better); else return
+        to the incumbent."""
         inc = self.best_at[k]
         x0 = dict(inc.positions)
         target = {n: x0[n] + dv for n, dv in delta.items()}
@@ -326,8 +400,9 @@ class NestedLoop:
             return None, False
         x1 = self.positions()
         ev = self._confirmed(k, self._score_here(k, kind))
+        self._points.setdefault(k, []).append(ev)
         self._learn(k, delta, x0, x1)
-        accepted = ev.better_than(inc, self.margin(k))
+        accepted = ev.better_than(inc, self.margin(k)) or (adopt and ev.score is not None)
         K = self.K.get(k)
         self.profile[k].append({'delta': dict(delta), 'kind': kind, 'score': ev.score, 'feasible': ev.feasible,
                                 'accepted': accepted, 'evaluations': len(self.history) - n_before,
@@ -337,6 +412,7 @@ class NestedLoop:
         self._trials_since[k] += 1
         if accepted:
             self.best_at[k] = ev
+            self._check_reached(k)
             return ev, True
         self._move_to(x0)
         if self._trials_since[k] >= self.remeasure_every:
@@ -371,6 +447,151 @@ class NestedLoop:
         ev = self._score_here(k, 'remeasure', extra=1 + self.outer_repeats)
         if ev.score is not None:
             self.best_at[k] = ev
+
+    def _check_reached(self, k):
+        """A target objective (good_enough, VectorTarget, ...) whose incumbent looks
+        reached is measured confirm_repeats more times in place; if the mean still
+        is, level k stops there."""
+        obj = self.levels[k].objective
+        inc = self.best_at[k]
+        if not hasattr(obj, 'reached') or inc.score is None or not obj.reached([inc]):
+            return False
+        n = getattr(obj, 'confirm_repeats', 0)
+        if n:
+            again = self._score_here(k, 'confirm target', extra=n)
+            if again.score is None or not obj.reached([inc] + [again] * n):
+                return False
+            n1, n2 = getattr(inc, 'n', 1), getattr(again, 'n', 1)
+            again.score = (inc.score * n1 + again.score * n2) / (n1 + n2)
+            again.feasible = inc.feasible and again.feasible
+            self.best_at[k] = again
+        self._reached[k] = True
+        self.print(f'{"  " * k}  level {k}: target reached ({self._shown(k, self.best_at[k].score)})')
+        return True
+
+    def _shown(self, k, score):
+        """A score as the user reads it (the metric, not its negation)."""
+        if score is None:
+            return 'invalid'
+        return f'{getattr(self.levels[k].objective, "value_of", lambda s: s)(score):.4g}'
+
+    def _position_noise(self, k):
+        """rms scatter of a vector target's position over level k's noise-floor captures."""
+        pts = self._noise_points.get(k) or []
+        if len(pts) < 2:
+            return 0.0
+        mean = [sum(q[i] for q in pts) / len(pts) for i in range(len(pts[0]))]
+        return math.sqrt(sum(sum((a - b) ** 2 for a, b in zip(q, mean)) for q in pts) / (len(pts) - 1))
+
+    def _steer(self, k, probe_doublings=4, max_moves=12, rounds=3):
+        """Steering of level k towards objective.goal, for a measured vector (e.g. the
+        drift (dy, dz)) that is close to linear in the level's axes. Probe each axis
+        (the step doubled until the vector moves by more than 3x its noise; the
+        levels below re-optimized, as in every trial), then repeatedly move to where
+        a straight-line fit over all trials so far meets the goal (_fit_vector),
+        until that point stops moving; then go there and keep it (`adopt`: the fit
+        over all trials is a better judge than one more noisy measurement). Up to
+        `rounds` times, each fit using the trials of the rounds before.
+        Returns True when the target was reached; otherwise the coordinate search
+        goes on from the fitted zero."""
+        obj = self.levels[k].objective
+        names = self._free(self.levels[k].axes)
+        goal = np.array(obj.goal, dtype=float)
+
+        def where(ev):
+            q = obj.position(ev) if ev is not None and ev.score is not None else None
+            return None if q is None else np.array(q, dtype=float)
+        if where(self.best_at[k]) is None or not names:
+            return False
+        noise = max(self._position_noise(k), self.profile_sigma.get(k, 0.0))
+        J = np.zeros((goal.size, len(names)))
+        probes = {}
+        for i, n in enumerate(names):                # how does each axis move the vector?
+            h = self._steps[n]
+            for attempt in range(probe_doublings + 1):
+                base = where(self.best_at[k])
+                ev, _ = self._trial(k, {n: h}, kind='probe')
+                q = where(ev)
+                if q is None:
+                    if attempt == 0:                 # not allowed / lost there: the other side
+                        h = -h
+                        continue
+                    break
+                d = q - base
+                J[:, i] = d / h
+                probes[n] = abs(h)
+                if self._reached.get(k) or np.linalg.norm(d) > 3 * noise:
+                    break
+                h *= 2
+            if self._reached.get(k):
+                return True
+        if not probes or not np.any(J):
+            self.print(f'{"  " * k}  level {k}: steering: the axes do not move {obj.metric} measurably')
+            return False
+        self.print(f'{"  " * k}  level {k}: steering, probed ' + ' '.join(f'{n} ({h:.3g})' for n, h in probes.items()))
+        mins = np.array([self._min_steps[n] for n in names])
+        limit = np.array([8 * probes.get(n, self._steps[n]) for n in names])
+        for _ in range(rounds):
+            last_root = None
+            for _ in range(max_moves):
+                if self._reached.get(k):
+                    return True
+                model = self._fit_vector(k)
+                if model is None:
+                    return False
+                root, _, _ = model
+                dp = root - self._level_x(k, self.best_at[k])
+                dp *= min(1.0, float(np.min(limit / np.maximum(np.abs(dp), 1e-12))))   # trust region
+                settled = last_root is not None and np.all(np.abs(root - last_root) < mins)
+                if len(self._points[k]) >= 2 * (len(names) + 1) and (settled or np.all(np.abs(dp) < mins)):
+                    break                            # enough trials, and the fitted zero stopped moving
+                if np.all(np.abs(dp) < mins):        # already there: one more point at the zero, to average
+                    dp = np.where(np.abs(dp) < mins, mins * np.sign(dp + 1e-300), dp)
+                last_root = root
+                ev, _ = self._trial(k, {n: float(dp[i]) for i, n in enumerate(names)}, kind='steer')
+                if where(ev) is None:                # lost the levels below there: smaller moves
+                    limit = limit / 2
+                self.print(f'{"  " * k}  level {k}: {len(self.history):3d} evals  steering, '
+                           f'{obj.metric} {self._shown(k, self.best_at[k].score)}')
+            if self._reached.get(k):
+                return True
+            model = self._fit_vector(k)              # go to the fitted zero, and keep it
+            if model is None:
+                return False
+            root, at_root, at_incumbent = model
+            dp = root - self._level_x(k, self.best_at[k])
+            if not (np.any(np.abs(dp) >= mins) and at_root + self.margin(k) < at_incumbent):
+                break                                # the incumbent is the fitted zero already
+            self._trial(k, {n: float(dp[i]) for i, n in enumerate(names)}, kind='fitted zero', adopt=True)
+            self.print(f'{"  " * k}  level {k}: at the fitted zero ({at_root:.3g} by the fit), measured '
+                       f'{self._shown(k, self.best_at[k].score)}')
+        return bool(self._reached.get(k))
+
+    def _level_x(self, k, ev):
+        return np.array([ev.positions[n] for n in self._free(self.levels[k].axes)], dtype=float)
+
+    def _fit_vector(self, k):
+        """Straight-line fit, measured vector = a + J x (x: level k's axes), over every
+        trial of this optimization of level k. One trial's vector carries the scatter
+        of the levels below (they never end exactly at their optimum); the fit
+        averages it over all trials. Returns (x where the fit meets the goal, fitted
+        distance there, fitted distance at the incumbent), or None when the trials
+        do not span the axes."""
+        obj = self.levels[k].objective
+        names = self._free(self.levels[k].axes)
+        pts = [(self._level_x(k, ev), np.array(obj.position(ev), dtype=float)) for ev in self._points.get(k, [])
+               if ev.score is not None and obj.position(ev) is not None]
+        if len(pts) < len(names) + 1:
+            return None
+        X = np.array([np.concatenate(([1.0], x)) for x, _ in pts])
+        if np.linalg.matrix_rank(X) < len(names) + 1:
+            return None
+        B = np.linalg.lstsq(X, np.array([q for _, q in pts]), rcond=None)[0]
+        a, J = B[0], B[1:].T
+        goal = np.array(obj.goal, dtype=float)
+        root = np.linalg.lstsq(J, goal - a, rcond=None)[0]
+        x_inc = self._level_x(k, self.best_at[k])
+        return root, float(np.linalg.norm(a + J @ root - goal)), float(np.linalg.norm(a + J @ x_inc - goal))
 
     def _estimate_profile_noise(self, k):
         """Solve the levels below again at the same level-k position, from a start
@@ -409,9 +630,14 @@ class NestedLoop:
         self._optimize(k + 1)                     # the levels below, here
         self.best_at[k] = self._score_here(k, 'start')
         self._trials_since[k] = 0
+        self._reached[k] = False
+        self._points[k] = [self.best_at[k]]
         if self.best_at[k].score is None:
             raise RuntimeError(f'signal lost at level {k}: {self.best_at[k].reason}')
-        self.print(f'{ind}level {k} ({", ".join(names)}): start {self.best_at[k].score:.4g}')
+        obj = self.levels[k].objective
+        self.print(f'{ind}level {k} ({", ".join(names)}): start {obj.metric} {self._shown(k, self.best_at[k].score)}')
+        if self._check_reached(k):
+            return
         if self.profile_noise and k not in self.profile_sigma:
             self._estimate_profile_noise(k)
         for n in names:                           # learn the predictor with small steps first
@@ -420,10 +646,13 @@ class NestedLoop:
                 ev, ok = self._trial(k, {n: h}, kind='probe')
                 if not ok and (ev is None or ev.score is None):
                     self._trial(k, {n: -h}, kind='probe')
+        steered = False
+        if self.steer and hasattr(obj, 'position') and hasattr(obj, 'goal') and not self._reached[k]:
+            steered = self._steer(k)
         stall = 0
         n0 = len(self.history)
         cap = self.levels[k].max_evaluations
-        while stall < 2 and names:
+        while stall < 2 and names and not self._reached[k] and not steered:
             if all(self._steps[n] < self._min_steps[n] for n in names):
                 break
             if cap is not None and len(self.history) - n0 >= cap:
@@ -432,7 +661,7 @@ class NestedLoop:
             grad = {}
             for n in names:
                 step = self._steps[n]
-                if step < self._min_steps[n]:
+                if step < self._min_steps[n] or self._reached[k]:
                     continue
                 f0 = self.best_at[k].score
                 sides = {}
@@ -457,7 +686,7 @@ class NestedLoop:
                                     self._steps[n] = max(abs(off), self._min_steps[n] * 1.01)
                                     continue
                     self._steps[n] *= 0.5
-            if len(grad) >= 2:
+            if len(grad) >= 2 and not self._reached[k]:
                 norm = math.sqrt(sum((g * self._steps[n]) ** 2 for n, g in grad.items()))
                 if norm > 0:
                     delta = {n: 1.5 * self._steps[n] * (g * self._steps[n]) / norm for n, g in grad.items()}
@@ -465,21 +694,34 @@ class NestedLoop:
                     improved |= ok
             stall = 0 if improved else stall + 1
             b = self.best_at[k]
-            self.print(f'{ind}  level {k}: {len(self.history):3d} evals  best {b.score:.4g}  steps '
+            self.print(f'{ind}  level {k}: {len(self.history):3d} evals  best {self._shown(k, b.score)}  steps '
                        + ' '.join(f'{n}={self._steps[n]:.3g}' for n in names))
         self._move_to(self.best_at[k].positions)
 
     # ------------------------------------------------------------------ run
     def _noise_floor(self):
-        cms = [self._capture(None, 'noise') for _ in range(self.noise_repeats)]
+        """noise_repeats captures in place, shared by the levels that use one capture;
+        a procedure level runs its procedure noise_repeats times instead."""
+        shared = None
         for k, lv in enumerate(self.levels):
+            if lv.measure is not None:
+                cms = [self._call_procedure(k, 'noise') for _ in range(self.noise_repeats)]
+            else:
+                if shared is None:
+                    shared = [self._capture(None, 'noise') for _ in range(self.noise_repeats)]
+                cms = shared
             scores = [lv.objective.evaluate(cm)[0] for cm in cms]
             scores = [s for s in scores if s is not None]
             if len(scores) < 2:
                 raise RuntimeError(f'signal lost before starting ({lv.objective.metric} invalid)')
             mean = sum(scores) / len(scores)
             self.noise[k] = math.sqrt(sum((s - mean) ** 2 for s in scores) / (len(scores) - 1))
-            self.print(f'noise floor, level {k}: {lv.objective.metric} = {mean:.4g} +- {self.noise[k]:.2g}')
+            if hasattr(lv.objective, 'position'):
+                pts = [lv.objective.position(Evaluation(0, {}, 0.0, True, '', {n: m.value for n, m in cm.metrics.items()
+                                                                               if m.valid}, 'noise')) for cm in cms]
+                self._noise_points[k] = [q for q in pts if q is not None]
+            self.print(f'noise floor, level {k}: {lv.objective.metric} = {self._shown(k, mean)} '
+                       f'+- {self.noise[k]:.2g}')
 
     def run(self):
         start = self.positions()
@@ -527,4 +769,5 @@ class NestedLoop:
                 'evaluations': len(self.history),
                 'evaluations_per_trial': per_trial,
                 'predictor': {k: {'below': b, 'axes': c, 'K': K.tolist()} for k, (b, c, K) in self.K.items()},
+                'target_reached': bool(self._reached.get(0)),
                 'aborted': aborted, 'stopped_because': reason, 'seconds': time.time() - t0}
