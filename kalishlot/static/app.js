@@ -115,8 +115,10 @@ function flashScreenshotButton(text) {
   setTimeout(() => { screenshotButton.textContent = 'screenshot'; }, 2000);
 }
 
+let screenshotBusy = false;   // a flag, not .disabled: that would be in the picture
 screenshotButton.onclick = async () => {
-  screenshotButton.disabled = true;
+  if (screenshotBusy) return;
+  screenshotBusy = true;
   const blob = renderViewport();
   try {
     // handed over as a promise, in the click itself: the render takes longer
@@ -137,7 +139,7 @@ screenshotButton.onclick = async () => {
       flashScreenshotButton('failed');
     }
   } finally {
-    screenshotButton.disabled = false;
+    screenshotBusy = false;
   }
 };
 
