@@ -293,6 +293,26 @@ UI conventions: settings inputs commit on **Enter or focus loss** (the lab's
 explicit preference), and after a `setting_applied` event the input shows the
 value the hardware accepted.
 
+### Keyboard keys for the box
+
+`static/keyboard.js` gives every box keyboard control without any wiring in
+the box: Tab moves between boxes, Esc steps back out, and `;` (pick mode)
+reaches any control by a letter badge. To give a control a fixed key, put it
+on the element: `data-key="F"` (several: `data-key="P Space"`, Shift with
+`Shift+F`). The key acts only in the focused box, the tooltip gets the key
+appended automatically, and `?` lists it. A button, checkbox, radio or
+`<summary>` is clicked; a number/text field is focused; a `<select>` opens.
+
+- Avoid the header's keys (Shift+A, Shift+D, Shift+S, Shift+L, `?`) and the
+  box header's (Shift+W, Shift+X); bare letters and Shift+letters are free of
+  browser shortcuts. Keys follow the physical key, not the layout.
+- A list with its own navigation is a zone: `data-key-zone` plus a
+  `data-key` on its container; rows `data-zone-row`, and in a row
+  `data-row-toggle` (Space), `data-row-rename` (F2/Enter) and
+  `data-row-delete` (Delete twice). Keys inside the zone only work after
+  entering it. The camera's marker list is the example.
+- So far only the camera box has fixed keys; the other boxes rely on pick mode.
+
 ## A box that is not a device: the synced video + scope pipeline
 
 `adapters/synced_pipeline.py` + `static/boxes/synced_pipeline.js` is a *virtual*
