@@ -7,8 +7,9 @@ import { createPicoScopeBox } from './boxes/picoscope.js';
 import { createRigolDGBox } from './boxes/rigol_dg.js';
 import { createMotionAxesBox } from './boxes/motion_axes.js';
 import { createSyncedPipelineBox } from './boxes/synced_pipeline.js';
-import { initLogger, openLogger } from './boxes/logger.js';
+import { initLogger, openLogger, toggleLogger } from './boxes/logger.js';
 import { initIdle } from './boxes/idle.js';
+import { initKeyboard, registerGlobalKey, toggleHelp } from './keyboard.js';
 
 const BOX_RENDERERS = {
   dummy_camera: createCameraBox,
@@ -33,6 +34,9 @@ const grid = SATELLITE_ID !== null ? null : GridStack.init({
 });
 
 initLogger();
+initKeyboard();
+registerGlobalKey('Shift+L', 'open / close the log', toggleLogger);
+document.getElementById('keys-help').onclick = toggleHelp;
 
 // ------------------------------------------------------------------ layout
 // Where each box sat, kept by the server (layout.json) so the next session
@@ -173,6 +177,17 @@ const modalChoices = document.getElementById('modal-choices');
 document.getElementById('modal-cancel').onclick = () => closeModal();
 backdrop.onclick = (event) => { if (event.target === backdrop) closeModal(); };
 
+// keyboard: Esc cancels, ↑ ↓ move between the choices, Enter takes one
+backdrop.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { closeModal(); event.preventDefault(); return; }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const buttons = [...backdrop.querySelectorAll('button')];
+  const at = buttons.indexOf(document.activeElement);
+  const next = (at + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next]?.focus();
+  event.preventDefault();
+});
+
 let modalResolve = null;
 function closeModal(value = null) {
   backdrop.hidden = true;
@@ -190,6 +205,7 @@ function askChoice(title, choices) {
     button.onclick = () => closeModal(choice.value);
     modalChoices.appendChild(button);
   }
+  modalChoices.querySelector('button')?.focus();
   if (choices.length === 0) {
     const note = document.createElement('p');
     note.textContent = 'nothing available';
@@ -234,9 +250,9 @@ function addBox(device) {
     <div class="grid-stack-item-content">
       <div class="box-header">
         <span class="box-title"></span>
-        <button class="box-log" title="open log">log</button>
-        <button class="box-window" title="open in its own window (to move it to another screen)">⧉</button>
-        <button class="box-close" title="close device and remove box">✕</button>
+        <button class="box-log" data-key="Shift+L" title="open log">log</button>
+        <button class="box-window" data-key="Shift+W" title="open in its own window (to move it to another screen)">⧉</button>
+        <button class="box-close" data-key="Shift+X" title="close device and remove box">✕</button>
       </div>
       <div class="box-body"></div>
     </div>`;
@@ -257,7 +273,10 @@ function addBox(device) {
 
   openBoxes.set(device.device_id, { element, cleanup });
 
-  element.querySelector('.box-close').onclick = async () => {
+  element.querySelector('.box-close').onclick = async (event) => {
+    // a click from the keyboard (detail 0) asks first: one stray key press
+    // should not close a device
+    if (event.detail === 0 && !confirm(`Close ${device.label}?`)) return;
     removeBox(device.device_id);
     try {
       await api(`/api/devices/${encodeURIComponent(device.device_id)}`, { method: 'DELETE' });

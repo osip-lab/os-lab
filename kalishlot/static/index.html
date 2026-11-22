@@ -16,10 +16,11 @@
 <body>
 <header>
   <h1>OS Lab Dashboard</h1>
-  <button id="add-device">+ add device</button>
+  <button id="add-device" data-key="Shift+A">+ add device</button>
   <span id="server-status" class="status-line"></span>
-  <button id="screenshot" title="copy what is on screen now (the whole dashboard as you see it) to the clipboard as PNG">screenshot</button>
-  <button id="theme-toggle" title="toggle ultra-dark mode for a dark lab">ultra-dark</button>
+  <button id="keys-help" data-key="Shift+/" title="keyboard: every key of the focused box and of the page">⌨ keys</button>
+  <button id="screenshot" data-key="Shift+S" title="copy what is on screen now (the whole dashboard as you see it) to the clipboard as PNG">screenshot</button>
+  <button id="theme-toggle" data-key="Shift+D" title="toggle ultra-dark mode for a dark lab">ultra-dark</button>
 </header>
 <div class="grid-stack"></div>
 <div id="modal-backdrop" hidden>

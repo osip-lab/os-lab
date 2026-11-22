@@ -81,27 +81,27 @@ export function createCameraBox(device, container, sendCommand) {
   const roiGroup = `cam-roi-${++roiGroupCount}`;
   container.innerHTML = `
     <div class="toolbar cam-controls">
-      <button class="play-toggle"></button>
-      <button data-command="snap">single frame</button>
+      <button class="play-toggle" data-key="P Space" aria-label="play / pause"></button>
+      <button data-command="snap" data-key="S">single frame</button>
       <span class="subgroup cam-settings"></span>
       <span class="subgroup">
         <label class="field">
-          <input type="checkbox" class="cam-fit"> fit</label>
-        <button class="cam-fit-marker" disabled title="make a marker from the current fit (its 2σ ellipse). Available once the fit has a result">fit → marker</button>
+          <input type="checkbox" class="cam-fit" data-key="F"> fit</label>
+        <button class="cam-fit-marker" data-key="Shift+F" disabled title="make a marker from the current fit (its 2σ ellipse). Available once the fit has a result">fit → marker</button>
       </span>
       <span class="subgroup">
         <label class="field" title="1 mm grid, centered on the image">
-          <input type="checkbox" class="cam-grid"> grid</label>
+          <input type="checkbox" class="cam-grid" data-key="G"> grid</label>
       </span>
       <span class="subgroup">
         <label class="field"
                title="strip chart beside the image: the 99th percentile pixel value over the last 30 s, on a fixed 0 to full-scale axis, with a dashed line at its 10 s mean — watch it while you change something on the bench">
-          <input type="checkbox" class="cam-levels"> intensity</label>
+          <input type="checkbox" class="cam-levels" data-key="I"> intensity</label>
       </span>
       <span class="subgroup">
         <label class="field"
                title="show (and fit) only frames at least this bright, in counts above background: a dimmer frame is dropped and the view holds the last bright one. Brightness is measured inside the guess circle when there is one, so draw it on the mode you want to catch. Empty or 0 = show every frame">
-          trigger <input type="number" class="cam-trigger" min="0" placeholder="off"></label>
+          trigger <input type="number" class="cam-trigger" data-key="T" min="0" placeholder="off"></label>
         <span class="cam-brightness readout"
               title="live beam brightness, counts above background: mean inside the guess circle's bounding square, or the 99th-percentile pixel when no guess circle is set. 'held' = below the trigger, the view is showing the last frame that passed"></span>
       </span>
@@ -109,21 +109,21 @@ export function createCameraBox(device, container, sendCommand) {
         <span class="field"
               title="crop the camera to a region: pick edit (the full sensor is shown, with the current ROI on it), drag the rectangle on the image (its handles resize it, its middle moves it), then apply">
           ROI <span class="segmented cam-roi" role="radiogroup">
-            <label><input type="radio" name="${roiGroup}" value="none"><span>none</span></label>
-            <label><input type="radio" name="${roiGroup}" value="edit"><span>edit</span></label>
-            <label><input type="radio" name="${roiGroup}" value="apply"><span>apply</span></label>
+            <label><input type="radio" name="${roiGroup}" value="none" data-key="Shift+R" aria-label="ROI none"><span>none</span></label>
+            <label><input type="radio" name="${roiGroup}" value="edit" data-key="R" aria-label="ROI edit"><span>edit</span></label>
+            <label><input type="radio" name="${roiGroup}" value="apply" data-key="A" aria-label="ROI apply"><span>apply</span></label>
           </span></span>
       </span>
       <span class="subgroup">
-        <button class="cam-mark" title="add a marker: drag from the circle center to its edge. A list beside the image renames, hides and deletes them">marker ◯</button>
-        <button class="cam-mark-clear" title="delete the marker">✕</button>
-        <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
-        <button class="cam-guess-clear" title="clear the guess circle">✕</button>
+        <button class="cam-mark" data-key="M" title="add a marker: drag from the circle center to its edge. A list beside the image renames, hides and deletes them">marker ◯</button>
+        <button class="cam-mark-clear" data-key="Shift+M" aria-label="delete the marker" title="delete the marker">✕</button>
+        <button class="cam-guess" data-key="U" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
+        <button class="cam-guess-clear" data-key="Shift+U" aria-label="clear the guess" title="clear the guess circle">✕</button>
       </span>
       <span class="subgroup">
-        <button class="cam-copy-figure" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
-        <button class="cam-copy-fit" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
-        <button class="cam-record-fit" title="append the current fit values to the log">record fit values</button>
+        <button class="cam-copy-figure" data-key="C" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
+        <button class="cam-copy-fit" data-key="W" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
+        <button class="cam-record-fit" data-key="V" title="append the current fit values to the log">record fit values</button>
       </span>
       <span class="cam-status status-line"></span>
     </div>
@@ -169,6 +169,9 @@ export function createCameraBox(device, container, sendCommand) {
   const DRAG_SEND_MS = 100; // at most one command per this while dragging
   const settingsSpan = container.querySelector('.cam-settings');
   const settingInputs = {}; // name -> { input, decimals, slider }
+  // keyboard: the field's key, and the :2 / ×2 keys of the draggable ones
+  const SETTING_KEYS = { exposure: 'E', gain: 'Shift+G', framerate: 'H' };
+  const STEP_KEYS = { exposure: ['[', ']'], framerate: ['Shift+[', 'Shift+]'] };
   for (const setting of device.settings ?? []) {
     const label = document.createElement('label');
     label.className = 'field';
@@ -180,6 +183,8 @@ export function createCameraBox(device, container, sendCommand) {
     input.step = setting.decimals ? Math.pow(10, -setting.decimals) : 1;
     input.value = setting.value.toFixed(setting.decimals);
     input.dataset.committed = input.value;
+    if (SETTING_KEYS[setting.name]) input.dataset.key = SETTING_KEYS[setting.name];
+    input.setAttribute('aria-label', setting.label);
     const unit = document.createElement('span');
     unit.textContent = setting.unit;
     unit.className = 'unit';
@@ -229,6 +234,8 @@ export function createCameraBox(device, container, sendCommand) {
     half.className = 'cam-step';
     half.textContent = ':2';
     half.title = `halve the ${setting.label}`;
+    half.setAttribute('aria-label', `halve the ${setting.label}`);
+    if (STEP_KEYS[setting.name]) half.dataset.key = STEP_KEYS[setting.name][0];
     const track = document.createElement('span');
     track.className = 'cam-track';
     track.title = `drag to change the ${setting.label} (log scale)`;
@@ -239,6 +246,8 @@ export function createCameraBox(device, container, sendCommand) {
     twice.className = 'cam-step';
     twice.textContent = '×2';
     twice.title = `double the ${setting.label}`;
+    twice.setAttribute('aria-label', `double the ${setting.label}`);
+    if (STEP_KEYS[setting.name]) twice.dataset.key = STEP_KEYS[setting.name][1];
     group.append(half, track, twice);
 
     let dragging = null; // { range, lastSent, pending, timer } while dragging
@@ -351,6 +360,10 @@ export function createCameraBox(device, container, sendCommand) {
   // the marker list, shown from the first marker on (see "markers" below)
   const markerPanel = document.createElement('div');
   markerPanel.className = 'cam-markers';
+  // keyboard: K enters the list (see keyboard.js zones)
+  markerPanel.dataset.key = 'K';
+  markerPanel.dataset.keyZone = '';
+  markerPanel.setAttribute('aria-label', 'marker list');
   markerPanel.style.position = 'absolute';
   markerPanel.hidden = true;
   view.appendChild(markerPanel);
@@ -1162,11 +1175,13 @@ export function createCameraBox(device, container, sendCommand) {
       const row = document.createElement('div');
       row.className = 'cam-marker-row';
       row.classList.toggle('is-hidden', !m.visible);
+      row.dataset.zoneRow = '';
 
       const visible = document.createElement('input');
       visible.type = 'checkbox';
       visible.checked = m.visible;
       visible.title = 'show or hide this marker';
+      visible.dataset.rowToggle = '';
       visible.onchange = () => updateMarker(m.id, {visible: visible.checked});
 
       const dot = document.createElement('span');
@@ -1178,6 +1193,7 @@ export function createCameraBox(device, container, sendCommand) {
       label.className = 'cam-marker-label';
       label.value = m.label;
       label.maxLength = 40;
+      label.dataset.rowRename = '';
       label.title = `(${m.x.toFixed(0)}, ${m.y.toFixed(0)}) sensor px, `
         + `r = ${(m.r * pixelMm).toFixed(3)} mm — click to rename`;
       label.onkeydown = (event) => {
@@ -1199,6 +1215,7 @@ export function createCameraBox(device, container, sendCommand) {
       remove.className = 'cam-marker-delete';
       remove.textContent = '✕';
       remove.title = 'delete this marker';
+      remove.dataset.rowDelete = '';
       remove.onclick = () => sendMarkers(markers.filter((x) => x.id !== m.id));
 
       row.append(visible, dot, label, where, remove);
@@ -1207,18 +1224,19 @@ export function createCameraBox(device, container, sendCommand) {
 
     const footer = document.createElement('div');
     footer.className = 'cam-markers-footer';
-    const footerButton = (text, title, onclick) => {
+    const footerButton = (text, title, onclick, key) => {
       const button = document.createElement('button');
       button.textContent = text;
       button.title = title;
+      button.dataset.key = key;
       button.onclick = onclick;
       footer.appendChild(button);
       return button;
     };
     footerButton('all on', 'show every marker',
-                 () => sendMarkers(markers.map((m) => ({...m, visible: true}))));
+                 () => sendMarkers(markers.map((m) => ({...m, visible: true}))), 'A');
     footerButton('all off', 'hide every marker',
-                 () => sendMarkers(markers.map((m) => ({...m, visible: false}))));
+                 () => sendMarkers(markers.map((m) => ({...m, visible: false}))), 'Z');
     // two clicks, so one stray click cannot wipe a session's markers
     const clearAll = footerButton('clear all', 'delete every marker (click twice)',
       () => {
@@ -1234,13 +1252,13 @@ export function createCameraBox(device, container, sendCommand) {
           clearAll.textContent = 'clear all';
           clearAll.classList.remove('armed');
         }, 3000);
-      });
+      }, 'X');
 
     // the file windows open on the lab PC, so these wait for them
     const saveButton = footerButton('save…', 'save the markers to a file (a window opens on the lab PC)',
-      () => saveMarkers());
+      () => saveMarkers(), 'S');
     const openButton = footerButton('open…', 'load markers from a file, replacing or adding to these (asks first)',
-      () => openMarkersDialog());
+      () => openMarkersDialog(), 'O');
     saveButton.disabled = openButton.disabled = markerFileBusy;
 
     // exactly two markers shown: how far the later one sits from the earlier

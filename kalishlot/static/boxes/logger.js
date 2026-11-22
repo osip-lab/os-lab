@@ -63,6 +63,10 @@ export function openLogger() {
   panelEl.classList.add('open');
 }
 
+export function toggleLogger() {
+  panelEl.classList.toggle('open');
+}
+
 export async function logEntry(text) {
   await fetch('/api/log', {
     method: 'POST',
