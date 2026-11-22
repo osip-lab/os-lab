@@ -3,8 +3,8 @@
 // ellipse overlay + cross-section plots, an ROI, and two draggable circles:
 //   marker ◯ — labelled annotations kept by the server (so every viewer
 //              and every reload sees the same set), in sensor pixels so they
-//              stay put when the ROI changes; from two markers on, a list
-//              beside the image renames, hides and deletes them;
+//              stay put when the ROI changes; a list beside the image
+//              renames, hides and deletes them;
 //   guess ◯  — the fit's initial guess (dashed green): center -> (x_0, y_0),
 //              radius -> sigma; lives on the server so the fit can use it.
 // Shared by every camera-like device type (dummy, Basler).
@@ -87,7 +87,7 @@ export function createCameraBox(device, container, sendCommand) {
       <span class="subgroup">
         <label class="field">
           <input type="checkbox" class="cam-fit"> fit</label>
-        <button class="cam-fit-marker" disabled title="make a marker from the current fit (its 2σ ellipse). Available while the video is paused and the fit has a result">fit → marker</button>
+        <button class="cam-fit-marker" disabled title="make a marker from the current fit (its 2σ ellipse). Available once the fit has a result">fit → marker</button>
       </span>
       <span class="subgroup">
         <label class="field" title="1 mm grid, centered on the image">
@@ -115,7 +115,7 @@ export function createCameraBox(device, container, sendCommand) {
           </span></span>
       </span>
       <span class="subgroup">
-        <button class="cam-mark" title="add a marker: drag from the circle center to its edge. From two markers on, a list beside the image renames, hides and deletes them">marker ◯</button>
+        <button class="cam-mark" title="add a marker: drag from the circle center to its edge. A list beside the image renames, hides and deletes them">marker ◯</button>
         <button class="cam-mark-clear" title="delete the marker">✕</button>
         <button class="cam-guess" title="drag the fit initial guess: center → (x₀, y₀), radius → σ">guess ◯</button>
         <button class="cam-guess-clear" title="clear the guess circle">✕</button>
@@ -140,11 +140,9 @@ export function createCameraBox(device, container, sendCommand) {
     snap: container.querySelector('[data-command="snap"]'),
   };
   let isPlaying = true;
-  let onPlayingChange = () => {};   // set once the fit controls exist
 
   function setPlaying(playing) {
     isPlaying = playing;
-    onPlayingChange();
     showPlayToggle(buttons.toggle, playing);
     status.textContent = playing ? 'streaming' : 'paused';
   }
@@ -350,7 +348,7 @@ export function createCameraBox(device, container, sendCommand) {
   levelsDiv.style.position = 'absolute';
   levelsDiv.hidden = true;
   view.appendChild(levelsDiv);
-  // the marker list, shown from two markers on (see "markers" below)
+  // the marker list, shown from the first marker on (see "markers" below)
   const markerPanel = document.createElement('div');
   markerPanel.className = 'cam-markers';
   markerPanel.style.position = 'absolute';
@@ -578,11 +576,6 @@ export function createCameraBox(device, container, sendCommand) {
         + `θ = ${p.angle >= 0 ? '+' : ''}${p.angle.toFixed(2)} rad `
         + `(fit ${p.time.toFixed(2)} s)`);
     }
-    if (markers.length === 1) {   // two or more are listed beside the image
-      const m = markers[0];
-      parts.push(`${m.label || 'marker'}: (${m.x.toFixed(0)}, ${m.y.toFixed(0)}) `
-        + `sensor px, r = ${m.r.toFixed(1)} px = ${(m.r * pixelMm).toFixed(3)} mm`);
-    }
     if (guess) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
         + `σ = ${guess.r.toFixed(1)} px`);
@@ -606,9 +599,8 @@ export function createCameraBox(device, container, sendCommand) {
   fitCheck.checked = device.fitting ?? false;
   const fitMarkerButton = container.querySelector('.cam-fit-marker');
   function updateFitMarkerButton() {
-    fitMarkerButton.disabled = isPlaying || !fitCheck.checked || !fitParams;
+    fitMarkerButton.disabled = !fitCheck.checked || !fitParams;
   }
-  onPlayingChange = updateFitMarkerButton;
   updateFitMarkerButton();
   fitMarkerButton.onclick = (event) => { event.preventDefault(); addFitMarker(); };
   fitCheck.onchange = () => {
@@ -1108,7 +1100,7 @@ export function createCameraBox(device, container, sendCommand) {
 
   // the current fit as a marker: its 2 std ellipse (= the beam radius w)
   function addFitMarker() {
-    if (isPlaying || !fitCheck.checked || !fitParams) return;
+    if (!fitCheck.checked || !fitParams) return;
     const p = fitParams;
     const a = 2 * p.s_x, b = 2 * p.s_y;
     sendMarkers([...markers, {
@@ -1129,7 +1121,7 @@ export function createCameraBox(device, container, sendCommand) {
       .catch((e) => { status.textContent = e.message; });
   }
 
-  function markerListShown() { return markers.length >= 2; }
+  function markerListShown() { return markers.length >= 1; }
 
   function showMarkers(list) {
     const wasShown = markerListShown();
@@ -1251,7 +1243,17 @@ export function createCameraBox(device, container, sendCommand) {
       () => openMarkersDialog());
     saveButton.disabled = openButton.disabled = markerFileBusy;
 
-    markerPanel.append(list, footer);
+    // exactly two markers shown: how far the later one sits from the earlier
+    const shown = markers.filter((m) => m.visible);
+    const diff = document.createElement('div');
+    diff.className = 'cam-markers-diff';
+    if (shown.length === 2) {
+      const dx = shown[1].x - shown[0].x, dy = shown[1].y - shown[0].y;
+      diff.textContent = `diff = (${dx.toFixed(0)}, ${dy.toFixed(0)}) px`;
+    }
+    diff.hidden = shown.length !== 2;
+
+    markerPanel.append(list, diff, footer);
   }
   showMarkers(markers);
 

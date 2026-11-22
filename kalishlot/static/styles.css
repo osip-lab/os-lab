@@ -458,7 +458,7 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
   overflow: hidden;
 }
 
-/* the marker list beside the image, shown from two markers on */
+/* the marker list beside the image, shown from the first marker on */
 .cam-markers {
   display: flex;
   flex-direction: column;
@@ -501,6 +501,7 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 .cam-marker-where { color: var(--muted); white-space: nowrap; }
 .cam-markers button { padding: 1px 6px; font-size: 11px; }
 .cam-marker-delete { border-color: transparent; background: none; color: var(--muted); }
+.cam-markers-diff { padding: 3px 8px; color: var(--muted); border-top: 1px solid var(--line-soft); }
 .cam-markers-footer {
   display: flex;
   flex-wrap: wrap;
