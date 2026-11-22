@@ -76,6 +76,71 @@ themeToggle.onclick = () => {
 };
 syncThemeToggle();
 
+// ------------------------------------------------------- page screenshot
+// The visible part of the dashboard, as on screen, to the clipboard as PNG.
+// html-to-image (vendor/) has the browser itself draw a copy of the page, so
+// every CSS rule, the theme and the canvases come out as they look. The copy
+// is drawn whole and unscrolled, so two pieces are cut out of it: the
+// scrolled-to window, then the sticky header pasted back over its top.
+const screenshotButton = document.getElementById('screenshot');
+
+async function renderViewport() {
+  const body = document.body;
+  const full = await htmlToImage.toCanvas(body, {
+    width: body.scrollWidth,
+    height: body.scrollHeight,
+    pixelRatio: window.devicePixelRatio || 1,
+  });
+  const ratio = full.width / body.scrollWidth;
+  const width = document.documentElement.clientWidth;
+  const height = document.documentElement.clientHeight;
+  const shot = document.createElement('canvas');
+  shot.width = Math.round(width * ratio);
+  shot.height = Math.round(height * ratio);
+  const ctx = shot.getContext('2d');
+  ctx.drawImage(full, window.scrollX * ratio, window.scrollY * ratio,
+                shot.width, shot.height, 0, 0, shot.width, shot.height);
+  const header = document.querySelector('header');
+  if (header && getComputedStyle(header).display !== 'none') {
+    const top = header.getBoundingClientRect().top;
+    const h = header.offsetHeight * ratio;
+    ctx.drawImage(full, window.scrollX * ratio, 0, shot.width, h,
+                  0, top * ratio, shot.width, h);
+  }
+  return new Promise((resolve) => shot.toBlob(resolve, 'image/png'));
+}
+
+function flashScreenshotButton(text) {
+  screenshotButton.textContent = text;
+  setTimeout(() => { screenshotButton.textContent = 'screenshot'; }, 2000);
+}
+
+screenshotButton.onclick = async () => {
+  screenshotButton.disabled = true;
+  const blob = renderViewport();
+  try {
+    // handed over as a promise, in the click itself: the render takes longer
+    // than the browser keeps the click's permission to write the clipboard
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    flashScreenshotButton('copied');
+  } catch {
+    try {   // no image clipboard here (needs localhost or https): a file
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(await blob);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      link.download = `dashboard_${stamp}.png`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+      flashScreenshotButton('saved as file');
+    } catch (error) {
+      console.error('screenshot failed', error);
+      flashScreenshotButton('failed');
+    }
+  } finally {
+    screenshotButton.disabled = false;
+  }
+};
+
 const openBoxes = new Map(); // device_id -> { element, cleanup }
 
 // ------------------------------------------------------------- API helpers
