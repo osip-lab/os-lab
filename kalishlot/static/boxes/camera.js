@@ -31,6 +31,7 @@
 import { connectDeviceStream } from './stream.js';
 import { logEntry } from './logger.js';
 import { showPlayToggle } from './transport.js';
+import { editZoneRow } from '../keyboard.js';
 
 const STRIP = 70;        // cross-section strip thickness, px
 const GAP = 4;
@@ -1099,8 +1100,16 @@ export function createCameraBox(device, container, sendCommand) {
     return `M${n}`;
   }
 
+  // a new marker opens its name for typing at once (Enter keeps it)
+  function addAndRename(marker) {
+    sendMarkers([...markers, marker]);
+    const row = [...markerPanel.querySelectorAll('.cam-marker-row')]
+      .find((r) => r.dataset.markerId === marker.id);
+    if (row) editZoneRow(row);
+  }
+
   function addMarker(circle) {
-    sendMarkers([...markers, {
+    addAndRename({
       id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       label: nextMarkerLabel(),
       x: circle.x + (roi ? roi.x : 0),
@@ -1108,7 +1117,7 @@ export function createCameraBox(device, container, sendCommand) {
       r: circle.r,
       visible: true,
       color: nextMarkerColor(),
-    }]);
+    });
   }
 
   // the current fit as a marker: its 2 std ellipse (= the beam radius w)
@@ -1116,7 +1125,7 @@ export function createCameraBox(device, container, sendCommand) {
     if (!fitCheck.checked || !fitParams) return;
     const p = fitParams;
     const a = 2 * p.s_x, b = 2 * p.s_y;
-    sendMarkers([...markers, {
+    addAndRename({
       id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       label: nextMarkerLabel(),
       x: p.x_0 + (roi ? roi.x : 0),
@@ -1125,7 +1134,7 @@ export function createCameraBox(device, container, sendCommand) {
       ellipse: {a, b, angle: p.angle},
       visible: true,
       color: nextMarkerColor(),
-    }]);
+    });
   }
 
   function sendMarkers(list) {
@@ -1176,6 +1185,7 @@ export function createCameraBox(device, container, sendCommand) {
       row.className = 'cam-marker-row';
       row.classList.toggle('is-hidden', !m.visible);
       row.dataset.zoneRow = '';
+      row.dataset.markerId = m.id;
 
       const visible = document.createElement('input');
       visible.type = 'checkbox';

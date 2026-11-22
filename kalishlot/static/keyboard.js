@@ -439,6 +439,22 @@ function onMutations(records) {
 }
 
 // ------------------------------------------------------------------ setup
+/** Open a zone row's name for typing, with the zone entered on that row and
+ *  its box focused - so after Enter (or Esc) the arrows go on in the list. */
+export function editZoneRow(row) {
+  const box = row.closest(BOX);
+  const rowZone = row.closest('[data-key-zone]');
+  if (box) setBox(box, { scroll: false });
+  if (rowZone && rowZone !== zone) enterZone(rowZone);
+  if (zone === rowZone) {
+    rowIndex = Math.max(0, zoneRows().indexOf(row));
+    markRow();
+  }
+  const field = row.querySelector('[data-row-rename]');
+  field?.focus();
+  field?.select?.();
+}
+
 export function toggleHelp() {
   if (helpEl) closeHelp();
   else openHelp();
