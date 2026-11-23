@@ -455,6 +455,9 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
   flex-direction: column;
   align-items: flex-start;
 }
+.cam-fit-cell[hidden] { display: none; }
+/* sensor px with 2 decimals: 1023.45 */
+.cam-fit-cell.com .cam-fit-value > span:first-child { min-width: 7ch; }
 .cam-fit-cell.aux.first {
   border-left: 1px solid var(--line);
   padding-left: 32px;
@@ -479,7 +482,7 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 }
 /* 0.412, 1.306: fixed decimals keep these a constant width already */
 .cam-fit-cell.primary .cam-fit-value > span:first-child,
-.cam-fit-cell:last-child .cam-fit-value > span:first-child { min-width: 0; }
+.cam-fit-cell.time .cam-fit-value > span:first-child { min-width: 0; }
 .cam-fit-unit {
   margin-left: 8px;
   font-size: 22px;

@@ -605,18 +605,24 @@ export function createCameraBox(device, container, sendCommand) {
   const fitTable = document.createElement('div');
   fitTable.className = 'cam-fit-table';
   fitTable.hidden = true;
+  // the centre of mass (its own checkbox, independent of the fit) has its own
+  // cells at the end; each group shows only while it has a result
   const fitCells = {};
-  for (const [key, label, unit, kind] of [
-    ['minor', 'w_minor', 'mm', 'primary'],
-    ['major', 'w_major', 'mm', 'primary'],
-    ['ratio', 'major / minor', '', 'primary'],
-    ['x', 'x₀', 'px', 'aux first'],
-    ['y', 'y₀', 'px', 'aux'],
-    ['angle', 'major axis', '', 'aux'],
-    ['time', 'fit', 's', 'aux'],
+  const groupCells = {fit: [], com: []};
+  for (const [key, label, unit, kind, group] of [
+    ['minor', 'w_minor', 'mm', 'primary', 'fit'],
+    ['major', 'w_major', 'mm', 'primary', 'fit'],
+    ['ratio', 'major / minor', '', 'primary', 'fit'],
+    ['x', 'x₀', 'px', 'aux first', 'fit'],
+    ['y', 'y₀', 'px', 'aux', 'fit'],
+    ['angle', 'major axis', '', 'aux', 'fit'],
+    ['time', 'fit', 's', 'aux time', 'fit'],
+    ['comX', 'CoM x', 'px', 'aux com', 'com'],
+    ['comY', 'CoM y', 'px', 'aux com', 'com'],
   ]) {
     const cell = document.createElement('div');
     cell.className = `cam-fit-cell ${kind}`;
+    groupCells[group].push(cell);
     const name = document.createElement('span');
     name.className = 'cam-fit-label';
     name.textContent = label;
@@ -658,7 +664,16 @@ export function createCameraBox(device, container, sendCommand) {
   function updateInfo() {
     const summary = [];
     const showFit = Boolean(fitParams && !fitReason);
-    fitTable.hidden = !showFit;
+    const showCom = Boolean(comResult && comResult.valid);
+    fitTable.hidden = !showFit && !showCom;
+    for (const cell of groupCells.fit) cell.hidden = !showFit;
+    for (const cell of groupCells.com) cell.hidden = !showCom;
+    // the divider before the CoM cells only when there are fit cells before it
+    groupCells.com[0].classList.toggle('first', showFit);
+    if (showCom) {
+      fitCells.comX.textContent = fixed(comResult.sensor_x, 2);
+      fitCells.comY.textContent = fixed(comResult.sensor_y, 2);
+    }
     if (showFit) {
       const p = fitParams, w = fitAxes(p);
       const angle = `${fixed(p.major_axis_deg, 1, true)}°`;
@@ -673,18 +688,15 @@ export function createCameraBox(device, container, sendCommand) {
         + `ratio = ${fixed(w.ratio, 3)}`,
         `x₀ = ${fixed(p.x_0, 1)} px, y₀ = ${fixed(p.y_0, 1)} px, major axis at ${angle}`);
     }
+    if (showCom) {
+      summary.push(`CoM = (${fixed(comResult.sensor_x, 2)}, ${fixed(comResult.sensor_y, 2)}) sensor px`);
+    }
 
     const parts = [];
     if (fitReason) parts.push(fitReason);
-    if (comResult) {
-      if (comResult.valid) {
-        const flags = comResult.reason ? ` (${comResult.reason})` : '';
-        parts.push(`CoM = (${comResult.sensor_x.toFixed(2)}, ${comResult.sensor_y.toFixed(2)}) `
-          + `sensor px${flags}`);
-      } else {
-        parts.push(`CoM: ${comResult.reason}`);
-      }
-    }
+    // the CoM values are in the table; its flags (saturated, at the edge) and
+    // why there is no result stay here as text
+    if (comResult && comResult.reason) parts.push(`CoM: ${comResult.reason}`);
     if (guess) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
         + `σ = ${guess.r.toFixed(1)} px`);
