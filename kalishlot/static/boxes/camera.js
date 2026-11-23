@@ -1484,7 +1484,7 @@ export function createCameraBox(device, container, sendCommand) {
       return;
     }
     const w = fitAxes(fitParams);
-    const text = `${w.minor.toFixed(4)}\t${w.major.toFixed(4)}\t${w.ratio.toFixed(4)}`;
+    const text = `${fixed(w.minor, 4)}\t${fixed(w.major, 4)}\t${fixed(w.ratio, 4)}`;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -1505,10 +1505,10 @@ export function createCameraBox(device, container, sendCommand) {
       return;
     }
     const p = fitParams, w = fitAxes(p);
-    const text = `${device.label}: x0=${p.x_0.toFixed(1)} px, y0=${p.y_0.toFixed(1)} px, `
-      + `w_minor=${w.minor.toFixed(3)} mm, w_major=${w.major.toFixed(3)} mm, `
-      + `ratio=${w.ratio.toFixed(3)}, `
-      + `major axis at ${p.major_axis_deg.toFixed(1)} deg`;
+    const text = `${device.label}: x0=${fixed(p.x_0, 1)} px, y0=${fixed(p.y_0, 1)} px, `
+      + `w_minor=${fixed(w.minor, 3)} mm, w_major=${fixed(w.major, 3)} mm, `
+      + `ratio=${fixed(w.ratio, 3)}, `
+      + `major axis at ${fixed(p.major_axis_deg, 1)} deg`;
     logEntry(text);
     status.textContent = 'recorded fit values to the log';
   };
