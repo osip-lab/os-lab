@@ -123,7 +123,7 @@ export function createCameraBox(device, container, sendCommand) {
       </span>
       <span class="subgroup">
         <button class="cam-copy-figure" data-key="C" title="copy the figure (image, overlays, cross-sections, title) to the clipboard as PNG">copy figure</button>
-        <button class="cam-copy-fit" data-key="W" title="copy the fitted beam radii w_x, w_y (mm, tab-separated) to the clipboard">copy w_x w_y</button>
+        <button class="cam-copy-fit" data-key="W" title="copy the fitted beam radii w_minor, w_major (mm) and their ratio w_major / w_minor, tab-separated, to the clipboard">copy w</button>
         <button class="cam-record-fit" data-key="V" title="append the current fit values to the log">record fit values</button>
       </span>
       <span class="cam-status status-line"></span>
@@ -472,12 +472,13 @@ export function createCameraBox(device, container, sendCommand) {
     if (gridCheck.checked) drawGrid(ctx);
     if (fitParams) {
       // thin translucent ellipses at 1 sigma and at the beam radius w = 2 sigma
+      // (minus the angle: see fitAxes)
       ctx.strokeStyle = COLOR_ELLIPSE;
       const cx = toCss(fitParams.x_0), cy = toCss(fitParams.y_0);
       for (const k of [1, 2]) {
         ctx.beginPath();
         ctx.ellipse(cx, cy, toCss(k * fitParams.s_x), toCss(k * fitParams.s_y),
-          fitParams.angle, 0, 2 * Math.PI);
+          -fitParams.angle, 0, 2 * Math.PI);
         ctx.stroke();
       }
       drawCross(ctx, cx, cy, 6);
@@ -573,11 +574,24 @@ export function createCameraBox(device, container, sendCommand) {
   infoAux.className = 'cam-info-aux';
   info.append(fitReadout, infoAux);
 
+  // The fit's s_x / s_y are the beam's principal widths, but which is which
+  // depends on the beam: the angle is bounded to +-45 deg, so s_x is just the
+  // principal axis nearest the image horizontal, and either may be the larger.
+  // Hence minor / major, and their ratio (1 = round) as the astigmatism.
+  // The angle follows gaussian2d's a/b/c form, which puts the s_x axis at
+  // MINUS the angle (from +x toward +y, i.e. clockwise on screen) - hence the
+  // minus wherever a fit ellipse (or a marker made from one) is drawn.
+  function fitAxes(p) {
+    const minor = Math.min(p.w_x, p.w_y), major = Math.max(p.w_x, p.w_y);
+    return {minor: minor * pixelMm, major: major * pixelMm,
+            ratio: minor > 0 ? major / minor : NaN};
+  }
+
   function updateInfo() {
     if (fitParams && !fitReason) {
-      const p = fitParams;
-      fitReadout.textContent = `w_x = ${(p.w_x * pixelMm).toFixed(3)} mm, `
-        + `w_y = ${(p.w_y * pixelMm).toFixed(3)} mm`;
+      const w = fitAxes(fitParams);
+      fitReadout.textContent = `w_minor = ${w.minor.toFixed(3)} mm, `
+        + `w_major = ${w.major.toFixed(3)} mm, ratio = ${w.ratio.toFixed(3)}`;
     } else {
       fitReadout.textContent = '';
     }
@@ -1071,7 +1085,7 @@ export function createCameraBox(device, container, sendCommand) {
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.ellipse(toCss(circle.x), toCss(circle.y), toCss(circle.ellipse.a),
-        toCss(circle.ellipse.b), circle.ellipse.angle, 0, 2 * Math.PI);
+        toCss(circle.ellipse.b), -circle.ellipse.angle, 0, 2 * Math.PI);
       ctx.stroke();
       drawCross(ctx, toCss(circle.x), toCss(circle.y), 5);
     } else drawCircle(ctx, circle, color, false);
@@ -1427,8 +1441,8 @@ export function createCameraBox(device, container, sendCommand) {
       status.textContent = 'no fit result to copy — enable the fit first';
       return;
     }
-    const text = `${(fitParams.w_x * pixelMm).toFixed(4)}\t`
-      + `${(fitParams.w_y * pixelMm).toFixed(4)}`;
+    const w = fitAxes(fitParams);
+    const text = `${w.minor.toFixed(4)}\t${w.major.toFixed(4)}\t${w.ratio.toFixed(4)}`;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -1440,7 +1454,7 @@ export function createCameraBox(device, container, sendCommand) {
       document.execCommand('copy');
       scratch.remove();
     }
-    status.textContent = `copied: w_x, w_y = ${text.replace('\t', ', ')} mm`;
+    status.textContent = `copied: w_minor, w_major [mm], ratio = ${text.replaceAll('\t', ', ')}`;
   };
 
   container.querySelector('.cam-record-fit').onclick = () => {
@@ -1448,9 +1462,10 @@ export function createCameraBox(device, container, sendCommand) {
       status.textContent = 'no fit result to record — enable the fit first';
       return;
     }
-    const p = fitParams;
+    const p = fitParams, w = fitAxes(p);
     const text = `${device.label}: x0=${p.x_0.toFixed(1)} px, y0=${p.y_0.toFixed(1)} px, `
-      + `w_x=${(p.w_x * pixelMm).toFixed(3)} mm, w_y=${(p.w_y * pixelMm).toFixed(3)} mm, `
+      + `w_minor=${w.minor.toFixed(3)} mm, w_major=${w.major.toFixed(3)} mm, `
+      + `ratio=${w.ratio.toFixed(3)}, `
       + `theta=${p.angle.toFixed(2)} rad`;
     logEntry(text);
     status.textContent = 'recorded fit values to the log';

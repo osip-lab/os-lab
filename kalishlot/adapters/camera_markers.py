@@ -15,6 +15,8 @@ comparing where the mode sits across configurations. The box converts.
 A marker made from a fit result also carries `ellipse` ({a, b, angle}: the 2 std
 semi-axes and rotation); it is drawn as that ellipse instead of the circle, and
 renamed, hidden and deleted like any other. Its `r` is the mean semi-axis.
+`angle` is the fit's own (gaussian_fit.gaussian2d), which puts the `a` axis at
+MINUS angle, measured from +x toward +y (clockwise on screen).
 
 The browser owns the editing: it sends the whole list after every change
 (add, rename, show/hide, delete) and draws from the 'markers' event. One
