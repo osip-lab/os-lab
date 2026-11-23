@@ -617,23 +617,31 @@ export function createCameraBox(device, container, sendCommand) {
             ratio: p.w_minor > 0 ? p.w_major / p.w_minor : NaN};
   }
 
+  // a number with fixed decimals, or a dash when the fit did not send it (a
+  // server still running an older fit) - never an exception that leaves the
+  // whole info line unwritten
+  function fixed(value, digits, signed = false) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return `${signed && value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
+  }
+
   function updateInfo() {
     const summary = [];
     const showFit = Boolean(fitParams && !fitReason);
     fitTable.hidden = !showFit;
     if (showFit) {
       const p = fitParams, w = fitAxes(p);
-      const angle = `${p.major_axis_deg >= 0 ? '+' : ''}${p.major_axis_deg.toFixed(1)}°`;
-      fitCells.minor.textContent = w.minor.toFixed(3);
-      fitCells.major.textContent = w.major.toFixed(3);
-      fitCells.ratio.textContent = w.ratio.toFixed(3);
-      fitCells.x.textContent = p.x_0.toFixed(1);
-      fitCells.y.textContent = p.y_0.toFixed(1);
+      const angle = `${fixed(p.major_axis_deg, 1, true)}°`;
+      fitCells.minor.textContent = fixed(w.minor, 3);
+      fitCells.major.textContent = fixed(w.major, 3);
+      fitCells.ratio.textContent = fixed(w.ratio, 3);
+      fitCells.x.textContent = fixed(p.x_0, 1);
+      fitCells.y.textContent = fixed(p.y_0, 1);
       fitCells.angle.textContent = angle;
-      fitCells.time.textContent = p.time.toFixed(2);
-      summary.push(`w_minor = ${w.minor.toFixed(3)} mm, w_major = ${w.major.toFixed(3)} mm, `
-        + `ratio = ${w.ratio.toFixed(3)}`,
-        `x₀ = ${p.x_0.toFixed(1)} px, y₀ = ${p.y_0.toFixed(1)} px, major axis at ${angle}`);
+      fitCells.time.textContent = fixed(p.time, 2);
+      summary.push(`w_minor = ${fixed(w.minor, 3)} mm, w_major = ${fixed(w.major, 3)} mm, `
+        + `ratio = ${fixed(w.ratio, 3)}`,
+        `x₀ = ${fixed(p.x_0, 1)} px, y₀ = ${fixed(p.y_0, 1)} px, major axis at ${angle}`);
     }
 
     const parts = [];

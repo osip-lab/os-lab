@@ -444,9 +444,9 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
   display: flex;
   flex-wrap: wrap;
   align-items: last baseline;
-  column-gap: 18px;
-  row-gap: 2px;
-  margin-right: 8px;
+  column-gap: 36px;
+  row-gap: 4px;
+  margin-right: 16px;
 }
 .cam-fit-table[hidden] { display: none; }
 .cam-fit-cell {
@@ -456,23 +456,23 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 }
 .cam-fit-cell.aux.first {
   border-left: 1px solid var(--line);
-  padding-left: 16px;
+  padding-left: 32px;
 }
 .cam-fit-label {
-  font: 10px var(--font-ui);
+  font: 20px var(--font-ui);
   letter-spacing: 0.03em;
   color: var(--muted);
 }
 .cam-fit-value {
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 26px;
 }
 .cam-fit-value > span:first-child {
   display: inline-block;
   min-width: 6ch;   /* 99.9 -> 100.0 must not shift the cells around */
 }
 .cam-fit-cell.primary .cam-fit-value {
-  font-size: 27px;
+  font-size: 54px;
   font-weight: 600;
   line-height: 1.1;
 }
@@ -480,8 +480,8 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 .cam-fit-cell.primary .cam-fit-value > span:first-child,
 .cam-fit-cell:last-child .cam-fit-value > span:first-child { min-width: 0; }
 .cam-fit-unit {
-  margin-left: 4px;
-  font-size: 11px;
+  margin-left: 8px;
+  font-size: 22px;
   font-weight: 400;
   color: var(--muted);
 }
