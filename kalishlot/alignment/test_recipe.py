@@ -50,6 +50,18 @@ def test_validate():
                               {'signal': 's2', 'goal': 'ge', 'value': num(3)}], 'controls': CTRL})
 
 
+def test_disabled_rows_take_no_part():
+    goto = {'signal': 's1', 'goal': 'goto', 'value': num(1.0), 'tolerance': 1}
+    broken_off = {'enabled': False, 'signal': '', 'goal': 'max'}       # would be refused if on
+    level = {'rows': [broken_off, goto], 'controls': CTRL}
+    recipe.validate(level)
+    act = recipe.active(level)
+    assert [r['signal'] for r in act['rows']] == ['s1'] and act['rows'][0]['_row'] == 2
+    assert recipe.signals_of(act) == ['s1']
+    refused({'rows': [dict(goto, enabled=False)], 'controls': CTRL}, 'every row is disabled')
+    refused({'rows': [broken_off, dict(goto, tolerance=0)], 'controls': CTRL}, 'row 2:')
+
+
 def test_build_objective():
     level = {'rows': [{'signal': 'x', 'goal': 'goto', 'value': num(10), 'tolerance': 1},
                       {'signal': 'y', 'goal': 'goto', 'value': num(20), 'tolerance': 4},

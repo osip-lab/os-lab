@@ -861,7 +861,8 @@ The GUI for the loop: `adapters/aligner.py` + `static/boxes/aligner.js`, a virtu
 - **An alignment level is one table plus controls.** Row = signal | goal (go to / maximize / minimize /
   ≥ guard / ≤ guard) | value (number, a camera marker's x or y, or "hold current", resolved once at
   Start) | tolerance (go-to rows). Controls = axes of open motion-axes boxes, each with an optional
-  first probe step. `alignment/recipe.py` validates a level and turns it into the loop's objective:
+  first probe step. A row's "on" checkbox keeps it in the table (greyed) but leaves it out of
+  validation, measurement and the objective (`recipe.active`). `alignment/recipe.py` validates a level and turns it into the loop's objective:
   go-to rows only -> a VectorTarget (steered), or exactly one max/min row -> an Objective; guards are
   constraints with either. Several levels = the nested loop (Level per box level), not offered yet.
 - **Per-signal tolerance.** `VectorTarget(tolerances=...)`: reached = every signal within its own

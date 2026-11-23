@@ -8,6 +8,10 @@ A level = a table of rows plus the controls (axes) it may move:
                'tolerance': 1.0}, ...],
      'controls': [{'axis': 'picomotor_ch1', 'step': None}, ...]}
 
+A row with 'enabled': False stays in the table (greyed in the box) but takes
+no part: active(level) drops it before anything is validated, measured or
+built. Rows keep their table numbers ('_row') in error messages.
+
 Goals per row:
     goto      bring the signal to the value, within tolerance
     max, min  optimize the signal (value optional: "good enough" threshold)
@@ -34,15 +38,24 @@ def _is_number(v):
         return False
 
 
+def active(level):
+    """The level with its disabled rows dropped; each kept row knows its table number."""
+    rows = [dict(r, _row=r.get('_row', n)) for n, r in enumerate(level.get('rows') or [], 1)
+            if r.get('enabled', True)]
+    return {**level, 'rows': rows}
+
+
 def validate(level):
-    """Raise ValueError with a readable reason if the level cannot run."""
-    rows = level.get('rows') or []
+    """Raise ValueError with a readable reason if the level cannot run (disabled rows ignored)."""
+    all_rows = level.get('rows') or []
+    rows = active(level)['rows']
     controls = [c for c in level.get('controls') or [] if c.get('axis')]
     if not rows:
-        raise ValueError('add at least one signal row')
+        raise ValueError('every row is disabled' if all_rows else 'add at least one signal row')
     if not controls:
         raise ValueError('tick at least one control')
-    for i, r in enumerate(rows, 1):
+    for r in rows:
+        i = r['_row']
         if not r.get('signal'):
             raise ValueError(f'row {i}: choose a signal')
         if r.get('goal') not in GOALS:

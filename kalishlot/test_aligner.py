@@ -235,6 +235,22 @@ def test_catalog_follows_boxes_opened_later():
         aligner.close()
 
 
+def test_disabled_row_is_ignored():
+    aligner, motion, devices, _ = make_world()
+    s = setup_rows(tol=0.5)
+    s['levels'][0]['rows'][3]['enabled'] = False          # ximea y: kept, not used
+    aligner.command('set_setup', {'setup': s})
+    rows = aligner.command('dry_run', {})['rows']
+    assert [r['row'] for r in rows] == [1, 2, 3], rows
+    aligner.command('start', {})
+    wait_idle(aligner)
+    assert aligner.result['summary']['target_reached'], aligner.result
+    miss = spots(motion) - np.array([*GOAL['basler_camera:1'], *GOAL['ximea_camera:2']])
+    assert np.all(np.abs(miss[:3]) <= 0.5), miss
+    assert all(len(ev['rows']) == 3 for ev in aligner.history)
+    assert aligner.setup['levels'][0]['rows'][3]['enabled'] is False   # still in the table
+
+
 def test_settings_persist():
     aligner, *_ = make_world()
     aligner.command('set_setup', {'setup': setup_rows()})

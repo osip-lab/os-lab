@@ -141,14 +141,18 @@ export function createAlignerBox(device, container, sendCommand) {
       const goals = catalog?.goals ?? {};
       fs.innerHTML = `
         <legend>alignment ${li + 1}</legend>
-        <table class="al-rows"><thead><tr><th>signal</th><th>goal</th><th>value</th><th>tolerance</th><th></th></tr></thead><tbody></tbody></table>
+        <table class="al-rows"><thead><tr><th title="untick to keep a row but leave it out of the alignment">on</th><th>signal</th><th>goal</th><th>value</th><th>tolerance</th><th></th></tr></thead><tbody></tbody></table>
         <button class="al-add-row">+ signal</button>
         <div class="al-controls-title">controls</div>
         <div class="al-controls"></div>`;
       const tbody = fs.querySelector('tbody');
       level.rows.forEach((row, ri) => {
         const tr = document.createElement('tr');
+        const enabled = row.enabled !== false;
+        tr.classList.toggle('al-off', !enabled);
         tr.innerHTML = `
+          <td><input class="al-on" type="checkbox" ${enabled ? 'checked' : ''}
+                title="${enabled ? 'untick: keep this row but leave it out of the alignment' : 'tick: take this row into the alignment again'}"></td>
           <td><select class="al-signal">${signalOptions(row.signal)}</select></td>
           <td><select class="al-goal">${Object.entries(goals).map(([k, label]) =>
             `<option value="${k}" ${row.goal === k ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></td>
@@ -168,6 +172,7 @@ export function createAlignerBox(device, container, sendCommand) {
           changed();
         };
         tr.querySelector('.al-del').onclick = () => { level.rows.splice(ri, 1); changed(); };
+        tr.querySelector('.al-on').onchange = (e) => { row.enabled = e.target.checked; changed(); };
         const kind = tr.querySelector('.al-kind');
         if (kind) kind.onchange = () => { row.value = { kind: kind.value }; changed(); };
         const marker = tr.querySelector('.al-marker');
@@ -190,7 +195,7 @@ export function createAlignerBox(device, container, sendCommand) {
         tbody.appendChild(tr);
       });
       fs.querySelector('.al-add-row').onclick = () => {
-        level.rows.push({ signal: '', goal: 'goto', value: { kind: 'number' }, tolerance: 1 });
+        level.rows.push({ enabled: true, signal: '', goal: 'goto', value: { kind: 'number' }, tolerance: 1 });
         pushSetup(); renderLevels();
       };
 

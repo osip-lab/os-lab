@@ -197,7 +197,7 @@ class AlignerAdapter(DeviceAdapter):
             raise ValueError('nested alignments (several levels) are not available yet')
         level = levels[0]
         recipe.validate(level)
-        return level
+        return recipe.active(level)          # disabled rows take no part
 
     def _resolve(self, level, signals, fields):
         """(row values, the start measurement) -- values {row index: float}."""
@@ -220,7 +220,7 @@ class AlignerAdapter(DeviceAdapter):
             m = cm.metrics.get(r['signal'])
             value = m.value if m is not None and m.valid else None
             target = values.get(i)
-            row = {'signal': r['signal'], 'goal': r['goal'], 'target': _num(target),
+            row = {'row': r.get('_row'), 'signal': r['signal'], 'goal': r['goal'], 'target': _num(target),
                    'value': _num(value), 'spread': _num(m.spread) if m is not None and m.valid else None,
                    'reason': '' if value is not None else (m.reason if m is not None else 'missing'),
                    'miss': None, 'ok': None}
@@ -256,12 +256,12 @@ class AlignerAdapter(DeviceAdapter):
             if self.state != 'idle':
                 raise ValueError('a run is in progress')
             fields = self._fields()
-            level = self.setup['levels'][0]
-            if not level.get('rows'):
-                raise ValueError('add at least one signal row')
-            for i, r in enumerate(level['rows'], 1):
+            level = recipe.active(self.setup['levels'][0])
+            if not level['rows']:
+                raise ValueError('no enabled signal row')
+            for r in level['rows']:
                 if not r.get('signal'):
-                    raise ValueError(f'row {i}: choose a signal')
+                    raise ValueError(f'row {r["_row"]}: choose a signal')
             values, start = self._resolve(level, self._signal_set(fields), fields)
             rows = self._rows_report(level, values, start)
             self.emit({'type': 'dry_run', 'rows': rows})

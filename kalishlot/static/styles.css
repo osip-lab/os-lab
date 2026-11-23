@@ -932,6 +932,8 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 .al-rows td { padding: 2px 4px; vertical-align: middle; }
 .al-rows select { max-width: 100%; }
 .al-rows input[type=number] { width: 6.5em; }
+.al-rows tr.al-off td:not(:first-child) { opacity: 0.4; }   /* disabled row: kept, not used */
+.al-rows tr.al-off td:first-child { opacity: 1; }
 .al-readout td { font-family: var(--font-data); }
 .al-controls-title { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
 .al-controls { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
