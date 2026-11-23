@@ -23,10 +23,16 @@ Commands (args):
                              'start' or 'stay'
 Fields: delay_s (wait after a move before frames count), samples (CoM results per
 camera per measurement), max_evaluations, on_abort.
+What can be measured and moved is watched (CATALOG_POLL_S): a box opened or
+closed, a marker added or moved, an axis frozen or claimed sends a fresh
+'catalog' event by itself (axis positions alone do not, so the table is not
+redrawn under the user's typing during a run).
+
 Events: catalog, setup, status {state}, evaluation {index, positions, rows, kind?},
         log {line}, result {summary, rows}, error {message}
 """
 
+import json
 import sys
 import threading
 import time
@@ -43,6 +49,7 @@ RUNS_DIR = Path(__file__).resolve().parents[1] / 'alignment' / 'runs'
 DEFAULT_FIELDS = {'delay_s': 0.3, 'samples': 10, 'max_evaluations': 80, 'on_abort': 'best'}
 ON_ABORT = ('best', 'start', 'stay')
 HISTORY_KEPT = 300          # evaluations kept for a box that re-attaches mid-run
+CATALOG_POLL_S = 1.0        # how often the open devices / markers / axes are checked for changes
 WHO = 'aligner'
 
 
@@ -54,6 +61,7 @@ class AlignerAdapter(DeviceAdapter):
     type_name = 'aligner'
     display_name = 'Aligner'
     VIRTUAL = True
+    CATALOG_POLL_S = CATALOG_POLL_S
 
     registry = None     # set by server.py: () -> (devices, loans)
     activity = None     # set by server.py: note_activity (a run keeps the idle watchdog quiet)
@@ -73,12 +81,37 @@ class AlignerAdapter(DeviceAdapter):
         self._worker = None
         self._resume = threading.Event()
         self._resume.set()
+        self._watching = threading.Event()
+        self._watcher = None
+        self._catalog_key = None
 
     # ------------------------------------------------------------ lifecycle
     def open(self):
-        pass
+        self._catalog_key = self._key(self.catalog())
+        self._watching.set()
+        self._watcher = threading.Thread(target=self._watch, daemon=True, name='aligner catalog')
+        self._watcher.start()
+
+    @staticmethod
+    def _key(cat):
+        """What a catalog change means for the box: everything but axis positions."""
+        controls = [{k: v for k, v in c.items() if k != 'position'} for c in cat['controls']]
+        return json.dumps({**cat, 'controls': controls}, sort_keys=True, default=str)
+
+    def _watch(self):
+        while self._watching.is_set():
+            time.sleep(self.CATALOG_POLL_S)
+            try:
+                cat = self.catalog()
+            except Exception:            # a device closing under us: next round
+                continue
+            key = self._key(cat)
+            if key != self._catalog_key:
+                self._catalog_key = key
+                self.emit({'type': 'catalog', 'catalog': cat})
 
     def close(self):
+        self._watching.clear()
         loop = self._loop
         if loop is not None:
             self._resume.set()

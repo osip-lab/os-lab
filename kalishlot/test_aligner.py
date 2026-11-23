@@ -210,6 +210,31 @@ def test_refusals():
     assert motion.owner is None
 
 
+def test_catalog_follows_boxes_opened_later():
+    aligner, motion, devices, events = make_world()
+    del devices['motion_axes:simulated']               # the aligner opened first
+    aligner.CATALOG_POLL_S = 0.05
+    aligner.open()
+    try:
+        assert aligner.describe()['catalog']['controls'] == []
+        devices['motion_axes:simulated'] = motion      # then the motion box
+        deadline = time.time() + 2
+        cat = None
+        while time.time() < deadline and cat is None:
+            try:
+                e = events.get(timeout=0.1)
+            except Exception:
+                continue
+            if e['type'] == 'catalog':
+                cat = e['catalog']
+        assert cat and [c['axis'] for c in cat['controls']] == ['p1', 'p2', 'p3', 'p4'], cat
+        motion.axes['p1'].move_by(50, who='test')      # a position alone: no new catalog
+        time.sleep(0.3)
+        assert not any(events.get_nowait()['type'] == 'catalog' for _ in range(events.qsize()))
+    finally:
+        aligner.close()
+
+
 def test_settings_persist():
     aligner, *_ = make_world()
     aligner.command('set_setup', {'setup': setup_rows()})
