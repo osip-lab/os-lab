@@ -45,12 +45,14 @@ COM_QUANTITIES = {'com_x': ('sensor_x', 'px'), 'com_y': ('sensor_y', 'px'),
 def reduce_com(samples, quantities, min_valid_fraction=0.7, prefix=''):
     """Median of CoM results per quantity -> {prefix + quantity: Metric}.
 
-    Clipped results (spot at the frame edge: the centre is pulled inwards) and
-    invalid ones are dropped; saturated ones count (only the weights clip).
-    Fewer than min_valid_fraction usable results make every quantity invalid,
-    with the commonest reason."""
-    good = [s for s in samples
-            if s.get('valid') and not s.get('clipped') and s.get('sensor_x') is not None]
+    Only results without a spot (invalid) are dropped. A spot touching the frame
+    edge (clipped) still counts: its centre is pulled inwards, but it points the
+    right way, and a spot steered onto a marker ends up inside the frame anyway
+    (lab, 2026-11-23: a large spot entering from the edge was refused before).
+    Saturated ones count too (only the weights clip). Fewer than
+    min_valid_fraction usable results make every quantity invalid, with the
+    commonest reason."""
+    good = [s for s in samples if s.get('valid') and s.get('sensor_x') is not None]
     if len(good) < min_valid_fraction * max(len(samples), 1):
         reasons = [s.get('reason') or 'invalid' for s in samples if s not in good]
         reason = (f'{len(good)}/{len(samples)} valid centre-of-mass results'

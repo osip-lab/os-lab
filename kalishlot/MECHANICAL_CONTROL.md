@@ -366,7 +366,9 @@ goal rather than an optimum, next to maximizing intensity, minimizing splitting,
   frames taken after each move (+0.3 s for vibrations), median of 10 per camera; metrics
   `<camera>_com_x/_y` in sensor px. `ComMeasure.marker_target` is a VectorTarget over several cameras at
   once (two cameras + four motors = a square steering problem); its distance is combined over the
-  cameras. Clipped spots (touching the frame edge) are invalid, saturated ones count.
+  cameras. Only "no spot" is invalid: spots touching the frame edge (centre pulled inwards) and
+  saturated ones count. Refusing edge spots stopped a run before it started (lab, 2026-11-23: a large
+  spot entering the XIMEA frame from the top).
 
 ### 3.e Nested optimization: ridges and kept targets (2026-10-24, laptop)
 Two situations where one joint optimization over all axes fails:

@@ -96,6 +96,16 @@ def test_invalid_camera_makes_its_metrics_invalid():
     assert not cm.metrics['ximea_com_x'].valid and 'no spot' in cm.metrics['ximea_com_x'].reason
 
 
+def test_spot_at_the_frame_edge_counts():
+    from alignment.signals import reduce_com
+    samples = [{'valid': True, 'clipped': True, 'reason': 'spot touches the frame edge',
+                'sensor_x': 1050.0 + i * 0.1, 'sensor_y': 552.7, 'counts': 1e5} for i in range(5)]
+    out = reduce_com(samples, ('com_x', 'com_y'))
+    assert out['com_x'].valid and abs(out['com_x'].value - 1050.2) < 1e-9, out
+    none = [{'valid': False, 'reason': 'no spot', 'sensor_x': None}] * 5
+    assert not reduce_com(none, ('com_x',))['com_x'].valid
+
+
 def test_marker_target_from_live_markers():
     m = ComMeasure(CAMS, request=FakeKalishlot())
     t = m.marker_target({'basler': 'Mirror center', 'ximea': 'Aperture'}, tolerance_px=2)

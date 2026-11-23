@@ -22,9 +22,9 @@ of frames taken after the call (plus `delay_s`, for the vibrations of the
 move to die out). Metrics: <name>_com_x, <name>_com_y in uncropped sensor
 pixels (the markers' units), and <name>_com_counts (the summed weights, a
 brightness). A camera with fewer than `min_valid_fraction` valid results
-(no spot, or spot at the frame edge) makes its metrics invalid, which
-the loop counts as "worse", never as a position. A saturated spot still
-counts: its centre is measured, only the weights are clipped at full scale.
+(no spot) makes its metrics invalid, which the loop counts as "worse",
+never as a position. A spot touching the frame edge or saturated still
+counts (alignment/signals.py: reduce_com).
 
 The target is a VectorTarget over every camera's (x, y): the distance is the
 root of the summed squares over all cameras, so tolerance_px bounds the
