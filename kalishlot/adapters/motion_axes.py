@@ -21,7 +21,12 @@ With wait=False the move runs on a worker thread and the call returns at once;
 with wait=True it returns the MoveResult when the axis has settled
 mechanically (for scripts: the HTTP timeout of loan_client is 15 s).
 
-Events: {'type': 'axis', 'state': SafeAxis.describe(), 'moving': bool}
+Ownership: claim(who) / release(who) reserve the whole box for one in-process
+user (the aligner box) that moves the SafeAxis objects directly. While it is
+claimed, commands that move or change an axis from anyone else are refused;
+estop always goes through. describe() and every axis event carry 'owner'.
+
+Events: {'type': 'axis', 'state': SafeAxis.describe(), 'moving': bool, 'owner'}
         {'type': 'error', 'message': str}
 Opening reads positions and never moves; closing E-stops any running move
 (stop and hold) and never moves either.
@@ -65,6 +70,7 @@ class MotionAxesAdapter(DeviceAdapter):
         self.axes = {n: build_axis(n, self.config) for n in names}
         self._workers = {}               # axis name -> running move thread
         self._lock = threading.Lock()
+        self.owner = None                # who has claimed the box (see claim)
 
     # ------------------------------------------------------------ lifecycle
     def open(self):
@@ -86,6 +92,7 @@ class MotionAxesAdapter(DeviceAdapter):
                 'commands': ['move_to', 'move_by', 'estop', 'reset_estop', 'freeze',
                              'set_known_position', 'refresh'],
                 'axes': [self._state(n) for n in self.axes],
+                'owner': self.owner,
                 'tiers': [[n for n in tier if n in self.axes] for tier in TIERS]}
 
     # ------------------------------------------------------------- helpers
@@ -100,7 +107,36 @@ class MotionAxesAdapter(DeviceAdapter):
         return worker is not None and worker.is_alive()
 
     def _state(self, name):
-        return {**self.axes[name].describe(), 'moving': self._moving(name)}
+        return {**self.axes[name].describe(), 'moving': self._moving(name), 'owner': self.owner}
+
+    # ----------------------------------------------------------- ownership
+    def claim(self, who):
+        """Reserve the box for `who` (in-process moves); refused if someone else has it
+        or an axis is moving."""
+        with self._lock:
+            if self.owner not in (None, who):
+                raise ValueError(f'the axes are in use by {self.owner}')
+            busy = [n for n in self.axes if self._moving(n)]
+            if busy:
+                raise ValueError(f'{", ".join(busy)} still moving')
+            self.owner = who
+        self.notify()
+
+    def release(self, who):
+        with self._lock:
+            if self.owner == who:
+                self.owner = None
+        self.notify()
+
+    def notify(self, names=None):
+        """Send fresh axis states to the boxes (after in-process moves)."""
+        for n in names or self.axes:
+            self._emit_axis(n)
+
+    def _check_owner(self, args):
+        who = str(args.get('who', 'kalishlot'))
+        if self.owner is not None and who != self.owner:
+            raise ValueError(f'the axes are in use by {self.owner}: stop it first (E-STOP works)')
 
     def _emit_axis(self, name):
         self.emit({'type': 'axis', 'state': self._state(name)})
@@ -143,6 +179,8 @@ class MotionAxesAdapter(DeviceAdapter):
     # ------------------------------------------------------------- commands
     def command(self, name, args):
         args = args or {}
+        if name in ('move_to', 'move_by', 'reset_estop', 'freeze', 'set_known_position'):
+            self._check_owner(args)
         if name == 'move_to':
             return self._move(args, absolute=True)
         if name == 'move_by':

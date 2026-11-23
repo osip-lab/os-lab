@@ -81,6 +81,7 @@ export function createMotionAxesBox(device, container, sendCommand) {
       if (s.moving) lamps.push('<span class="lamp lit">moving</span>');
       if (s.frozen) lamps.push(`<span class="lamp warn">frozen${s.frozen_in_config ? ' (config)' : ''}</span>`);
       if (s.estop) lamps.push('<span class="lamp alert">E-stop</span>');
+      if (s.owner) lamps.push(`<span class="lamp warn">in use by ${s.owner}</span>`);
       if (!s.closed_loop) lamps.push('<span class="lamp">open loop</span>');
       row.querySelector('.motion-lamps').innerHTML = lamps.join(' ');
       freeze.checked = s.frozen;
