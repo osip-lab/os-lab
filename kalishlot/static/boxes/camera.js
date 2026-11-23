@@ -26,6 +26,12 @@
 // drawn series gets its own mean line). It measures and remembers that
 // window; nothing is kept beyond it and nothing is saved.
 //
+// The 'CoM' checkbox turns on the server's centre of mass (camera_com.py): a
+// fast position readout (pink cross, dashed 2σ ellipse of its moments) for
+// steering a spot onto a marker. 'cut' is the fraction of the peak height
+// above background below which pixels are ignored; 'CoM → marker' makes a
+// marker at the current centre (a target for the spot aligner).
+//
 // Returns a cleanup function that closes the socket.
 
 import { connectDeviceStream } from './stream.js';
@@ -45,6 +51,7 @@ const MARKER_COLORS = ['#00dcdc', '#ffb347', '#d77ae6', '#8fd65a', '#ff7a7a',
                        '#6fa8ff', '#f0e05a', '#e6e6e6'];
 const MARKERS_W = 210;     // width of the marker list beside the image, px
 const COLOR_GUESS = 'rgba(110, 255, 110, 0.86)';
+const COLOR_COM = 'rgba(255, 64, 170, 0.95)';    // centre of mass
 const COLOR_GRID = 'rgba(255, 255, 255, 0.28)';
 const COLOR_ROI = 'rgba(255, 205, 70, 0.95)';
 const GRID_SPACING_MM = 1;
@@ -89,6 +96,13 @@ export function createCameraBox(device, container, sendCommand) {
         <label class="field">
           <input type="checkbox" class="cam-fit" data-key="F"> fit</label>
         <button class="cam-fit-marker" data-key="Shift+F" disabled title="make a marker from the current fit (its 2σ ellipse). Available once the fit has a result">fit → marker</button>
+      </span>
+      <span class="subgroup">
+        <label class="field" title="centre of mass of the spot, computed on the server for every frame (up to 30 per second; milliseconds each, unlike the fit): pink cross, readout in sensor pixels (the markers' units). The spot must be the brightest thing in the frame — crop with the ROI when it is not">
+          <input type="checkbox" class="cam-com" data-key="O"> CoM</label>
+        <label class="field" title="pixels below this fraction of the spot's height above background are ignored (never less than 5 noise std). Higher = less background, but a smaller part of the spot is used">
+          cut <input type="number" class="cam-com-cut" min="0" max="95" step="5">%</label>
+        <button class="cam-com-marker" data-key="Shift+O" disabled title="make a marker at the current centre of mass (a target to steer the spot back to). Available once the centre of mass has a result">CoM → marker</button>
       </span>
       <span class="subgroup">
         <label class="field" title="1 mm grid, centered on the image">
@@ -417,6 +431,7 @@ export function createCameraBox(device, container, sendCommand) {
   let fitParams = null;   // last successful fit, sensor px
   let fitCross = null;    // {step, row, col} pixel cuts through the center
   let fitReason = '';
+  let comResult = null;   // newest 'com' event (sensor_x/_y: uncropped px), or null
   // [{id, label, x, y, r, visible, color}] in WHOLE-SENSOR px; the server's
   // 'markers' event is the source of truth
   let markers = device.markers ?? [];
@@ -482,6 +497,21 @@ export function createCameraBox(device, container, sendCommand) {
         ctx.stroke();
       }
       drawCross(ctx, cx, cy, 6);
+    }
+    if (comResult && comResult.valid) {
+      // drawn from the sensor position, so a crop since the frame cannot shift it
+      const cx = toCss(comResult.sensor_x - (roi ? roi.x : 0));
+      const cy = toCss(comResult.sensor_y - (roi ? roi.y : 0));
+      ctx.strokeStyle = COLOR_COM;
+      ctx.lineWidth = 1.5;
+      drawCross(ctx, cx, cy, 9);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, Math.max(toCss(2 * comResult.sigma_x), 1),
+        Math.max(toCss(2 * comResult.sigma_y), 1), 0, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
     for (const m of markers) {
       if (m.visible) drawMarker(ctx, toFrame(m), m.color, m.label);
@@ -646,6 +676,15 @@ export function createCameraBox(device, container, sendCommand) {
 
     const parts = [];
     if (fitReason) parts.push(fitReason);
+    if (comResult) {
+      if (comResult.valid) {
+        const flags = comResult.reason ? ` (${comResult.reason})` : '';
+        parts.push(`CoM = (${comResult.sensor_x.toFixed(2)}, ${comResult.sensor_y.toFixed(2)}) `
+          + `sensor px${flags}`);
+      } else {
+        parts.push(`CoM: ${comResult.reason}`);
+      }
+    }
     if (guess) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
         + `σ = ${guess.r.toFixed(1)} px`);
@@ -676,6 +715,46 @@ export function createCameraBox(device, container, sendCommand) {
     sendCommand(device.device_id, fitCheck.checked ? 'fit_on' : 'fit_off')
       .catch((e) => { status.textContent = e.message; });
   };
+
+  // ----------------------------------------------------- centre of mass
+  const comCheck = container.querySelector('.cam-com');
+  const comCutInput = container.querySelector('.cam-com-cut');
+  const comMarkerButton = container.querySelector('.cam-com-marker');
+  function updateComMarkerButton() {
+    comMarkerButton.disabled = !comCheck.checked || !(comResult && comResult.valid);
+  }
+  function showComState(enabled, cut) {
+    comCheck.checked = enabled;
+    if (cut !== undefined && cut !== null) {
+      comCutInput.value = Math.round(cut * 100);
+      comCutInput.dataset.committed = comCutInput.value;
+    }
+    if (!enabled && comResult) {
+      comResult = null;
+      redrawOverlay();
+      updateInfo();
+    }
+    updateComMarkerButton();
+  }
+  showComState(device.com ?? false, device.com_cut ?? 0.2);
+  comCheck.onchange = () => {
+    sendCommand(device.device_id, comCheck.checked ? 'com_on' : 'com_off')
+      .catch((e) => { status.textContent = e.message; });
+  };
+  const commitComCut = () => {
+    if (comCutInput.value === comCutInput.dataset.committed) return;
+    const percent = parseFloat(comCutInput.value);
+    if (!isFinite(percent) || percent < 0 || percent >= 100) {
+      comCutInput.value = comCutInput.dataset.committed;
+      return;
+    }
+    comCutInput.dataset.committed = comCutInput.value;
+    sendCommand(device.device_id, 'set_com_cut', { value: percent / 100 })
+      .catch((e) => { status.textContent = e.message; });
+  };
+  comCutInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitComCut(); });
+  comCutInput.addEventListener('blur', commitComCut);
+  comMarkerButton.onclick = (event) => { event.preventDefault(); addComMarker(); };
 
   // grid is a local display preference only (like the marker circle) — not
   // sent to the server, not shared across viewers.
@@ -1193,6 +1272,21 @@ export function createCameraBox(device, container, sendCommand) {
     });
   }
 
+  // the current centre of mass as a marker: a circle of its 2σ moments radius
+  function addComMarker() {
+    if (!comCheck.checked || !comResult || !comResult.valid) return;
+    const c = comResult;
+    addAndRename({
+      id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      label: nextMarkerLabel(),
+      x: c.sensor_x,
+      y: c.sensor_y,
+      r: Math.max(c.sigma_x + c.sigma_y, 3),   // = mean of the 2σ semi-axes
+      visible: true,
+      color: nextMarkerColor(),
+    });
+  }
+
   function sendMarkers(list) {
     showMarkers(list);   // at once; the broadcast confirms (or corrects) it
     sendCommand(device.device_id, 'set_markers', {markers: list})
@@ -1540,6 +1634,15 @@ export function createCameraBox(device, container, sendCommand) {
         redrawOverlay();
         drawStrips();
         updateInfo();
+      } else if (event.type === 'com_status') {
+        showComState(event.enabled, event.cut);
+      } else if (event.type === 'com') {
+        if (comCheck.checked) {
+          comResult = event;
+          updateComMarkerButton();
+          redrawOverlay();
+          updateInfo();
+        }
       } else if (event.type === 'guess') {
         guess = event.guess
           ? { x: event.guess.x_0, y: event.guess.y_0, r: event.guess.sigma } : null;
@@ -1585,6 +1688,7 @@ export function createCameraBox(device, container, sendCommand) {
       guess = describe.guess
         ? { x: describe.guess.x_0, y: describe.guess.y_0, r: describe.guess.sigma } : null;
       showThreshold(describe.fit_threshold ?? 0);
+      showComState(describe.com ?? false, describe.com_cut ?? 0.2);
       showMarkers(describe.markers ?? []);
       levelsPoints = describe.levels_points ?? null;
       showLevelsEnabled(describe.levels ?? false);

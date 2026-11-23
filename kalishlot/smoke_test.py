@@ -1081,6 +1081,14 @@ def check_motion_axes():
     run()
 
 
+def check_camera_com():
+    """Camera centre of mass: accuracy, robustness (hot pixels, cut, edges),
+    speed, and the adapter pipeline on the dummy camera. The body lives in
+    test_camera_com.py so it also runs without websockets."""
+    from test_camera_com import run
+    run()
+
+
 def check_camera_markers():
     """set_markers stores a validated list, broadcasts it, survives the
     settings snapshot (device_state.json), and refuses a malformed marker
@@ -1398,6 +1406,7 @@ def main():
         check_camera_restore_order()
         check_camera_markers()
         check_motion_axes()
+        check_camera_com()
         check_exposure_rate()
         asyncio.run(check_loans(available[0]['address']))
         asyncio.run(check_idle_watchdog(available[0]['address']))

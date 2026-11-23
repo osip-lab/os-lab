@@ -642,6 +642,7 @@ python -m alignment.metrics            # whole-capture metrics
 python alignment/validate_marks.py     # real sessions vs hand marks (edit ROOTS at the top)
 python -m motion.test_safety           # 14 safety-rule tests
 python -m motion.test_mdt693b          # MDT693B driver against a fake instrument
+python -m motion.test_newport_8742     # 8742 Picomotor driver against a fake controller
 python alignment/test_live_capture.py  # camera recorder + live capture sync (fakes, no hardware)
 python ../rigol_fg/test_safety_limits.py  # Rigol envelope against a fake instrument
 python -m simulation.cavity_physics    # physics (cavity_design + analytic stand-in)
@@ -764,6 +765,27 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
     reads).
   - Piezos do not shake the setup: settle delays set to 0.
   - Each fast measurement takes ~6 s (3 s recording + ~3 s overhead, not yet broken down).
+
+### Lab, 2026-11-23: second driver, New Focus 8742 Picomotor controller
+- **Hardware:** one Standard Picomotor (QM? = 3) on channel 1 of an 8742, s/n 103147, firmware 3.04,
+  USB ("Picomotor Controller", VID 104D / PID 4000, WinUSB). What it moves is not decided yet: the axis
+  is `picomotor_ch1` until then.
+- **Driver** `motion/newport_8742.py`, through Newport's `usbdll.dll` (ctypes, 64-bit, installed with the
+  Picomotor Application; no new Python packages). **The Picomotor Application must be closed**: it holds
+  the USB device, and the driver then finds no controller.
+  - Open loop, no limit switches, no feedback. Position = the controller's step counter (TP?), which
+    restarts at 0 at power-up wherever the motor is. The soft range (+-10000 steps, placeholder) is
+    therefore a travel window around that point, not a physical limit.
+  - Before every move it re-reads the counter and refuses if it changed since its last move (jogged from
+    the Picomotor Application or the hand pad).
+  - Moves are absolute (PA), wait for MD? with a timeout (abort with AB on timeout), then check TB? and
+    that the counter landed on the target. E-stop = AB (all channels of that controller).
+  - On open it refuses a channel without a motor, and caps the velocity at 1750 steps/s for a Tiny motor.
+- **Tried:** +200 steps and back through `SafeAxis`, landed on 300 and 100, ~0.2 s per move; 20000
+  refused by the range.
+- Manual: the 8742 manual never mentions end-of-travel damage. A Picomotor at a hard stop stalls (the
+  jaws slip), but do not leave it driving into one.
+- Next: decide what it moves, measure its travel and steps per um on the camera, then set real limits.
 
 ### Lab, 2026-10-19: live capture from the running streams
 - **What was added:**
