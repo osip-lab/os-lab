@@ -133,6 +133,8 @@ def main():
               f"{' (aborted)' if summary['aborted'] else ''}: {summary['evaluations']} evaluations, "
               f"{summary['seconds']:.0f} s")
         print('end:   ' + '  '.join(f'{n}={a.position:g}' for n, a in axes.items()))
+        print('steps: ' + '  '.join(f'{n}={a.travel_used:g}' for n, a in axes.items())
+              + f'  (total {sum(a.travel_used for a in axes.values()):g})')
         print(f'log:   {run_dir / "evaluations.jsonl"}')
     finally:
         for a in axes.values():

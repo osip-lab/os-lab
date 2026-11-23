@@ -115,6 +115,39 @@ def test_repeatable_axes_keep_the_old_search():
     assert not s['tracked'] and s['target_reached'], s
 
 
+def test_previous_jacobian_skips_the_probes():
+    axes, measure, spots = world(seed=1)
+    first = AlignmentLoop(axes, measure, target(), max_evaluations=60, print_fn=None).run()
+    jac = first['jacobian']
+    assert first['target_reached'] and jac and not first['jacobian_reused'], first
+    # in the metrics' own units (px per step), roughly the model's J: Broyden refines it only
+    # along the moves made, and the steps here vary by 30%
+    err = np.linalg.norm(np.array(jac['J']) - J) / np.linalg.norm(J)
+    assert err < 0.6, err
+    for a in axes.values():                          # someone walks the spots away again
+        a.move_by(150.0, who='test')
+    kinds = []
+    loop = AlignmentLoop(axes, measure, target(), max_evaluations=60, print_fn=None, jacobian=jac)
+    orig = loop.measure
+    loop.measure = lambda kind: (kinds.append(kind), orig(kind))[1]
+    second = loop.run()
+    assert second['jacobian_reused'] and second['target_reached'], second
+    assert 'probe' not in kinds, kinds
+    assert second['evaluations'] < first['evaluations'], (second['evaluations'], first['evaluations'])
+    # other tolerances: the matrix is kept in px per step, so it still applies
+    t2 = VectorTarget(NAMES, tuple(GOAL), tolerances=(2.0, 2.0, 2.0, 2.0))
+    third = AlignmentLoop(axes, measure, t2, max_evaluations=60, print_fn=None,
+                          jacobian=second['jacobian']).run()
+    assert third['jacobian_reused'], third
+
+
+def test_a_matrix_for_other_signals_is_ignored():
+    axes, measure, spots = world()
+    jac = {'metrics': ['a', 'b', 'c', 'd'], 'axes': list(axes), 'J': J.tolist(), 'probes': {}}
+    s = AlignmentLoop(axes, measure, target(), max_evaluations=60, print_fn=None, jacobian=jac).run()
+    assert not s['jacobian_reused'] and s['target_reached'], s
+
+
 def test_stuck_ends_with_a_reason():
     axes, measure, spots = world()
     t = VectorTarget(NAMES, tuple(GOAL), tolerances=(0.01,) * 4)   # far below the noise

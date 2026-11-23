@@ -8,6 +8,7 @@ four simulated axes of a real MotionAxesAdapter, all in one fake registry.
 
 import random
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -57,7 +58,7 @@ class FakeCamera:
         if not self.com:
             raise RuntimeError('the centre of mass is off on this camera')
         time.sleep(self.slow_s)
-        p = np.array([self.motion.axes[f'p{c}'].position for c in range(1, 5)])
+        p = np.array([self.motion.axes[f'p{c}']._raw.true_position for c in range(1, 5)])
         s = START + J @ p
         x, y = s[self.rows[0]], s[self.rows[1]]
         return [{'valid': True, 'clipped': False, 'counts': 1e5, 'frame_time_s': time.time(),
@@ -65,11 +66,17 @@ class FakeCamera:
                 for _ in range(n)]
 
 
-def make_world(slow_s=0.0):
+LOGS = Path(tempfile.mkdtemp(prefix='aligner-test-runs-'))   # never the lab's alignment/runs
+
+
+def make_world(slow_s=0.0, open_loop=False):
+    """open_loop: Picomotor-like axes (no readback, backward steps 20% short, 10% jitter)."""
     lim = AxisLimits(min=-10000, max=10000, max_step=200, max_slew=1e9, settle_s=0.0,
                      vibration_settle_s=0.0)
+    extra = dict(has_readback=False, backward_scale=0.8, step_jitter=0.1) if open_loop else {}
     cfg = {f'p{c}': {'driver': 'simulated', 'address': f'sim:{c}',
-                     'options': dict(units='steps', kind='position', start=0.0), 'limits': lim}
+                     'options': dict(units='steps', kind='position', start=0.0, seed=c, **extra),
+                     'limits': lim}
            for c in range(1, 5)}
     motion = MotionAxesAdapter('simulated', config=cfg)
     motion.open()
@@ -77,6 +84,7 @@ def make_world(slow_s=0.0):
                'basler_camera:1': FakeCamera('basler_camera:1', (0, 1), motion, slow_s),
                'ximea_camera:2': FakeCamera('ximea_camera:2', (2, 3), motion, slow_s)}
     aligner = AlignerAdapter('main')
+    aligner.runs_dir = LOGS
     aligner.registry = lambda: (devices, {})
     events = aligner.add_listener()
     return aligner, motion, devices, events
@@ -100,7 +108,7 @@ def wait_idle(aligner, timeout=30):
 
 
 def spots(motion):
-    p = np.array([motion.axes[f'p{c}'].position for c in range(1, 5)])
+    p = np.array([motion.axes[f'p{c}']._raw.true_position for c in range(1, 5)])
     return START + J @ p
 
 
@@ -117,7 +125,7 @@ def test_dry_run_moves_nothing():
     aligner, motion, devices, _ = make_world()
     aligner.command('set_setup', {'setup': setup_rows()})
     rows = aligner.command('dry_run', {})['rows']
-    assert [round(r['miss'], 0) for r in rows] == [-77.0, 54.0, 69.0, -55.0], rows
+    assert np.allclose([r['miss'] for r in rows], [-77.1, 54.2, 69.0, -54.4], atol=1.0), rows
     assert all(r['ok'] is False for r in rows)
     assert all(motion.axes[f'p{c}'].position == 0 for c in range(1, 5))
     assert devices['basler_camera:1'].com          # the centre of mass was switched on
@@ -249,6 +257,41 @@ def test_disabled_row_is_ignored():
     assert np.all(np.abs(miss[:3]) <= 0.5), miss
     assert all(len(ev['rows']) == 3 for ev in aligner.history)
     assert aligner.setup['levels'][0]['rows'][3]['enabled'] is False   # still in the table
+
+
+def test_steps_used_are_reported():
+    aligner, motion, devices, _ = make_world()
+    aligner.command('set_setup', {'setup': setup_rows()})
+    aligner.command('start', {})
+    wait_idle(aligner)
+    used = aligner.result['steps_used']
+    assert set(used) == {'p1', 'p2', 'p3', 'p4'} and all(v > 0 for v in used.values()), used
+    assert all(abs(used[n] - motion.axes[n].travel_used) < 1e-6 for n in used), used
+    assert any(LOGS.glob('*/evaluations.jsonl'))       # the log went to the test folder
+
+
+def test_previous_matrix_skips_the_probes():
+    aligner, motion, devices, events = make_world(open_loop=True)
+    s = setup_rows(tol=1.0)
+    aligner.command('set_setup', {'setup': s})
+    aligner.command('start', {})
+    wait_idle(aligner)
+    first = aligner.result['summary']
+    assert first['tracked'] and first['target_reached'] and not first['jacobian_reused'], aligner.result
+    assert aligner.jacobian and aligner.describe()['jacobian']['axes'] == ['p1', 'p2', 'p3', 'p4']
+    n_first = first['evaluations']
+    for a in motion.axes.values():                     # walk the spots away again
+        a.move_by(300.0, who='test')
+    s['fields']['reuse_jacobian'] = True
+    aligner.command('set_setup', {'setup': s})
+    aligner.command('start', {})
+    wait_idle(aligner)
+    second = aligner.result['summary']
+    assert second['jacobian_reused'] and second['target_reached'], aligner.result
+    assert second['evaluations'] < n_first, (second['evaluations'], n_first)
+    other = AlignerAdapter('main')                     # the matrix survives a restart
+    other.restore_settings(aligner.settings_snapshot())
+    assert other.jacobian == aligner.jacobian
 
 
 def test_settings_persist():

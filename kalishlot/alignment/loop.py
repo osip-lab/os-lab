@@ -58,6 +58,12 @@ Design (kalishlot/MECHANICAL_CONTROL.md, section 3):
   a move that did not get closer. Ends reached (confirmed in place), stuck (no
   progress for `stall_moves` moves), at the range edge, or on budget; the axes
   stay where they are ('best' = the last position; summary['end_reason']).
+  The Jacobian (partial derivatives of the measured vector by the axes) a
+  tracking run ends with is summary['jacobian'] (in the metrics' own units, so
+  it survives a change of tolerances). Passing it back as jacobian= skips the
+  probes of the next run: it starts moving at the goal at once and keeps
+  refining the matrix as before. A matrix that does not cover the run's axes
+  and metrics is ignored (the run probes, and says so).
 """
 
 import json
@@ -169,7 +175,7 @@ class AlignmentLoop:
                  accept_sigmas=1.0, min_step_sigmas=3.0, noise_repeats=4,
                  remeasure_every=8, max_evaluations=150, on_abort='best', confirm_jump=10.0,
                  log_dir=None, who='alignment loop', print_fn=print, known_noise=None, stall_passes=2,
-                 track='auto', stall_moves=6):
+                 track='auto', stall_moves=6, jacobian=None):
         self.axes = dict(axes)
         self.measure_fn = measure
         self.objective = objective or Objective()
@@ -187,6 +193,9 @@ class AlignmentLoop:
         self.stall_moves = stall_moves        # tracking: moves without getting closer before it ends
         self.tracked = False
         self.end_reason = ''
+        self.jacobian_in = jacobian           # a previous run's summary['jacobian'] (tracking)
+        self.jacobian = None                  # the matrix this run ends with (tracking)
+        self.jacobian_reused = False
         self.on_abort = on_abort
         self.who = who
         self.print = print_fn or (lambda *a, **k: None)
@@ -460,6 +469,37 @@ class AlignmentLoop:
             return bool(moving) and all(_open_loop(self.axes[n]) for n in moving)
         return bool(self.track)
 
+    def _scale(self):
+        import numpy as np
+        n = len(self.objective.goal)
+        return np.array(getattr(self.objective, '_scale', None) or (1.0,) * n, dtype=float)
+
+    def _previous_jacobian(self, axes):
+        """(J in working units, probe sizes) from jacobian=, or None when it does not fit."""
+        import numpy as np
+        prev = self.jacobian_in
+        if not prev:
+            return None
+        metrics = list(getattr(self.objective, 'metrics', ()))
+        try:
+            rows = [prev['metrics'].index(m) for m in metrics]
+            cols = [prev['axes'].index(n) for n in axes]
+        except (KeyError, ValueError):
+            self.print('  previous Jacobian does not cover these signals and controls: probing')
+            return None
+        J = np.array(prev['J'], dtype=float)[np.ix_(rows, cols)] / self._scale()[:, None]
+        if not np.all(np.isfinite(J)) or np.linalg.norm(J) == 0:
+            self.print('  previous Jacobian is empty: probing')
+            return None
+        probes = {n: float((prev.get('probes') or {}).get(n, self.steps[n])) for n in axes}
+        return J, probes
+
+    def _keep_jacobian(self, J, axes, probes):
+        import numpy as np
+        self.jacobian = {'metrics': list(getattr(self.objective, 'metrics', ())), 'axes': list(axes),
+                         'J': (np.asarray(J) * self._scale()[:, None]).tolist(),
+                         'probes': dict(probes), 'time': time.time()}
+
     def _track_stage(self, active, probe_doublings=4):
         """Steering for open-loop axes: never go back (see the module docstring)."""
         import numpy as np
@@ -478,6 +518,12 @@ class AlignmentLoop:
             return
         threshold = max(3 * noise, 1e-9)
 
+        previous = self._previous_jacobian(axes)
+        if previous is not None:
+            J, probes = previous
+            self.jacobian_reused = True
+            self.print('  tracking: using the previous Jacobian, no probes')
+            return self._track_moves(axes, J, probes, c, goal, noise)
         J = np.zeros((goal.size, len(axes)))
         probes = {}
         for i, n in enumerate(axes):             # probe: from where the previous one left off
@@ -516,7 +562,18 @@ class AlignmentLoop:
             self.print(f'  tracking: {self.end_reason}')
             return
         self.print('  tracking: probed ' + ' '.join(f'{n} ({h:.3g})' for n, h in probes.items()))
+        return self._track_moves(axes, J, probes, c, goal, noise)
 
+    def _track_moves(self, axes, J, probes, c, goal, noise):
+        """Move at the goal from the measured position c, refining J after every move."""
+        import numpy as np
+        position = self.objective.position
+        try:
+            self._track_loop(axes, J, probes, c, goal, noise, position, np)
+        finally:
+            self._keep_jacobian(J, axes, probes)
+
+    def _track_loop(self, axes, J, probes, c, goal, noise, position, np):
         radius = 1.0                             # trust region, in units of 8x each probe
         best_d = float(np.linalg.norm(c - goal))
         stall = 0
@@ -549,7 +606,7 @@ class AlignmentLoop:
             q = np.array(q, dtype=float)
             step = np.array([_pos(self.axes[n]) - before[n] for n in axes])
             if step @ step > 0:                  # Broyden: learn from every real move
-                J += np.outer((q - c) - J @ step, step) / (step @ step)
+                J += np.outer((q - c) - J @ step, step) / (step @ step)   # in place: kept at the end
             d = float(np.linalg.norm(q - goal))
             if d < best_d - self.accept_sigmas * noise:
                 best_d, stall, radius = d, 0, min(radius * 1.5, 1.0)
@@ -625,6 +682,7 @@ class AlignmentLoop:
                 'end_reason': ('reached' if self.target_reached
                                else self.end_reason or ('stopped' if aborted else '')),
                 'tracked': self.tracked,
+                'jacobian': self.jacobian, 'jacobian_reused': self.jacobian_reused,
                 'aborted': aborted, 'seconds': time.time() - t0}
 
     def _finish(self):

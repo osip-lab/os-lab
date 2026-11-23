@@ -37,6 +37,9 @@ export function createAlignerBox(device, container, sendCommand) {
         <input class="al-f" data-f="samples" type="number" step="1" min="1"></label>
       <label class="field" title="measurement budget of one run">max evals
         <input class="al-f" data-f="max_evaluations" type="number" step="1" min="1"></label>
+      <label class="field al-jac" title="start from the partial-derivatives matrix the previous run ended with: no probes. The run still refines it after every move.">
+        <input class="al-reuse" type="checkbox"> use previous partial derivatives matrix
+        <span class="unit al-jac-info"></span></label>
     </div>
     <div class="al-levels"></div>
     <div class="toolbar">
@@ -60,7 +63,17 @@ export function createAlignerBox(device, container, sendCommand) {
   let lastRows = device.result?.rows ?? null;
   const logLines = [];
 
+  let jacobian = device.jacobian ?? null;
   const pushSetup = () => send('set_setup', { setup }).catch(() => {});
+
+  function showJacobian() {
+    const info = $('.al-jac-info');
+    if (!jacobian) { info.textContent = '(none yet)'; return; }
+    const when = jacobian.time ? new Date(jacobian.time * 1000).toLocaleTimeString() : '';
+    info.textContent = `(${jacobian.metrics.length}×${jacobian.axes.length}, ${when})`;
+    info.title = `signals: ${jacobian.metrics.join(', ')}\ncontrols: ${jacobian.axes.join(', ')}`;
+  }
+  $('.al-reuse').onchange = (e) => { setup.fields.reuse_jacobian = e.target.checked; pushSetup(); };
 
   // ------------------------------------------------------------ toolbar
   $('.al-start').onclick = () => send('start').catch(() => {});
@@ -85,6 +98,8 @@ export function createAlignerBox(device, container, sendCommand) {
   function showFields() {
     for (const input of container.querySelectorAll('.al-f')) input.value = setup.fields[input.dataset.f];
     $('.al-onabort').value = setup.fields.on_abort ?? 'best';
+    $('.al-reuse').checked = !!setup.fields.reuse_jacobian;
+    showJacobian();
   }
 
   function showState() {
@@ -99,6 +114,7 @@ export function createAlignerBox(device, container, sendCommand) {
     $('.al-stop').disabled = idle;
     container.querySelector('.al-levels').classList.toggle('is-disabled', !idle);
     for (const input of container.querySelectorAll('.al-f')) input.disabled = !idle;
+    $('.al-reuse').disabled = !idle;
   }
 
   // ------------------------------------------------------------- levels
@@ -357,7 +373,11 @@ export function createAlignerBox(device, container, sendCommand) {
         log(event.error ? `ended: ${event.error}`
           : `${s.target_reached ? 'TARGET REACHED' : `target not reached (${s.end_reason || 'budget'})`}`
             + `${s.aborted ? ' (stopped)' : ''}: ${s.evaluations} measurements, ${fmt(s.seconds, 3)} s`
-            + (s.tracked ? ' · open-loop axes tracked: they stay where they are' : ''));
+            + (s.tracked ? ' · open-loop axes tracked: they stay where they are' : '')
+            + (s.jacobian_reused ? ' · previous matrix used, no probes' : ''));
+        const steps = Object.entries(event.steps_used ?? {});
+        if (steps.length) log('steps used: ' + steps.map(([n, v]) => `${n} ${fmt(v, 6)}`).join(', ')
+          + ` · total ${fmt(steps.reduce((a, [, v]) => a + (v || 0), 0), 6)}`);
       } else if (event.type === 'setup') {
         // our own edit echoed back: re-rendering would steal the focus mid-typing
         if (JSON.stringify(event.setup) !== JSON.stringify(setup)) {
@@ -366,10 +386,12 @@ export function createAlignerBox(device, container, sendCommand) {
       }
       else if (event.type === 'catalog') { catalog = event.catalog; renderLevels(); }
       else if (event.type === 'dry_run') { lastRows = event.rows; showReport('dry run'); }
+      else if (event.type === 'jacobian') { jacobian = event.jacobian; showJacobian(); }
       else if (event.type === 'error') status.textContent = `error: ${event.message}`;
     },
     onReattach(describe) {
       setup = structuredClone(describe.setup); catalog = describe.catalog; state = describe.state;
+      jacobian = describe.jacobian ?? null;
       history = describe.history ?? []; lastRows = describe.result?.rows ?? lastRows;
       logLines.length = 0; history.forEach(logEvaluation); showAll();
     },

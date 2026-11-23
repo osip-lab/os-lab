@@ -877,6 +877,14 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   reproduce the failure; with 20-30% jitter the old search ends on budget in about half the cases, as in
   the lab, while tracking reaches the target in all of them in 12-15 evaluations
   (`alignment/test_track.py`).
+- **Reusing the matrix.** A tracking run ends with its refined Jacobian (`summary['jacobian']`, in the
+  metrics' own units, e.g. px per step, so a change of tolerances does not spoil it). Passed back as
+  `AlignmentLoop(jacobian=...)` it replaces the probes: the run moves at the goal from its first
+  measurement and keeps refining the matrix after every move. The aligner box keeps the last one with
+  its settings (it survives a restart) and uses it when "use previous partial derivatives matrix" is
+  ticked; a matrix for other signals or controls is ignored and the run probes.
+- **Steps per run.** Each result reports the steps every control travelled (`steps_used`, from
+  SafeAxis.travel_used), in the box's log and in the command-line script.
 - Next, if needed: learn separate forward and backward gains per axis (about twice the accuracy per move).
 
 ### Aligner box in kalishlot (2026-11-23)

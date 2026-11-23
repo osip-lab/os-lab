@@ -22,7 +22,10 @@ Commands (args):
     stop     {on_abort}      end after the current measurement; then 'best' (default),
                              'start' or 'stay'
 Fields: delay_s (wait after a move before frames count), samples (CoM results per
-camera per measurement), max_evaluations, on_abort.
+camera per measurement), max_evaluations, on_abort, reuse_jacobian (start from the
+partial-derivatives matrix the previous tracking run ended with instead of probing;
+it is kept with the box's settings, so it survives a restart).
+A result reports the steps (travel) each control used in that run.
 What can be measured and moved is watched (CATALOG_POLL_S): a box opened or
 closed, a marker added or moved, an axis frozen or claimed sends a fresh
 'catalog' event by itself (axis positions alone do not, so the table is not
@@ -46,7 +49,8 @@ from alignment.signals import ComSignals, SignalSet, resolve_value  # noqa: E402
 from .base import DeviceAdapter  # noqa: E402
 
 RUNS_DIR = Path(__file__).resolve().parents[1] / 'alignment' / 'runs'
-DEFAULT_FIELDS = {'delay_s': 0.3, 'samples': 10, 'max_evaluations': 80, 'on_abort': 'best'}
+DEFAULT_FIELDS = {'delay_s': 0.3, 'samples': 10, 'max_evaluations': 80, 'on_abort': 'best',
+                  'reuse_jacobian': False}
 ON_ABORT = ('best', 'start', 'stay')
 HISTORY_KEPT = 300          # evaluations kept for a box that re-attaches mid-run
 CATALOG_POLL_S = 1.0        # how often the open devices / markers / axes are checked for changes
@@ -74,6 +78,8 @@ class AlignerAdapter(DeviceAdapter):
         super().__init__(address)
         self.setup = {'levels': [{'rows': [], 'controls': []}], 'fields': dict(DEFAULT_FIELDS)}
         self.state = 'idle'                 # idle | running | paused | stopping
+        self.runs_dir = RUNS_DIR            # evaluation logs (tests point it elsewhere)
+        self.jacobian = None                # the last tracking run's final matrix (loop summary)
         self.history = []
         self.result = None
         self._lock = threading.Lock()
@@ -121,9 +127,12 @@ class AlignerAdapter(DeviceAdapter):
             self._worker.join(timeout=30)
 
     def settings_snapshot(self):
-        return {'setup': self.setup}
+        return {'setup': self.setup, 'jacobian': self.jacobian}
 
     def restore_settings(self, snapshot):
+        jac = (snapshot or {}).get('jacobian')
+        if isinstance(jac, dict) and {'metrics', 'axes', 'J'} <= set(jac):
+            self.jacobian = jac
         setup = (snapshot or {}).get('setup')
         if isinstance(setup, dict) and isinstance(setup.get('levels'), list) and setup['levels']:
             fields = dict(DEFAULT_FIELDS, **(setup.get('fields') or {}))
@@ -170,7 +179,15 @@ class AlignerAdapter(DeviceAdapter):
         return {'type': self.type_name, 'label': self.display_name,
                 'commands': ['set_setup', 'refresh', 'dry_run', 'start', 'pause', 'resume', 'stop'],
                 'setup': self.setup, 'state': self.state, 'catalog': self.catalog(),
-                'history': self.history[-HISTORY_KEPT:], 'result': self.result}
+                'history': self.history[-HISTORY_KEPT:], 'result': self.result,
+                'jacobian': self._jacobian_info()}
+
+    def _jacobian_info(self):
+        """What the box shows about the kept matrix (not the numbers)."""
+        jac = self.jacobian
+        if not jac:
+            return None
+        return {'time': jac.get('time'), 'axes': jac['axes'], 'metrics': jac['metrics']}
 
     # ------------------------------------------------------------ helpers
     def _set_state(self, state):
@@ -182,6 +199,7 @@ class AlignerAdapter(DeviceAdapter):
         f['delay_s'] = max(float(f['delay_s']), 0.0)
         f['samples'] = max(int(f['samples']), 1)
         f['max_evaluations'] = max(int(f['max_evaluations']), 1)
+        f['reuse_jacobian'] = bool(f.get('reuse_jacobian'))
         if f['on_abort'] not in ON_ABORT:
             f['on_abort'] = 'best'
         return f
@@ -360,15 +378,20 @@ class AlignerAdapter(DeviceAdapter):
             self.emit({'type': 'log', 'line': ' '.join(str(p) for p in parts)})
 
         summary, error = None, None
+        travel0 = {n: getattr(a, 'travel_used', None) for n, a in axes.items()}
         try:
             objective = recipe.build_objective(level, values, label='aligner')
             loop = AlignmentLoop(axes, measure, objective, tiers=[names], steps=steps or None,
                                  max_evaluations=fields['max_evaluations'],
                                  on_abort=fields['on_abort'],
-                                 log_dir=RUNS_DIR / time.strftime('%Y%m%d-%H%M%S'),
-                                 who=WHO, print_fn=log)
+                                 log_dir=self.runs_dir / time.strftime('%Y%m%d-%H%M%S'),
+                                 who=WHO, print_fn=log,
+                                 jacobian=self.jacobian if fields['reuse_jacobian'] else None)
             self._loop = loop
             summary = loop.run()
+            if summary.get('jacobian'):
+                self.jacobian = summary['jacobian']
+                self.emit({'type': 'jacobian', 'jacobian': self._jacobian_info()})
         except Exception as e:                  # E-stop, driver error, signal lost
             error = str(e)
             self.emit({'type': 'error', 'message': f'run ended: {error}'})
@@ -380,8 +403,10 @@ class AlignerAdapter(DeviceAdapter):
             self.result = {'summary': {k: v for k, v in (summary or {}).items()
                                        if k in ('best', 'evaluations', 'target_reached',
                                                 'aborted', 'seconds', 'start', 'end_reason',
-                                                'tracked')},
-                           'error': error, 'rows': last}
+                                                'tracked', 'jacobian_reused')},
+                           'error': error, 'rows': last,
+                           'steps_used': {n: _num(getattr(a, 'travel_used', 0) - travel0[n])
+                                          for n, a in axes.items() if travel0[n] is not None}}
             self.emit({'type': 'result', **self.result})
             self._resume.set()
             self._set_state('idle')
