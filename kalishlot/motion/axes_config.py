@@ -67,6 +67,18 @@ AXES = {
         'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.0,
                              vibration_settle_s=0.0),
     },
+    # One Standard Picomotor on channel 1 of a New Focus 8742 (s/n 103147, firmware 3.04, USB).
+    # Open loop: position = the controller's step counter, which restarts at 0 at power-up
+    # wherever the motor is, so the range is a travel window around that point, not a
+    # physical limit. Steps are < 30 nm (manual), backwards steps differ in size.
+    # PLACEHOLDER limits (2026-11-23): +-10000 steps (~+-0.3 mm) until the element it drives
+    # and its travel are known; 200-step ramp pieces at the controller's 2000 steps/s.
+    # Rename the axis once it is known what it moves.
+    'picomotor_ch1': {
+        'driver': 'newport_8742', 'address': 'usb:103147', 'options': {'channel': 1},
+        'limits': AxisLimits(min=-10000, max=10000, max_step=200, max_slew=2000, settle_s=0.0,
+                             vibration_settle_s=0.0),
+    },
 }
 
 # Optimization order: the loop works on TIERS[0] alone, then TIERS[0] + TIERS[1], ...

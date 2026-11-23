@@ -5,6 +5,7 @@
     virtual.py      VirtualAxis: linear combinations of axes as one DoF
     simulated.py    SimulatedAxis: backlash, random landing error, drift
     thorlabs_mdt693b.py  MDT693BAxis: one channel of a Thorlabs MDT693B piezo driver
+    newport_8742.py Picomotor8742Axis: one channel of a New Focus 8742 Picomotor controller
     axes_config.py  versioned limits, tiers, virtual axes
     test_safety.py  hardware-free tests of every safety rule
 
@@ -25,7 +26,11 @@ def _driver_registry():
         opt.setdefault('max_allowed', limits.max)   # checked against the limit switch on open
         return MDT693BAxis(name, address, **opt)
 
-    return {'simulated': simulated, 'thorlabs_mdt693b': mdt693b}
+    def newport_8742(name, address, limits, **opt):
+        from motion.newport_8742 import Picomotor8742Axis
+        return Picomotor8742Axis(name, address, **opt)
+
+    return {'simulated': simulated, 'thorlabs_mdt693b': mdt693b, 'newport_8742': newport_8742}
 
 
 def build_axis(name, config=None, log=None, **safe_kwargs):
