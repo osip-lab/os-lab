@@ -45,8 +45,10 @@ class FakeController:
             self.target.clear()
         else:
             ch, op, arg = int(cmd[0]), cmd[1:3], cmd[3:]
-            if op == 'QM':
+            if op == 'QM' and arg == '?':
                 self.reply = str(self.qm[ch])
+            elif op == 'QM':
+                self.qm[ch] = int(arg)
             elif op == 'TP':
                 self.reply = str(self.tp[ch])
             elif op == 'VA' and arg == '?':
@@ -238,6 +240,28 @@ def test_controller_error_raises():
         assert 'VELOCITY OUT OF RANGE' in str(e)
     else:
         raise AssertionError('controller error ignored')
+
+
+def test_declared_motor_type_set_when_undetected():
+    fake = FakeController()                 # channel 2 reads 0 although a motor is there
+    cfg = make_config(fake)
+    cfg['p2']['options']['motor_type'] = 'Standard'
+    p2 = build_axis('p2', cfg, sleep=lambda s: None)
+    p2.open()
+    assert fake.qm[2] == 3 and '2QM3' in fake.writes and not moves(fake)
+
+
+def test_declared_motor_type_mismatch_refused():
+    fake = FakeController(motor_types=(2, 0, 0, 0))     # a Tiny motor detected on channel 1
+    cfg = make_config(fake)
+    cfg['p1']['options']['motor_type'] = 'Standard'
+    try:
+        build_axis('p1', cfg).open()
+    except RuntimeError as e:
+        assert 'config says' in str(e)
+    else:
+        raise AssertionError('opened a channel whose detected motor contradicts the config')
+    assert fake.qm[1] == 2 and fake.closed
 
 
 def test_tiny_motor_velocity_capped():

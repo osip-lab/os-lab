@@ -12,6 +12,7 @@ while it runs: close it first, or no controller is found.
 ASCII protocol (8742 user manual, section 6; firmware 3.04 here):
     *IDN?   -> New_Focus 8742 v3.04 09/09/16 103147     (serial number last)
     1QM?    -> 3          motor type: 0 none, 1 unknown, 2 Tiny, 3 Standard
+    1QM3                  set the motor type (not saved: SM would save it)
     1TP?    -> 100        step counter (since power-up, reset or DH)
     1MD?    -> 1          1 = motion done, 0 = moving
     1PA500                absolute move to counter value 500 (no reply)
@@ -29,8 +30,16 @@ the counter's zero, not a physical limit. After a controller power cycle the
 counter restarts at 0 wherever the motor is: the window moves with it.
 
 Safety in this layer (SafeAxis adds range, ramps, freeze, E-stop on top):
-- open() and close() never move. open() checks the identity, that a motor is
-  connected on the channel (QM? = 2 or 3), and clears stale errors.
+- open() and close() never move. open() checks the identity and the motor
+  type (QM?), and clears stale errors.
+- QM? is the motor type the controller has stored, not a live sensor. It is
+  set by the controller's motor detection (power-up, or MC, which steps each
+  axis), and that can miss a motor that is there: in the lab (2026-11-23)
+  channels 2-4 read 0 ('none') while their motors moved fine. So the config
+  can declare the type ('motor_type': 'Standard' or 'Tiny'): open() then sets
+  an undetected channel (0 or 1) to it with nQMk, which never moves. A channel
+  that reports the other type is refused. Without a declared type, only a
+  detected motor (2 or 3) opens.
 - Before every move the counter is read. If it differs from the last value
   this driver commanded (or read on open), the move is refused: someone moved
   the motor with the Picomotor Application or the hand pad, and SafeAxis's
@@ -52,6 +61,7 @@ USB_DLL = r'C:\Program Files\Newport\Newport USB Driver\Bin\usbdll.dll'
 PRODUCT_ID = 0x4000
 MOTOR_TYPES = {0: 'none', 1: 'unknown', 2: 'Tiny', 3: 'Standard'}
 MAX_VELOCITY = {2: 1750, 3: 2000}      # steps/s per motor type (manual, VA)
+TYPE_CODES = {'tiny': 2, 'standard': 3}
 CHANNELS = (1, 2, 3, 4)
 POLL_S = 0.02
 
@@ -250,13 +260,19 @@ class Picomotor8742Axis(Axis):
         None leaves the controller's setting
     acceleration : steps/s^2 to set on open; None leaves the controller's setting
     move_timeout_s : extra time allowed beyond distance / velocity
+    motor_type : 'Standard' or 'Tiny', the motor known to be on this channel;
+        set on the controller if its detection missed it (QM? 0 or 1).
+        None = trust the controller's detection only
     """
 
     def __init__(self, name, address, channel, velocity=None, acceleration=None,
-                 move_timeout_s=2.0, sleep=time.sleep, now=time.monotonic):
+                 move_timeout_s=2.0, motor_type=None, sleep=time.sleep, now=time.monotonic):
         channel = int(channel)
         if channel not in CHANNELS:
             raise ValueError(f'8742 channel must be one of {CHANNELS}, got {channel!r}')
+        if motor_type is not None and str(motor_type).lower() not in TYPE_CODES:
+            raise ValueError(f"8742 motor_type must be 'Standard' or 'Tiny', got {motor_type!r}")
+        self.declared_type = None if motor_type is None else TYPE_CODES[str(motor_type).lower()]
         self.info = AxisInfo(name, 'steps', 'steps', has_readback=False, closed_loop=False)
         self.channel = channel
         self.velocity = velocity
@@ -279,10 +295,23 @@ class Picomotor8742Axis(Axis):
         self.controller.acquire()
         try:
             self.motor_type = self._q('QM?')
+            declared = self.declared_type
+            if declared is not None and self.motor_type in MAX_VELOCITY                     and self.motor_type != declared:
+                raise RuntimeError(
+                    f'{self.info.name}: 8742 channel {self.channel} reports a '
+                    f'{MOTOR_TYPES[self.motor_type]} motor, the config says '
+                    f'{MOTOR_TYPES[declared]}. Not opening: check the cable and the config.')
+            if declared is not None and self.motor_type not in MAX_VELOCITY:
+                self.controller.send(f'{self.channel}QM{declared}')   # never moves
+                self.motor_type = self._q('QM?')
+                if self.motor_type != declared:
+                    raise RuntimeError(f'{self.info.name}: setting the motor type on 8742 '
+                                       f'channel {self.channel} failed (QM? = {self.motor_type})')
             if self.motor_type not in MAX_VELOCITY:
                 raise RuntimeError(
                     f'{self.info.name}: no motor detected on 8742 channel {self.channel} '
-                    f'(motor type {self.motor_type} = {MOTOR_TYPES.get(self.motor_type, "?")})')
+                    f'(motor type {self.motor_type} = {MOTOR_TYPES.get(self.motor_type, "?")}). '
+                    f"If a motor is there, declare it: options 'motor_type': 'Standard'.")
             vmax = MAX_VELOCITY[self.motor_type]
             if self.velocity is not None:
                 v = int(min(self.velocity, vmax))

@@ -67,15 +67,36 @@ AXES = {
         'limits': AxisLimits(min=0.0, max=75.0, max_step=0.5, max_slew=5.0, settle_s=0.0,
                              vibration_settle_s=0.0),
     },
-    # One Standard Picomotor on channel 1 of a New Focus 8742 (s/n 103147, firmware 3.04, USB).
-    # Open loop: position = the controller's step counter, which restarts at 0 at power-up
+    # Four Standard Picomotors on channels 1-4 of a New Focus 8742 (s/n 103147, firmware 3.04,
+    # USB). Open loop: position = the controller's step counter, which restarts at 0 at power-up
     # wherever the motor is, so the range is a travel window around that point, not a
     # physical limit. Steps are < 30 nm (manual), backwards steps differ in size.
-    # PLACEHOLDER limits (2026-11-23): +-10000 steps (~+-0.3 mm) until the element it drives
-    # and its travel are known; 200-step ramp pieces at the controller's 2000 steps/s.
-    # Rename the axis once it is known what it moves.
+    # motor_type: the controller's detection read 'none' on channels 2-4 although their
+    # motors move (2026-11-23), so the type is declared and set on open (never moves).
+    # PLACEHOLDER limits (2026-11-23): +-10000 steps (~+-0.3 mm) until the elements they drive
+    # and their travel are known; 200-step ramp pieces at the controller's 2000 steps/s.
+    # Rename the axes once it is known what they move.
     'picomotor_ch1': {
-        'driver': 'newport_8742', 'address': 'usb:103147', 'options': {'channel': 1},
+        'driver': 'newport_8742', 'address': 'usb:103147',
+        'options': {'channel': 1, 'motor_type': 'Standard'},
+        'limits': AxisLimits(min=-10000, max=10000, max_step=200, max_slew=2000, settle_s=0.0,
+                             vibration_settle_s=0.0),
+    },
+    'picomotor_ch2': {
+        'driver': 'newport_8742', 'address': 'usb:103147',
+        'options': {'channel': 2, 'motor_type': 'Standard'},
+        'limits': AxisLimits(min=-10000, max=10000, max_step=200, max_slew=2000, settle_s=0.0,
+                             vibration_settle_s=0.0),
+    },
+    'picomotor_ch3': {
+        'driver': 'newport_8742', 'address': 'usb:103147',
+        'options': {'channel': 3, 'motor_type': 'Standard'},
+        'limits': AxisLimits(min=-10000, max=10000, max_step=200, max_slew=2000, settle_s=0.0,
+                             vibration_settle_s=0.0),
+    },
+    'picomotor_ch4': {
+        'driver': 'newport_8742', 'address': 'usb:103147',
+        'options': {'channel': 4, 'motor_type': 'Standard'},
         'limits': AxisLimits(min=-10000, max=10000, max_step=200, max_slew=2000, settle_s=0.0,
                              vibration_settle_s=0.0),
     },

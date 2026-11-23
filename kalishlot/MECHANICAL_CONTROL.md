@@ -785,7 +785,12 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   refused by the range.
 - Manual: the 8742 manual never mentions end-of-travel damage. A Picomotor at a hard stop stalls (the
   jaws slip), but do not leave it driving into one.
-- Next: decide what it moves, measure its travel and steps per um on the camera, then set real limits.
+- **Four motors (2026-11-23, later):** Standard Picomotors on all four channels, axes
+  `picomotor_ch1`-`ch4`. QM? read 0 ('none') on channels 2-4 although the Picomotor Application moved
+  all four: QM? is the stored result of the controller's motor detection (power-up or MC), not a live
+  sensor, and the detection missed them. The config now declares `'motor_type': 'Standard'`; open() sets
+  an undetected channel to it (nQM3, never moves) and refuses a channel that reports the other type.
+- Next: decide what they move, measure travel and steps per um on the camera, then set real limits.
 
 ### Lab, 2026-10-19: live capture from the running streams
 - **What was added:**
