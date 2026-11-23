@@ -82,7 +82,15 @@ class VectorTarget:
     The score is minus the distance to the goal. Because the target also reports the
     measured vector (position) and the goal, the loops steer at it with a Jacobian
     (AlignmentLoop, and the outer levels of alignment/nested.py) instead of only
-    stepping one axis at a time."""
+    stepping one axis at a time.
+
+    Per-metric tolerances (tolerances=(t1, t2, ...)): "reached" then means every
+    metric within its own tolerance (mean over the confirm captures), and the
+    target works in units of tolerance: position() and goal are q_i / t_i, and
+    the score is minus the distance in those units. The steering then weighs
+    each metric by how tightly it must land, and metrics in different units
+    (px, MHz) can share one target. raw_goal keeps the goal in the metrics'
+    own units. Without tolerances: one `tolerance` on the plain distance."""
     metrics: tuple
     goal: tuple
     tolerance: float = 1.0
@@ -90,6 +98,21 @@ class VectorTarget:
     constraints: tuple = ()
     label: str = ''
     unit: str = ''
+    tolerances: tuple | None = None
+
+    def __post_init__(self):
+        self.metrics, self.raw_goal = tuple(self.metrics), tuple(float(g) for g in self.goal)
+        if len(self.raw_goal) != len(self.metrics):
+            raise ValueError(f'{len(self.metrics)} metrics but {len(self.raw_goal)} goal values')
+        if self.tolerances is not None:
+            self.tolerances = tuple(float(t) for t in self.tolerances)
+            if len(self.tolerances) != len(self.metrics) or min(self.tolerances) <= 0:
+                raise ValueError(f'tolerances must be {len(self.metrics)} positive numbers')
+            self.goal = tuple(g / t for g, t in zip(self.raw_goal, self.tolerances))
+            self.tolerance = 1.0
+        else:
+            self.goal = self.raw_goal
+        self._scale = self.tolerances or (1.0,) * len(self.metrics)
 
     @property
     def metric(self):                 # for the loop's printouts
@@ -99,7 +122,7 @@ class VectorTarget:
     def position(self, ev):
         """The measured vector of an Evaluation, or None when invalid."""
         q = tuple(ev.metrics.get(m) for m in self.metrics)
-        return None if any(v is None for v in q) else q
+        return None if any(v is None for v in q) else tuple(v / t for v, t in zip(q, self._scale))
 
     def distance(self, *q):
         return math.sqrt(sum((a - b) ** 2 for a, b in zip(q, self.goal)))
@@ -109,7 +132,7 @@ class VectorTarget:
         bad = next((m for m in ms if m is None or not m.valid), False)
         if bad is not False:
             return None, False, f'{self.metrics} invalid: {bad.reason if bad else "missing"}'
-        score = -self.distance(*(m.value for m in ms))
+        score = -self.distance(*(m.value / t for m, t in zip(ms, self._scale)))
         for name, op, thr in self.constraints:
             c = cm.metrics.get(name)
             if c is None or not c.valid:
@@ -130,8 +153,15 @@ class VectorTarget:
 
     def reached(self, evaluations):
         """True when every evaluation is feasible and the mean vector is within tolerance."""
-        return (bool(evaluations) and all(e.feasible for e in evaluations)
-                and self.mean_distance(evaluations) <= self.tolerance)
+        if not evaluations or not all(e.feasible for e in evaluations):
+            return False
+        if self.tolerances is None:
+            return self.mean_distance(evaluations) <= self.tolerance
+        pts = [q for q in (self.position(e) for e in evaluations) if q is not None]
+        if not pts:
+            return False
+        mean = [sum(p[i] for p in pts) / len(pts) for i in range(len(self.metrics))]
+        return all(abs(m - g) <= 1.0 for m, g in zip(mean, self.goal))   # units of tolerance
 
 
 class MarkerTarget(VectorTarget):

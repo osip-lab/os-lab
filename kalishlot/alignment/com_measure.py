@@ -14,7 +14,8 @@ any number of cameras at once.
 
 The cameras stay in the running kalishlot server; this asks it over HTTP for
 fresh results (the camera command com_samples). The axes are opened by the
-caller, in its own process.
+caller, in its own process. The kalishlot aligner box measures the same way
+in-process (alignment/signals.py: ComSignals, the same reduce_com).
 
 One evaluation = per camera, the median sensor_x/_y of `samples` CoM results
 of frames taken after the call (plus `delay_s`, for the vibrations of the
@@ -31,13 +32,13 @@ combined miss (3 px over two cameras = e.g. 2.1 px on each).
 """
 
 import json
-import statistics
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from alignment.metrics import CaptureMetrics, Metric
+from alignment.metrics import CaptureMetrics
+from alignment.signals import reduce_com
 from alignment.targets import VectorTarget, find_marker
 
 KALISHLOT_URL = 'http://localhost:8090'
@@ -57,13 +58,6 @@ def http_json(url, payload=None, timeout=HTTP_TIMEOUT_S):
         except Exception:
             detail = error.reason
         raise RuntimeError(f'kalishlot: {detail} ({url})') from None
-
-
-def _robust_std(values):
-    if len(values) < 2:
-        return float('nan')
-    med = statistics.median(values)
-    return 1.4826 * statistics.median(abs(v - med) for v in values)
 
 
 class ComMeasure:
@@ -134,17 +128,5 @@ class ComMeasure:
         return CaptureMetrics(metrics=metrics)
 
     def _reduce(self, name, samples):
-        good = [s for s in samples                  # clipped: pulled inwards; saturated: kept
-                if s.get('valid') and not s.get('clipped') and s.get('sensor_x') is not None]
-        keys = {'x': f'{name}_com_x', 'y': f'{name}_com_y', 'counts': f'{name}_com_counts'}
-        if len(good) < self.min_valid_fraction * max(len(samples), 1):
-            reasons = [s.get('reason') or 'invalid' for s in samples if s not in good]
-            reason = (f'{name}: {len(good)}/{len(samples)} valid centre-of-mass results'
-                      + (f' ({statistics.mode(reasons)})' if reasons else ''))
-            return {k: Metric(k, n=len(good), reason=reason) for k in keys.values()}
-        out = {}
-        for field, key in keys.items():
-            vals = [float(s['sensor_' + field] if field in 'xy' else s[field]) for s in good]
-            out[key] = Metric(key, value=statistics.median(vals), spread=_robust_std(vals),
-                              n=len(vals), valid=True)
-        return out
+        return reduce_com(samples, ('com_x', 'com_y', 'com_counts'), self.min_valid_fraction,
+                          prefix=f'{name}_')
