@@ -857,6 +857,28 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   - `first_order_s` came out -0.36 on up-sweeps and +0.31 on down-sweeps. Data for the "which side
     family" open question.
 
+### Lab, 2026-11-24: open-loop Picomotors do not come back (tracking)
+- **Finding.** An aligner run (4 Picomotors, 2 cameras, tolerances 1/1/3/3 px, start ~20 px off) never
+  converged and ended on budget (80 evaluations). The log shows why: the same counter values measured
+  again after one motor's round trip put the spots 8-14 px elsewhere (camera noise 0.1 px). Forward and
+  backward Picomotor steps differ (8742 manual), and not by a fixed ratio. The loop's search returns to
+  its incumbent after every rejected trial and compares against the incumbent's remembered score, so it
+  chased a point it could no longer reach. The first run (100 px off) worked because two steering moves
+  were enough before the round-trip errors mattered.
+- **Fix: tracking** (`alignment/loop.py`, `track='auto'`). For a target that reports a position, when
+  every active axis has no position readback (`AxisInfo.has_readback` False: the Picomotors), the loop
+  never goes back. It probes each axis from where the previous probe left off, then moves at the goal by
+  least squares from the measured position, learning the Jacobian from every real move (Broyden), with a
+  trust region that halves after a move that did not get closer. It ends reached (confirmed in place),
+  stuck (6 moves without getting closer), at the range edge, or on budget (`summary['end_reason']`),
+  and the axes stay where they are. Axes with readback (piezo drivers, simulators) keep the old search.
+- **Simulator.** `SimulatedAxis(backward_scale, step_jitter)`: backward moves cover a fraction of a
+  forward one, and every move's length varies by a relative std. A fixed asymmetry alone did not
+  reproduce the failure; with 20-30% jitter the old search ends on budget in about half the cases, as in
+  the lab, while tracking reaches the target in all of them in 12-15 evaluations
+  (`alignment/test_track.py`).
+- Next, if needed: learn separate forward and backward gains per axis (about twice the accuracy per move).
+
 ### Aligner box in kalishlot (2026-11-23)
 The GUI for the loop: `adapters/aligner.py` + `static/boxes/aligner.js`, a virtual box that runs
 `AlignmentLoop` in the server process.

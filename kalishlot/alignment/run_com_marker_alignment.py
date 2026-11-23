@@ -128,7 +128,8 @@ def main():
         summary = result.get('summary')
         if summary is None:
             raise SystemExit('the loop failed (see the traceback above); axes returned to the best point')
-        print(f"\n{'TARGET REACHED' if summary['target_reached'] else 'target NOT reached'}"
+        reason = '' if summary['target_reached'] else f" ({summary.get('end_reason') or 'budget'})"
+        print(f"\n{'TARGET REACHED' if summary['target_reached'] else 'target NOT reached'}{reason}"
               f"{' (aborted)' if summary['aborted'] else ''}: {summary['evaluations']} evaluations, "
               f"{summary['seconds']:.0f} s")
         print('end:   ' + '  '.join(f'{n}={a.position:g}' for n, a in axes.items()))
