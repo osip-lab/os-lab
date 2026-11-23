@@ -566,13 +566,49 @@ export function createCameraBox(device, container, sendCommand) {
   }
 
   // -------------------------------------------------------- the info line
-  // The fitted beam radii are the number people read across the room, so they
-  // get their own oversized span; everything else stays at the usual size.
-  const fitReadout = document.createElement('span');
-  fitReadout.className = 'cam-fit-readout';
+  // The fit as a small table: a label over each value. The beam radii and
+  // their ratio are what people read across the room, so they are large; the
+  // centre, the angle and the fit time follow, small, past a divider. The
+  // cells are built once and only their text changes per fit, so the table
+  // does not flicker or reflow at the fit rate. Guess, ROI and fit messages
+  // stay free text after it.
+  const fitTable = document.createElement('div');
+  fitTable.className = 'cam-fit-table';
+  fitTable.hidden = true;
+  const fitCells = {};
+  for (const [key, label, unit, kind] of [
+    ['minor', 'w_minor', 'mm', 'primary'],
+    ['major', 'w_major', 'mm', 'primary'],
+    ['ratio', 'major / minor', '', 'primary'],
+    ['x', 'x₀', 'px', 'aux first'],
+    ['y', 'y₀', 'px', 'aux'],
+    ['angle', 'major axis', '', 'aux'],
+    ['time', 'fit', 's', 'aux'],
+  ]) {
+    const cell = document.createElement('div');
+    cell.className = `cam-fit-cell ${kind}`;
+    const name = document.createElement('span');
+    name.className = 'cam-fit-label';
+    name.textContent = label;
+    const value = document.createElement('span');
+    value.className = 'cam-fit-value';
+    const number = document.createElement('span');
+    value.append(number);
+    if (unit) {
+      const unitSpan = document.createElement('span');
+      unitSpan.className = 'cam-fit-unit';
+      unitSpan.textContent = unit;
+      value.append(unitSpan);
+    }
+    cell.append(name, value);
+    fitTable.append(cell);
+    fitCells[key] = number;
+  }
   const infoAux = document.createElement('span');
   infoAux.className = 'cam-info-aux';
-  info.append(fitReadout, infoAux);
+  info.append(fitTable, infoAux);
+  // the same information as one line, for the copied figure's title
+  let infoSummary = '';
 
   // The fit (utilities/beam_fit.py) reports the beam along its own axes:
   // w_minor <= w_major, and their ratio (1 = round) is the astigmatism.
@@ -582,22 +618,26 @@ export function createCameraBox(device, container, sendCommand) {
   }
 
   function updateInfo() {
-    if (fitParams && !fitReason) {
-      const w = fitAxes(fitParams);
-      fitReadout.textContent = `w_minor = ${w.minor.toFixed(3)} mm, `
-        + `w_major = ${w.major.toFixed(3)} mm, ratio = ${w.ratio.toFixed(3)}`;
-    } else {
-      fitReadout.textContent = '';
+    const summary = [];
+    const showFit = Boolean(fitParams && !fitReason);
+    fitTable.hidden = !showFit;
+    if (showFit) {
+      const p = fitParams, w = fitAxes(p);
+      const angle = `${p.major_axis_deg >= 0 ? '+' : ''}${p.major_axis_deg.toFixed(1)}°`;
+      fitCells.minor.textContent = w.minor.toFixed(3);
+      fitCells.major.textContent = w.major.toFixed(3);
+      fitCells.ratio.textContent = w.ratio.toFixed(3);
+      fitCells.x.textContent = p.x_0.toFixed(1);
+      fitCells.y.textContent = p.y_0.toFixed(1);
+      fitCells.angle.textContent = angle;
+      fitCells.time.textContent = p.time.toFixed(2);
+      summary.push(`w_minor = ${w.minor.toFixed(3)} mm, w_major = ${w.major.toFixed(3)} mm, `
+        + `ratio = ${w.ratio.toFixed(3)}`,
+        `x₀ = ${p.x_0.toFixed(1)} px, y₀ = ${p.y_0.toFixed(1)} px, major axis at ${angle}`);
     }
 
     const parts = [];
     if (fitReason) parts.push(fitReason);
-    else if (fitParams) {
-      const p = fitParams;
-      parts.push(`x₀ = ${p.x_0.toFixed(1)} px, y₀ = ${p.y_0.toFixed(1)} px, `
-        + `major axis at ${p.major_axis_deg >= 0 ? '+' : ''}${p.major_axis_deg.toFixed(1)}° `
-        + `(fit ${p.time.toFixed(2)} s)`);
-    }
     if (guess) {
       parts.push(`guess: (${guess.x.toFixed(0)}, ${guess.y.toFixed(0)}) px, `
         + `σ = ${guess.r.toFixed(1)} px`);
@@ -610,10 +650,8 @@ export function createCameraBox(device, container, sendCommand) {
       parts.push(`ROI edit: ${Math.round(editRect.w)}×${Math.round(editRect.h)}`
         + ` px at (${Math.round(editRect.x)}, ${Math.round(editRect.y)})`);
     }
-    // the leading separator also keeps the copied-figure title readable, since
-    // that is built from info.textContent (both spans concatenated)
-    const aux = parts.join('   |   ');
-    infoAux.textContent = fitReadout.textContent && aux ? `   |   ${aux}` : aux;
+    infoAux.textContent = parts.join('   |   ');
+    infoSummary = [...summary, ...parts].join('   |   ');
   }
 
   // ------------------------------------------------------------------ fit
@@ -1399,7 +1437,7 @@ export function createCameraBox(device, container, sendCommand) {
     ctx.fillText(`${device.label} — ${new Date().toLocaleString()}`, 4, 16);
     ctx.fillStyle = '#939aae';
     ctx.font = '11px Consolas, monospace';
-    ctx.fillText(info.textContent, 4, 32);
+    ctx.fillText(infoSummary, 4, 32);
     ctx.fillStyle = '#14161d';
     ctx.fillRect(0, titleHeight, width, STRIP);
     ctx.fillRect(width + GAP, titleHeight + STRIP + GAP, STRIP, height);

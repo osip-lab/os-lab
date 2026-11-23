@@ -438,13 +438,53 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
   color: var(--text);
   opacity: 0.92;
 }
-/* the fitted beam radii are meant to be read from across the room */
-.cam-fit-readout {
-  font-size: 27px;
-  line-height: 1.15;
-  font-weight: 600;
+/* the fit as a small table, a label over each value; the beam radii and
+   their ratio are meant to be read from across the room */
+.cam-fit-table {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: last baseline;
+  column-gap: 18px;
+  row-gap: 2px;
+  margin-right: 8px;
 }
-.cam-fit-readout:empty { display: none; }
+.cam-fit-table[hidden] { display: none; }
+.cam-fit-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.cam-fit-cell.aux.first {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+.cam-fit-label {
+  font: 10px var(--font-ui);
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.cam-fit-value {
+  white-space: nowrap;
+  font-size: 13px;
+}
+.cam-fit-value > span:first-child {
+  display: inline-block;
+  min-width: 6ch;   /* 99.9 -> 100.0 must not shift the cells around */
+}
+.cam-fit-cell.primary .cam-fit-value {
+  font-size: 27px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+/* 0.412, 1.306: fixed decimals keep these a constant width already */
+.cam-fit-cell.primary .cam-fit-value > span:first-child,
+.cam-fit-cell:last-child .cam-fit-value > span:first-child { min-width: 0; }
+.cam-fit-unit {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
 .cam-view {
   flex: 1;
   min-height: 0;
