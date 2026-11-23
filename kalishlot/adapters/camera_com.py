@@ -39,7 +39,8 @@ so a slow computation skips frames and never lags behind the camera, and at
 most COM_MAX_RATE_HZ, so two fast cameras do not take two cores. The last
 results are kept with their frame times, for in-process consumers that need
 fresh positions after a move (com_samples); browsers get a 'com' event a few
-times a second.
+times a second. Scripts get the same results through the command com_samples
+{n, since, timeout} (alignment/com_measure.py uses it for the alignment loop).
 """
 
 import collections
@@ -52,6 +53,7 @@ COM_DEFAULT_CUT = 0.2         # fraction of the peak height above background
 COM_MAX_RATE_HZ = 30.0
 COM_EMIT_INTERVAL_S = 0.1     # 10 Hz to the browsers
 COM_HISTORY = 300             # results kept for com_samples (10 s at 30 Hz)
+COM_SAMPLES_MAX_TIMEOUT_S = 10.0   # the command blocks an HTTP request: stay under its 15 s
 MIN_SNR = 8.0                 # peak height in noise std for "there is a spot"
 NOISE_CUT_SIGMAS = 5.0        # the cut is never closer to the background than this
 WINDOW_RADII = 4.0            # sum within +-4 spot radii of the peak ...
@@ -131,6 +133,20 @@ def center_of_mass(frame, cut_fraction=COM_DEFAULT_CUT, levels_max=None):
     elif result['clipped']:
         result['reason'] = 'spot touches the frame edge'
     return result
+
+
+def _json_safe(result):
+    """A result for JSON: NaN/inf -> None, numpy scalars -> Python."""
+    out = {}
+    for key, value in result.items():
+        if isinstance(value, (np.floating, float)):
+            value = float(value)
+            out[key] = value if np.isfinite(value) else None
+        elif isinstance(value, (np.integer, np.bool_)):
+            out[key] = value.item()
+        else:
+            out[key] = value
+    return out
 
 
 class ComLoop:
@@ -274,6 +290,17 @@ class CameraComMixin:
                 self._com_cond.notify_all()
             self.emit({'type': 'com_status', 'enabled': False, 'cut': self._com_cut})
             return {'ok': True}
+        if name == 'com_samples':
+            n = int(args.get('n', 1))
+            if not 1 <= n <= COM_HISTORY:
+                raise ValueError(f'n must be 1 to {COM_HISTORY}')
+            timeout = min(float(args.get('timeout', 5.0)), COM_SAMPLES_MAX_TIMEOUT_S)
+            since = args.get('since')
+            try:
+                samples = self.com_samples(n, None if since is None else float(since), timeout)
+            except (RuntimeError, TimeoutError) as error:
+                raise ValueError(str(error)) from None
+            return {'samples': [_json_safe(r) for r in samples]}
         if name == 'set_com_cut':
             value = float(args['value'])
             if not 0.0 <= value < 1.0:

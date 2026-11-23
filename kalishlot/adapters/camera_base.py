@@ -57,7 +57,7 @@ CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
                    'set_fit_threshold', 'set_roi', 'clear_roi',
                    'levels_on', 'levels_off', 'set_markers',
                    'save_markers', 'load_markers',
-                   'com_on', 'com_off', 'set_com_cut']
+                   'com_on', 'com_off', 'set_com_cut', 'com_samples']
 
 RECORD_MAX_S = 10.0
 RECORD_MAX_BYTES = 1.0e9

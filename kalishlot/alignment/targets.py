@@ -30,6 +30,11 @@ the mode (pointing jitter, vibrations, fit noise), so:
 
 Constraints work as for Objective, e.g. constraints=(('intensity', '>=', 0.3),)
 keeps the mode resonating while it is being walked.
+
+Centre of mass instead of the fit: alignment/com_measure.py. Its ComMeasure is
+a measure() over the cameras' centre of mass in the running kalishlot, and
+ComMeasure.marker_target a VectorTarget putting several cameras' spots on their
+markers at once. The same steering applies.
 """
 
 import json

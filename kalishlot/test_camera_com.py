@@ -7,6 +7,7 @@ as check_camera_com on machines that have its dependencies):
 """
 
 import sys
+import json
 import time
 from pathlib import Path
 
@@ -110,6 +111,12 @@ def check_adapter():
         since = samples[-1]['frame_time_s']
         nxt = cam.com_samples(2, since=since, timeout=5)
         assert all(s['frame_time_s'] > since for s in nxt)
+
+        # the same through the command scripts use (alignment/com_measure.py): JSON-safe
+        reply = cam.command('com_samples', {'n': 2, 'since': since, 'timeout': 5})
+        json.dumps(reply, allow_nan=False)
+        assert len(reply['samples']) == 2 and all(r['frame_time_s'] > since for r in reply['samples'])
+        assert 'com_samples' in cam.describe()['commands']
 
         # an ROI: frame px shift, sensor px stay put
         cam.command('set_roi', {'x': 100, 'y': 200, 'width': 800, 'height': 700})

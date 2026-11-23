@@ -59,6 +59,17 @@ target = MarkerTarget.from_markers('device_state.json', 'arm 45 cm', tolerance_p
 AlignmentLoop(axes, measure, target).run()
 ```
 
+**Put the spots on markers by their centre of mass** (`alignment/com_measure.py`; no scope, no
+fit, any number of cameras). The cameras stay in the running kalishlot; the axes are opened by the script:
+```python
+measure = ComMeasure({'basler': 'basler_camera:24916690', 'ximea': 'ximea_camera:QXNAA2506000'})
+target = measure.marker_target({'basler': 'Mirror center', 'ximea': 'Aperture'}, tolerance_px=3)
+AlignmentLoop(axes, measure, target).run()
+```
+Ready to run from the command line: `python alignment/run_com_marker_alignment.py --target
+"basler_camera:24916690=Mirror center" --target "ximea_camera:QXNAA2506000=Aperture"` (picomotor_ch1-4 by
+default; `--dry-run` only measures).
+
 **Scan one axis** (and stay at the best point). Also the tool to measure hysteresis and repeatability:
 ```python
 rows = scan_axis(axes['large_mirror_phi'], np.linspace(30, 45, 16), measure, Objective('intensity'))
@@ -348,6 +359,14 @@ goal rather than an optimum, next to maximizing intensity, minimizing splitting,
   - With steering: 13.6 -> 2.2 px (true distance) in 13 evaluations, confirmed over 3 captures, coupling 0.978.
   - Hysteresis and landing error make each move approximate; the Broyden update and the confirmation
     absorb that.
+- **Centre of mass instead of the fit (2026-11-23).** In most cases the spot's position is all that
+  matters, and the camera's thresholded centre of mass (kalishlot's CoM) is enough: no scope scan, no
+  0th-order pick, no model, milliseconds per frame. `alignment/com_measure.py: ComMeasure` is a
+  `measure()` that asks the running kalishlot for fresh CoM results (camera command `com_samples`) of
+  frames taken after each move (+0.3 s for vibrations), median of 10 per camera; metrics
+  `<camera>_com_x/_y` in sensor px. `ComMeasure.marker_target` is a VectorTarget over several cameras at
+  once (two cameras + four motors = a square steering problem); its distance is combined over the
+  cameras. Clipped spots (touching the frame edge) are invalid, saturated ones count.
 
 ### 3.e Nested optimization: ridges and kept targets (2026-10-24, laptop)
 Two situations where one joint optimization over all axes fails:
