@@ -440,7 +440,7 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
 }
 /* the fitted beam radii are meant to be read from across the room */
 .cam-fit-readout {
-  font-size: 34px;
+  font-size: 27px;
   line-height: 1.15;
   font-weight: 600;
 }
