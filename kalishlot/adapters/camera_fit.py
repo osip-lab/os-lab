@@ -3,7 +3,10 @@
 Mixin adding the fit vocabulary on top of DeviceAdapter: commands fit_on /
 fit_off / set_guess / clear_guess, and 'fit' / 'fit_status' / 'guess' events.
 The fitting itself runs in the device layer's FitLoop (newest-frame-only, so
-a slow fit skips frames and never lags behind the camera).
+a slow fit skips frames and never lags behind the camera), with
+utilities.beam_fit.fit_gaussian_beam as the fitter: it reports the beam along
+its own axes (w_minor, w_major, major_axis_deg from +x toward +y, the angle
+unbounded), not along the image's.
 
 Coordinates in commands, events and fit parameters are always full-resolution
 pixels OF THE FRAME THE CAMERA CURRENTLY DELIVERS — the whole sensor, or the
@@ -18,8 +21,12 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'basler_cam'))
+_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO / 'basler_cam'))
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 from gaussian_fit import FitLoop, beam_brightness  # noqa: E402
+from utilities.beam_fit import fit_gaussian_beam  # noqa: E402
 
 CROSS_SECTION_STEP = 4  # send every 4th pixel of the row/column cuts
 BRIGHTNESS_EMIT_INTERVAL_S = 0.2  # live readout rate for the trigger control
@@ -100,7 +107,8 @@ class CameraFitMixin:
             self._fitting = True
             if self._fit_loop is None:
                 self._fit_loop = FitLoop(on_result=self._on_fit_result,
-                                         rebinning=self.FIT_REBINNING)
+                                         rebinning=self.FIT_REBINNING,
+                                         fitter=fit_gaussian_beam)
             self._fit_loop.guess = self._fit_guess
             self._fit_loop.start()
             self._refit_now()

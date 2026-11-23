@@ -471,14 +471,14 @@ export function createCameraBox(device, container, sendCommand) {
     ctx.lineWidth = 1;
     if (gridCheck.checked) drawGrid(ctx);
     if (fitParams) {
-      // thin translucent ellipses at 1 sigma and at the beam radius w = 2 sigma
-      // (minus the angle: see fitAxes)
+      // thin translucent ellipses at 1 sigma and at the beam radius w = 2 sigma;
+      // angle_rad is the major axis from +x toward +y, as canvas rotates
       ctx.strokeStyle = COLOR_ELLIPSE;
       const cx = toCss(fitParams.x_0), cy = toCss(fitParams.y_0);
       for (const k of [1, 2]) {
         ctx.beginPath();
-        ctx.ellipse(cx, cy, toCss(k * fitParams.s_x), toCss(k * fitParams.s_y),
-          -fitParams.angle, 0, 2 * Math.PI);
+        ctx.ellipse(cx, cy, toCss(k * fitParams.sigma_major),
+          toCss(k * fitParams.sigma_minor), fitParams.angle_rad, 0, 2 * Math.PI);
         ctx.stroke();
       }
       drawCross(ctx, cx, cy, 6);
@@ -546,9 +546,9 @@ export function createCameraBox(device, container, sendCommand) {
       [vCanvas.width * value / levelsMax,
        i * step * vCanvas.height / sensorH]), COLOR_DATA);
     // analytic cuts of the fitted 2D Gaussian along y = y0 and x = x0
-    const sin2 = Math.sin(p.angle) ** 2, cos2 = Math.cos(p.angle) ** 2;
-    const a = cos2 / (2 * p.s_x ** 2) + sin2 / (2 * p.s_y ** 2);
-    const c = sin2 / (2 * p.s_x ** 2) + cos2 / (2 * p.s_y ** 2);
+    const sin2 = Math.sin(p.angle_rad) ** 2, cos2 = Math.cos(p.angle_rad) ** 2;
+    const a = cos2 / (2 * p.sigma_major ** 2) + sin2 / (2 * p.sigma_minor ** 2);
+    const c = sin2 / (2 * p.sigma_major ** 2) + cos2 / (2 * p.sigma_minor ** 2);
     const n = 200;
     const hPoints = [], vPoints = [];
     for (let i = 0; i <= n; i++) {
@@ -574,17 +574,11 @@ export function createCameraBox(device, container, sendCommand) {
   infoAux.className = 'cam-info-aux';
   info.append(fitReadout, infoAux);
 
-  // The fit's s_x / s_y are the beam's principal widths, but which is which
-  // depends on the beam: the angle is bounded to +-45 deg, so s_x is just the
-  // principal axis nearest the image horizontal, and either may be the larger.
-  // Hence minor / major, and their ratio (1 = round) as the astigmatism.
-  // The angle follows gaussian2d's a/b/c form, which puts the s_x axis at
-  // MINUS the angle (from +x toward +y, i.e. clockwise on screen) - hence the
-  // minus wherever a fit ellipse (or a marker made from one) is drawn.
+  // The fit (utilities/beam_fit.py) reports the beam along its own axes:
+  // w_minor <= w_major, and their ratio (1 = round) is the astigmatism.
   function fitAxes(p) {
-    const minor = Math.min(p.w_x, p.w_y), major = Math.max(p.w_x, p.w_y);
-    return {minor: minor * pixelMm, major: major * pixelMm,
-            ratio: minor > 0 ? major / minor : NaN};
+    return {minor: p.w_minor * pixelMm, major: p.w_major * pixelMm,
+            ratio: p.w_minor > 0 ? p.w_major / p.w_minor : NaN};
   }
 
   function updateInfo() {
@@ -601,7 +595,7 @@ export function createCameraBox(device, container, sendCommand) {
     else if (fitParams) {
       const p = fitParams;
       parts.push(`x₀ = ${p.x_0.toFixed(1)} px, y₀ = ${p.y_0.toFixed(1)} px, `
-        + `θ = ${p.angle >= 0 ? '+' : ''}${p.angle.toFixed(2)} rad `
+        + `major axis at ${p.major_axis_deg >= 0 ? '+' : ''}${p.major_axis_deg.toFixed(1)}° `
         + `(fit ${p.time.toFixed(2)} s)`);
     }
     if (guess) {
@@ -1085,7 +1079,7 @@ export function createCameraBox(device, container, sendCommand) {
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.ellipse(toCss(circle.x), toCss(circle.y), toCss(circle.ellipse.a),
-        toCss(circle.ellipse.b), -circle.ellipse.angle, 0, 2 * Math.PI);
+        toCss(circle.ellipse.b), -circle.ellipse.angle, 0, 2 * Math.PI);   // stored negated
       ctx.stroke();
       drawCross(ctx, toCss(circle.x), toCss(circle.y), 5);
     } else drawCircle(ctx, circle, color, false);
@@ -1138,14 +1132,16 @@ export function createCameraBox(device, container, sendCommand) {
   function addFitMarker() {
     if (!fitCheck.checked || !fitParams) return;
     const p = fitParams;
-    const a = 2 * p.s_x, b = 2 * p.s_y;
+    const a = p.w_major, b = p.w_minor;
     addAndRename({
       id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       label: nextMarkerLabel(),
       x: p.x_0 + (roi ? roi.x : 0),
       y: p.y_0 + (roi ? roi.y : 0),
       r: (a + b) / 2,
-      ellipse: {a, b, angle: p.angle},
+      // stored with the old fit's sign, so markers saved before still draw
+      // right: the `a` axis lies at MINUS angle (see drawMarker)
+      ellipse: {a, b, angle: -p.angle_rad},
       visible: true,
       color: nextMarkerColor(),
     });
@@ -1466,7 +1462,7 @@ export function createCameraBox(device, container, sendCommand) {
     const text = `${device.label}: x0=${p.x_0.toFixed(1)} px, y0=${p.y_0.toFixed(1)} px, `
       + `w_minor=${w.minor.toFixed(3)} mm, w_major=${w.major.toFixed(3)} mm, `
       + `ratio=${w.ratio.toFixed(3)}, `
-      + `theta=${p.angle.toFixed(2)} rad`;
+      + `major axis at ${p.major_axis_deg.toFixed(1)} deg`;
     logEntry(text);
     status.textContent = 'recorded fit values to the log';
   };

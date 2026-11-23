@@ -113,9 +113,9 @@ async def check_stream(device_id):
         assert event['enabled'] is True
         event = await wait_event(socket, 'fit')
         assert event['success'], event
-        assert abs(event['params']['s_x'] - 60) < 6, event['params']
+        assert abs(event['params']['sigma_major'] - 60) < 6, event['params']
         assert len(event['cross']['row']) > 100
-        print(f"fit event ok: s_x = {event['params']['s_x']:.1f} px "
+        print(f"fit event ok: sigma_major = {event['params']['sigma_major']:.1f} px "
               f"(expected 60)")
 
         # guess circle: broadcast to all viewers, then a refit with it
