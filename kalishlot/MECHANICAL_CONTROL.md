@@ -855,6 +855,35 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   - `first_order_s` came out -0.36 on up-sweeps and +0.31 on down-sweeps. Data for the "which side
     family" open question.
 
+### Aligner box in kalishlot (2026-11-23)
+The GUI for the loop: `adapters/aligner.py` + `static/boxes/aligner.js`, a virtual box that runs
+`AlignmentLoop` in the server process.
+- **An alignment level is one table plus controls.** Row = signal | goal (go to / maximize / minimize /
+  ≥ guard / ≤ guard) | value (number, a camera marker's x or y, or "hold current", resolved once at
+  Start) | tolerance (go-to rows). Controls = axes of open motion-axes boxes, each with an optional
+  first probe step. `alignment/recipe.py` validates a level and turns it into the loop's objective:
+  go-to rows only -> a VectorTarget (steered), or exactly one max/min row -> an Objective; guards are
+  constraints with either. Several levels = the nested loop (Level per box level), not offered yet.
+- **Per-signal tolerance.** `VectorTarget(tolerances=...)`: reached = every signal within its own
+  tolerance (mean over the confirm captures); position and goal are in units of tolerance, so the
+  Jacobian steering weighs each signal by how tightly it must land and units can mix. Without
+  `tolerances` the old single combined tolerance applies (the script, MarkerTarget, the simulations).
+- **Signals** come from providers in `alignment/signals.py`; so far `ComSignals` (every open camera's
+  com_x, com_y, com_counts, read in-process with `com_samples`, the same reduction as the script's
+  `ComMeasure`). A new kind of signal = a provider class listed in `PROVIDERS`.
+- **Axes stay owned by their motion box.** A run claims the boxes of its controls
+  (`MotionAxesAdapter.claim`): the jog box refuses other moves and shows "in use by aligner"; E-STOP
+  always works and ends the run at the next measurement. A run does not start with E-stopped controls
+  (the loop would otherwise take every refused move for the edge of the range and carry on quietly).
+- Dry run (measure once, per-row miss, nothing moves), Start / Pause (before the next measurement) /
+  Resume / Stop (then return to best, to start, or stay). Fields: delay, samples, max evaluations. Per
+  evaluation the box shows the positions and per-row misses, a chart of the worst miss in units of
+  tolerance, and the loop's log. Every run logs to `alignment/runs/<time>/evaluations.jsonl`. The setup
+  persists with the box's settings.
+- Tests: `alignment/test_recipe.py`, `test_aligner.py` (fake cameras whose spots move with the
+  simulated axes of a real motion-axes adapter: reached, pause/resume, stop returns to best, E-stop,
+  refusals, persistence).
+
 ### Not done yet
 - **Nested loop**: a symmetry metric that works in the
   lab (section 3.e, known limits); a first nested run on real axes.
@@ -865,7 +894,8 @@ python alignment/visualize_alignment_sim.py  # GIF: loop aligning a cavity with 
   stage/objective structure of `AlignmentLoop` is where a GP backend would plug in.
 - **Lab measurement function** for the loop: wrap `LiveCapture` as `measure()` (wait for the axes'
   `ready_at`, capture, evaluate).
-- **Aligner box** in kalishlot: a virtual adapter running the loop in the server process, on the
-  scope and XIMEA adapters' streams and the motion adapter's axes.
+- **Aligner box, next steps** (first version 2026-11-23, see "Aligner box" below): nested levels (the
+  second "+"), and signals beyond the centre of mass (a provider over the live measurement: intensity,
+  ellipticity, splitting; spectrum signals).
 - Real drivers (Standa, PI E-872, Kinesis) and per-axis characterization in the lab (MDT693B included):
   `scan_axis` up and down for hysteresis, repeats for repeatability, delays for the vibration settle.

@@ -370,6 +370,15 @@ title, read from the session / scope json beside it; a `.mkv` / `.avi` / `.mp4` 
 `.npy` frames file -> `kalishlot/plot_video.py` (moved here from
 `utilities/media_tools`). Each runs as its own process on the lab PC.
 
+## A new signal for the aligner box
+
+The aligner box (`adapters/aligner.py`, see MECHANICAL_CONTROL.md "Aligner box") offers every signal
+the open devices can measure. To make a device's quantity alignable, add a provider class to
+`alignment/signals.py` (`available(devices)`, `owns(id, devices)`, `prepare(ids, devices)`,
+`measure(ids, devices, since)` -> `{id: Metric}`; ids are `<device_id>/<quantity>`) and list it in
+`PROVIDERS`. It must measure only data taken after `since` (host time) and read the adapter
+in-process. `ComSignals` (camera centre of mass) is the example.
+
 ## Step 4 — test without hardware first
 
 `adapters/dummy_camera.py` exists exactly for this: a synthetic device

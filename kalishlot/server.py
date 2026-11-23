@@ -41,6 +41,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from adapters.aligner import AlignerAdapter
 from adapters.basler import BaslerCameraAdapter
 from adapters.dummy_camera import DummyCameraAdapter
 from adapters.live_measure import LiveMeasureAdapter
@@ -51,7 +52,7 @@ from adapters.synced_pipeline import SyncedPipelineAdapter
 
 _ADAPTERS = [DummyCameraAdapter, BaslerCameraAdapter,
              RigolDGAdapter, PicoScopeAdapter, SyncedPipelineAdapter,
-             MotionAxesAdapter, LiveMeasureAdapter]
+             MotionAxesAdapter, LiveMeasureAdapter, AlignerAdapter]
 
 # XIMEA is optional where the others are not: its Python package is not on
 # PyPI and has to be copied out of the XIMEA Software Package by hand (see
@@ -573,6 +574,9 @@ loans = {}
 SyncedPipelineAdapter.registry = staticmethod(lambda: (devices, loans))
 # the live measurement reads the open scope and camera boxes' streams
 LiveMeasureAdapter.registry = staticmethod(lambda: (devices, loans))
+# the aligner box measures from the camera boxes and moves the motion boxes' axes
+AlignerAdapter.registry = staticmethod(lambda: (devices, loans))
+AlignerAdapter.activity = staticmethod(lambda: note_activity())
 
 
 class LendRequest(BaseModel):

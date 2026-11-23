@@ -922,3 +922,32 @@ select.clipped { border-color: var(--alert); color: var(--alert); }
   font: 11px/1.5 var(--font-data);
   color: var(--amber);
 }
+
+/* ---------------------------------------------------------------- aligner */
+.al-levels.is-disabled { opacity: 0.55; pointer-events: none; }
+.al-level { border: 1px solid var(--line-soft); border-radius: 4px; margin: 6px 0; padding: 4px 8px 8px; }
+.al-level legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+.al-rows { border-collapse: collapse; width: 100%; font-size: 12px; margin-bottom: 4px; }
+.al-rows th { color: var(--muted); font-weight: 500; text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--line-soft); }
+.al-rows td { padding: 2px 4px; vertical-align: middle; }
+.al-rows select { max-width: 100%; }
+.al-rows input[type=number] { width: 6.5em; }
+.al-readout td { font-family: var(--font-data); }
+.al-controls-title { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
+.al-controls { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.al-control { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.al-control input[type=number] { width: 6em; }
+.al-chart { margin-top: 6px; }
+.al-svg { width: 100%; max-width: 560px; height: auto; display: block; }
+.al-svg .al-ct { fill: var(--text); font: 12px var(--font-ui); }
+.al-svg .al-tick { fill: var(--muted); font: 10px var(--font-data); }
+.al-svg .al-grid { stroke: var(--line-soft); stroke-width: 1; }
+.al-svg .al-tolline { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.al-svg .al-line { fill: none; stroke: var(--amber); stroke-width: 2; stroke-linejoin: round; }
+.al-svg .al-dot { fill: var(--amber); stroke: var(--panel); stroke-width: 2; }
+.al-svg .al-cross { stroke: var(--muted); stroke-width: 1; }
+.al-svg .al-tip-bg { fill: var(--raised); stroke: var(--line); }
+.al-svg .al-tip { fill: var(--text); font: 10px var(--font-data); }
+.al-log { font: 11px/1.35 var(--font-data); color: var(--muted); background: var(--well); border: 1px solid var(--line-soft);
+          border-radius: 4px; padding: 4px 6px; max-height: 160px; overflow: auto; margin: 6px 0 2px; white-space: pre; }
+.al-log:empty { display: none; }
