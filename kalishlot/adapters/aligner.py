@@ -379,7 +379,8 @@ class AlignerAdapter(DeviceAdapter):
             last = self.history[-1]['rows'] if self.history else []
             self.result = {'summary': {k: v for k, v in (summary or {}).items()
                                        if k in ('best', 'evaluations', 'target_reached',
-                                                'aborted', 'seconds', 'start')},
+                                                'aborted', 'seconds', 'start', 'end_reason',
+                                                'tracked')},
                            'error': error, 'rows': last}
             self.emit({'type': 'result', **self.result})
             self._resume.set()

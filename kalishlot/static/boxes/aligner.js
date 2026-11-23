@@ -355,7 +355,9 @@ export function createAlignerBox(device, container, sendCommand) {
         lastRows = event.rows; showReport('last result');
         const s = event.summary ?? {};
         log(event.error ? `ended: ${event.error}`
-          : `${s.target_reached ? 'TARGET REACHED' : 'target not reached'}${s.aborted ? ' (stopped)' : ''}: ${s.evaluations} measurements, ${fmt(s.seconds, 3)} s`);
+          : `${s.target_reached ? 'TARGET REACHED' : `target not reached (${s.end_reason || 'budget'})`}`
+            + `${s.aborted ? ' (stopped)' : ''}: ${s.evaluations} measurements, ${fmt(s.seconds, 3)} s`
+            + (s.tracked ? ' · open-loop axes tracked: they stay where they are' : ''));
       } else if (event.type === 'setup') {
         // our own edit echoed back: re-rendering would steal the focus mid-typing
         if (JSON.stringify(event.setup) !== JSON.stringify(setup)) {

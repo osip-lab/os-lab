@@ -8,6 +8,14 @@ The *true* position differs from the commanded one by:
   This is the inherent, non-removable part of the repeatability error: the
   same target from the same side still lands in a slightly different place.
 - drift: `drift_per_s` units per second of wall (or injected) time.
+- step asymmetry: `backward_scale` != 1 makes every backward move cover that
+  fraction of a forward move of the same size (an open-loop Picomotor: the
+  8742 manual warns forward and backward steps differ; the lab saw ~20-30%).
+  The true position then wanders off the command with every round trip, so
+  returning to a counter value does not return to the same place.
+- step jitter: `step_jitter` = relative std of a move's length (open loop):
+  every move covers delta * (1 + N(0, step_jitter)), so the landing error
+  grows with the move, unlike repeatability_sigma (a fixed error per move).
 
 What read_position() reports depends on the device type being imitated:
 - closed_loop=True: a real sensor, true position + N(0, sensor_noise);
@@ -28,13 +36,15 @@ class SimulatedAxis(Axis):
     def __init__(self, name, units='V', kind='voltage', start=0.0, has_readback=True,
                  closed_loop=False, backlash=0.0, repeatability_sigma=0.0,
                  drift_per_s=0.0, sensor_noise=0.0, can_home=False, seed=None,
-                 now=time.monotonic, known_on_open=True):
+                 now=time.monotonic, known_on_open=True, backward_scale=1.0, step_jitter=0.0):
         self.info = AxisInfo(name, units, kind, has_readback or closed_loop, closed_loop, can_home)
         self.backlash = float(backlash)
         self.repeatability_sigma = float(repeatability_sigma)
         self.drift_per_s = float(drift_per_s)
         self.sensor_noise = float(sensor_noise)
         self.known_on_open = known_on_open
+        self.backward_scale = float(backward_scale)
+        self.step_jitter = float(step_jitter)
         self._rng = np.random.default_rng(seed)
         self._now = now
         self._commanded = float(start)
@@ -78,9 +88,15 @@ class SimulatedAxis(Axis):
         direction = int(np.sign(target - self._commanded))
         if direction:
             self._last_dir = direction
+        delta = target - self._commanded
         self._commanded = target
         if self.info.closed_loop:
             self._true = target
+        elif self.backward_scale != 1.0 or self.step_jitter:   # open-loop steps: the truth wanders off
+            covered = delta if delta >= 0 else delta * self.backward_scale
+            if self.step_jitter:
+                covered *= 1.0 + float(self._rng.normal(0, self.step_jitter))
+            self._true += covered
         else:
             self._true = target - self._last_dir * self.backlash / 2
         if self.repeatability_sigma:

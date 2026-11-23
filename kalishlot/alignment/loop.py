@@ -45,6 +45,19 @@ Design (kalishlot/MECHANICAL_CONTROL.md, section 3):
   alignment/nested.py can "keep the mode symmetric" without chasing noise.
 - known_noise skips the noise floor (one 'start' capture instead): for warm
   restarts whose noise was measured already (alignment/nested.py).
+- Open-loop axes (no position readback, e.g. Picomotors) do not come back to the
+  same place when sent back to the same counter value: forward and backward steps
+  differ, so every round trip moves the truth (lab, 2026-11-24: 8-14 px per round
+  trip on the cameras, against 0.1 px of camera noise). Returning to an incumbent
+  and comparing against its remembered score then chases a ghost. With a target
+  that reports a position, such axes are TRACKED instead (track='auto': when every
+  active axis is open loop): the measurement is the only truth, nothing ever goes
+  back. Probe each axis from where the previous probe left off, then move at the
+  goal by least squares from wherever the position really is, learning the
+  Jacobian from every real move (Broyden), with a trust region that shrinks after
+  a move that did not get closer. Ends reached (confirmed in place), stuck (no
+  progress for `stall_moves` moves), at the range edge, or on budget; the axes
+  stay where they are ('best' = the last position; summary['end_reason']).
 """
 
 import json
@@ -137,6 +150,14 @@ def _check(axis, target):
         axis.check_target(target)
 
 
+def _open_loop(axis):
+    """No position readback: the counter is not where the axis is."""
+    if hasattr(axis, 'components'):
+        return any(_open_loop(a) for a, c in axis.components if c)
+    info = getattr(axis, 'info', None)
+    return info is not None and not info.has_readback
+
+
 def _default_step(axis):
     if hasattr(axis, 'components'):
         return min(a.limits.max_step / max(abs(c), 1e-12) for a, c in axis.components if c)
@@ -147,7 +168,8 @@ class AlignmentLoop:
     def __init__(self, axes, measure, objective=None, tiers=None, steps=None,
                  accept_sigmas=1.0, min_step_sigmas=3.0, noise_repeats=4,
                  remeasure_every=8, max_evaluations=150, on_abort='best', confirm_jump=10.0,
-                 log_dir=None, who='alignment loop', print_fn=print, known_noise=None, stall_passes=2):
+                 log_dir=None, who='alignment loop', print_fn=print, known_noise=None, stall_passes=2,
+                 track='auto', stall_moves=6):
         self.axes = dict(axes)
         self.measure_fn = measure
         self.objective = objective or Objective()
@@ -161,6 +183,10 @@ class AlignmentLoop:
         self.max_evaluations = max_evaluations
         self.known_noise = known_noise
         self.stall_passes = stall_passes      # passes without improvement before a stage ends
+        self.track = track                    # 'auto' | True | False (see the module docstring)
+        self.stall_moves = stall_moves        # tracking: moves without getting closer before it ends
+        self.tracked = False
+        self.end_reason = ''
         self.on_abort = on_abort
         self.who = who
         self.print = print_fn or (lambda *a, **k: None)
@@ -426,8 +452,126 @@ class AlignmentLoop:
             if not moved or self.target_reached:
                 return
 
+    def _tracking(self, active):
+        if not (hasattr(self.objective, 'position') and hasattr(self.objective, 'goal')):
+            return False
+        if self.track == 'auto':
+            moving = [n for n in active if not self.axes[n].frozen]
+            return bool(moving) and all(_open_loop(self.axes[n]) for n in moving)
+        return bool(self.track)
+
+    def _track_stage(self, active, probe_doublings=4):
+        """Steering for open-loop axes: never go back (see the module docstring)."""
+        import numpy as np
+        self.tracked = True
+        axes = [n for n in active if not self.axes[n].frozen]
+        position = self.objective.position
+        goal = np.array(self.objective.goal, dtype=float)
+        noise, mean_at_start = self._position_noise()
+        last = self.history[-1]
+        if last.kind == 'noise' and mean_at_start is not None:
+            c = np.array(mean_at_start, dtype=float)
+        elif position(last) is not None:
+            c = np.array(position(last), dtype=float)
+        else:
+            self.end_reason = 'signal lost'
+            return
+        threshold = max(3 * noise, 1e-9)
+
+        J = np.zeros((goal.size, len(axes)))
+        probes = {}
+        for i, n in enumerate(axes):             # probe: from where the previous one left off
+            axis = self.axes[n]
+            start_c, moved, sign, h = c.copy(), 0.0, +1, self.steps[n]
+            tries = 0
+            while tries <= probe_doublings + 1:
+                tries += 1
+                if not self._budget_left():
+                    self.end_reason = self.end_reason or 'budget'
+                    return
+                target = _pos(axis) + sign * h
+                try:
+                    _check(axis, target)
+                except ValueError:
+                    if moved == 0 and sign > 0:
+                        sign = -1                # the range edge: probe the other way
+                        continue
+                    break
+                self._move_to({n: target})
+                moved += sign * h
+                ev = self.measure('probe')
+                q = position(ev)
+                if q is None:
+                    self.end_reason = f'signal lost while probing {n}: {ev.reason}'
+                    return
+                self.best = ev                   # the latest measurement is the state
+                c = np.array(q, dtype=float)
+                J[:, i] = (c - start_c) / moved
+                probes[n] = abs(moved)
+                if np.linalg.norm(c - start_c) > threshold:
+                    break
+                h *= 2
+        if not probes or np.linalg.norm(J) == 0:
+            self.end_reason = 'the axes do not move the position measurably'
+            self.print(f'  tracking: {self.end_reason}')
+            return
+        self.print('  tracking: probed ' + ' '.join(f'{n} ({h:.3g})' for n, h in probes.items()))
+
+        radius = 1.0                             # trust region, in units of 8x each probe
+        best_d = float(np.linalg.norm(c - goal))
+        stall = 0
+        if self.objective.reached([self.best]):
+            self._accept(self.best)
+        while self._budget_left():
+            dp = np.linalg.lstsq(J, goal - c, rcond=None)[0]
+            limit = np.array([radius * 8 * probes.get(n, self.steps[n]) for n in axes])
+            dp *= min(1.0, float(np.min(limit / np.maximum(np.abs(dp), 1e-12))))
+            target = None
+            for scale in (1.0, 0.5, 0.25):
+                t = {n: _pos(self.axes[n]) + scale * dp[i] for i, n in enumerate(axes)}
+                try:
+                    for n, x in t.items():
+                        _check(self.axes[n], x)
+                except ValueError:
+                    continue
+                target = t
+                break
+            if target is None:
+                self.end_reason = 'the next move would leave the allowed range'
+                break
+            before = {n: _pos(self.axes[n]) for n in axes}
+            self._move_to(target)
+            ev = self.measure('track')
+            q = position(ev)
+            if q is None:
+                self.end_reason = f'signal lost: {ev.reason}'
+                break
+            q = np.array(q, dtype=float)
+            step = np.array([_pos(self.axes[n]) - before[n] for n in axes])
+            if step @ step > 0:                  # Broyden: learn from every real move
+                J += np.outer((q - c) - J @ step, step) / (step @ step)
+            d = float(np.linalg.norm(q - goal))
+            if d < best_d - self.accept_sigmas * noise:
+                best_d, stall, radius = d, 0, min(radius * 1.5, 1.0)
+            else:
+                stall, radius = stall + 1, radius * 0.5
+            c = q
+            self._accept(ev)                     # the latest is the incumbent; confirms a hit in place
+            if self.target_reached:
+                self.end_reason = 'reached'
+                break
+            if stall >= self.stall_moves:
+                self.end_reason = f'stuck: {stall} moves without getting closer'
+                break
+        else:
+            self.end_reason = self.end_reason or ('stopped' if self._stop.is_set() else 'budget')
+        self.print(f'  tracking ended: {self.end_reason}')
+
     def _optimize_stage(self, active):
         self.print(f'stage: {", ".join(active)}')
+        if self._tracking(active):
+            self._track_stage(active)
+            return
         if hasattr(self.objective, 'position') and hasattr(self.objective, 'goal'):
             self._steer_stage(active)
             if self.target_reached:
@@ -460,7 +604,8 @@ class AlignmentLoop:
                 if self._stop.is_set() or self.target_reached:
                     break
             aborted = self._stop.is_set()
-            if not aborted and not self.target_reached:   # a reached target was confirmed in place
+            # a reached target was confirmed in place; tracked open-loop axes cannot go back
+            if not aborted and not self.target_reached and not self.tracked:
                 self._finish()
         except Exception:
             aborted = True
@@ -477,6 +622,9 @@ class AlignmentLoop:
                 'best_score': self.best.score if self.best else None,
                 'noise': self.noise, 'evaluations': len(self.history),
                 'target_reached': self.target_reached,
+                'end_reason': ('reached' if self.target_reached
+                               else self.end_reason or ('stopped' if aborted else '')),
+                'tracked': self.tracked,
                 'aborted': aborted, 'seconds': time.time() - t0}
 
     def _finish(self):
