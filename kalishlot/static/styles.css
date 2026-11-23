@@ -180,6 +180,7 @@ input[type="checkbox"] { accent-color: var(--amber); width: 13px; height: 13px; 
 }
 
 .an-fsb, .cam-trigger { width: 64px; }
+.cam-com-cut { width: 48px; }
 .cam-settings input { width: 78px; }
 /* exposure / frame rate: number, then :2, a dot to drag on a line, ×2 */
 .cam-setting { display: inline-flex; gap: 6px; align-items: center; }

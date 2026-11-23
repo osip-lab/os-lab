@@ -3,8 +3,9 @@
 The frontend camera box (static/boxes/camera.js) is shared by ALL cameras —
 Basler, Ximea, synthetic, whatever comes next — and only speaks the generic
 vocabulary implemented here: commands play / pause / snap / set_setting plus
-the Gaussian-fit, ROI, intensity-monitor and marker commands, events status /
-setting_applied / fit_status / fit / guess / roi / levels / markers / error,
+the Gaussian-fit, centre-of-mass, ROI, intensity-monitor and marker commands,
+events status / setting_applied / fit_status / fit / guess / com_status / com /
+roi / levels / markers / error,
 and a describe() with a settings schema.
 
 Adding a camera brand therefore means:
@@ -46,6 +47,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .base import DeviceAdapter
+from .camera_com import CameraComMixin
 from .camera_fit import CameraFitMixin
 from .camera_levels import CameraLevelsMixin
 from .camera_markers import CameraMarkersMixin
@@ -54,7 +56,8 @@ CAMERA_COMMANDS = ['play', 'pause', 'snap', 'set_setting',
                    'fit_on', 'fit_off', 'set_guess', 'clear_guess',
                    'set_fit_threshold', 'set_roi', 'clear_roi',
                    'levels_on', 'levels_off', 'set_markers',
-                   'save_markers', 'load_markers']
+                   'save_markers', 'load_markers',
+                   'com_on', 'com_off', 'set_com_cut']
 
 RECORD_MAX_S = 10.0
 RECORD_MAX_BYTES = 1.0e9
@@ -74,8 +77,8 @@ class Recording:
     def stack(self):
         return np.stack(self.frames) if self.frames else np.empty((0, 0, 0))
 
-class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
-                        DeviceAdapter):
+class CameraAdapterBase(CameraFitMixin, CameraComMixin, CameraLevelsMixin,
+                        CameraMarkersMixin, DeviceAdapter):
     """Shared camera behavior; subclasses provide only the hardware hooks.
 
     Hooks to implement (besides type_name / display_name / list_available):
@@ -118,6 +121,7 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
     def __init__(self, address):
         super().__init__(address)
         self._init_fit()
+        self._init_com()
         self._init_levels()
         self._init_markers()
         self._playing = True
@@ -179,6 +183,7 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
 
     def close(self):
         self._stop_fit()
+        self._stop_com()
         self._close()
 
     def _frame_shape(self):
@@ -210,6 +215,7 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
             return   # below the trigger: the view holds the last bright frame
         self._store_display_frame(display)
         self._store_fit_frame(frame)
+        self._store_com_frame(frame, roi)
 
     # ------------------------------------------------------------ recording
     def start_recording(self, max_s=RECORD_MAX_S, max_bytes=RECORD_MAX_BYTES):
@@ -344,10 +350,17 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
         return {'settings': {setting['name']: setting['value']
                              for setting in self._settings_schema()},
                 'roi': self._roi,
+                'com_cut': self._com_cut,
                 'markers': self.markers_describe()['markers']}
 
     def restore_settings(self, snapshot):
         self.restore_markers(snapshot.get('markers'))
+        try:
+            cut = float(snapshot.get('com_cut', self._com_cut))
+            if 0.0 <= cut < 1.0:
+                self._com_cut = cut
+        except (TypeError, ValueError):
+            pass
         applied = False
         # The ROI goes first. The frame rate a camera can sustain depends on
         # the geometry, and a camera opens on the whole sensor, where the
@@ -387,11 +400,14 @@ class CameraAdapterBase(CameraFitMixin, CameraLevelsMixin, CameraMarkersMixin,
                 'playing': self._playing,
                 'settings': self._settings_schema(),
                 **self.fit_describe(),
+                **self.com_describe(),
                 **self.levels_describe(),
                 **self.markers_describe()}
 
     def command(self, name, args):
         result = self.fit_command(name, args)
+        if result is None:
+            result = self.com_command(name, args)
         if result is None:
             result = self.levels_command(name, args)
         if result is None:
